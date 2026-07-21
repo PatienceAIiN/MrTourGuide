@@ -17,6 +17,7 @@ import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 import 'package:mrtouride/widgets/content_toast.dart';
+import 'package:mrtouride/widgets/update_flow.dart';
 import 'package:mrtouride/widgets/ux.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -95,21 +96,12 @@ class _MainPageState extends State<MainPage> {
   }
 
   /// Silent OTA check on entry; only interrupts when a newer build exists.
+  /// The whole update happens in-app: download with progress, then an
+  /// install prompt once the new build is ready.
   Future<void> _checkForUpdate() async {
     final info = await UpdateService.check();
     if (info == null || !info.isNewer || !mounted) return;
-    final go = await confirmDialog(
-      context,
-      title: 'Update available',
-      message: 'MrTouride v${info.version} (build ${info.buildNumber}) is '
-          'out.\n${info.notes}\n\nDownload now? Old builds are cleaned up '
-          'automatically after install.',
-      confirmLabel: 'Download',
-      cancelLabel: 'Later',
-    );
-    if (go && mounted) {
-      launchUrl(Uri.parse(info.apkAvailable ? info.absoluteApkUrl : apiBase));
-    }
+    await runUpdateFlow(context, info);
   }
 
   @override

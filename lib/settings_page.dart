@@ -10,6 +10,7 @@ import 'services/haptic_service.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
 import 'widgets/feedback_dialog.dart';
+import 'widgets/update_flow.dart';
 import 'widgets/ux.dart';
 
 /// Tailor-your-experience settings (persisted on this device).
@@ -145,13 +146,6 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: _checkForUpdate,
             ),
           ]),
-          _section('Account', [
-            ListTile(
-              leading: const Icon(Icons.logout, color: red),
-              title: const Text('Log out', style: TextStyle(color: red)),
-              onTap: _logout,
-            ),
-          ]),
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text(
@@ -174,34 +168,8 @@ class _SettingsPageState extends State<SettingsPage> {
     } else if (!info.isNewer) {
       newSnackBar(context, title: 'You are on the latest version.');
     } else {
-      final go = await confirmDialog(
-        context,
-        title: 'Update available',
-        message: 'v${info.version} (build ${info.buildNumber})\n${info.notes}'
-            '\n\nDownload now? Old builds are cleaned up automatically '
-            'after install.',
-        confirmLabel: 'Download',
-      );
-      if (go && mounted) {
-        launchUrl(Uri.parse(info.apkAvailable ? info.absoluteApkUrl : apiBase));
-      }
+      await runUpdateFlow(context, info);
     }
-  }
-
-  Future<void> _logout() async {
-    final ok = await confirmDialog(
-      context,
-      title: 'Log out?',
-      message: 'You will return to the welcome screen.',
-      confirmLabel: 'Log out',
-      destructive: true,
-    );
-    if (!ok || !mounted) return;
-    AuthApi.currentUser = null;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const HomePage()),
-      (route) => false,
-    );
   }
 
   Widget _section(String title, List<Widget> children) {

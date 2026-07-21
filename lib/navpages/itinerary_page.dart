@@ -2,12 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../constant.dart';
-import '../detail.dart';
-import '../models/place.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
 import '../widgets/ux.dart';
+import 'search_page.dart' show feelPlace;
 
 /// AI Itinerary planner: ask for any trip ("3 days in Rajasthan"), get a
 /// web-informed day-by-day plan — with flights/trains, stays, photos,
@@ -486,16 +485,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            trailing: const Icon(Icons.chevron_right, color: blue),
-            onTap: () {
-              Haptics.light();
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (context) =>
-                        DetailScreen(place: Place.fromCity(city))),
-              );
-            },
+            trailing: const Icon(Icons.play_circle_fill, color: blue, size: 26),
+            onTap: () => feelPlace(context, city),
           ),
         ),
     ];

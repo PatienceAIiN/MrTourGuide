@@ -16,6 +16,80 @@ import '../widgets/ux.dart';
 /// visible only to creator accounts (creators see both — enforced by the
 /// backend, mirrored here). Posts support emoji reactions and city tags;
 /// authors can delete their own posts.
+/// Public profile card for any community member — opened by tapping a
+/// username or avatar anywhere in the community.
+Future<void> showUserProfileDialog(BuildContext context, int userId) async {
+  Haptics.tick();
+  Map<String, dynamic>? profile;
+  try {
+    profile = await MediaApi.publicProfile(userId);
+  } catch (_) {}
+  if (!context.mounted || profile == null) return;
+  final p = profile;
+  final isCreatorUser = p['role'] == 'creator';
+  await showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            radius: 34,
+            backgroundColor: isCreatorUser ? Colors.purple : blue,
+            backgroundImage: p['avatarUrl'] != null
+                ? NetworkImage('$apiBase${p['avatarUrl']}')
+                : null,
+            child: p['avatarUrl'] == null
+                ? Text(
+                    (p['name'] as String).isNotEmpty
+                        ? (p['name'] as String)[0].toUpperCase()
+                        : '?',
+                    style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.bold,
+                        color: white),
+                  )
+                : null,
+          ),
+          const SizedBox(height: 10),
+          Text(p['name'] as String,
+              style:
+                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: (isCreatorUser ? Colors.purple : blue)
+                  .withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              isCreatorUser ? '\u2726 Creator' : 'Traveler',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: isCreatorUser ? Colors.purple : blue),
+            ),
+          ),
+          if ((p['about'] as String?)?.isNotEmpty ?? false) ...[
+            const SizedBox(height: 10),
+            Text(p['about'] as String,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13, height: 1.45)),
+          ],
+          const SizedBox(height: 12),
+          Text(
+            "${p['uploads']} experiences \u00b7 joined "
+            "${DateTime.parse(p['joined'] as String).toLocal().toString().substring(0, 10)}",
+            style: const TextStyle(color: Colors.grey, fontSize: 11.5),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class CommunityPage extends StatefulWidget {
   final void Function(int index)? onSelectTab;
   const CommunityPage({super.key, this.onSelectTab});
@@ -179,79 +253,6 @@ class _CommunityPageState extends State<CommunityPage> {
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }
-  }
-
-  /// Public profile card for any community member.
-  Future<void> _showProfile(int userId) async {
-    Haptics.tick();
-    Map<String, dynamic>? profile;
-    try {
-      profile = await MediaApi.publicProfile(userId);
-    } catch (_) {}
-    if (!mounted || profile == null) return;
-    final p = profile;
-    final isCreatorUser = p['role'] == 'creator';
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircleAvatar(
-              radius: 34,
-              backgroundColor: isCreatorUser ? Colors.purple : blue,
-              backgroundImage: p['avatarUrl'] != null
-                  ? NetworkImage('$apiBase${p['avatarUrl']}')
-                  : null,
-              child: p['avatarUrl'] == null
-                  ? Text(
-                      (p['name'] as String).isNotEmpty
-                          ? (p['name'] as String)[0].toUpperCase()
-                          : '?',
-                      style: const TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.bold,
-                          color: white),
-                    )
-                  : null,
-            ),
-            const SizedBox(height: 10),
-            Text(p['name'] as String,
-                style:
-                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-            const SizedBox(height: 4),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: (isCreatorUser ? Colors.purple : blue)
-                    .withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                isCreatorUser ? '✦ Creator' : 'Traveler',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: isCreatorUser ? Colors.purple : blue),
-              ),
-            ),
-            if ((p['about'] as String?)?.isNotEmpty ?? false) ...[
-              const SizedBox(height: 10),
-              Text(p['about'] as String,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 13, height: 1.45)),
-            ],
-            const SizedBox(height: 12),
-            Text(
-              '${p['uploads']} experiences · joined '
-              '${DateTime.parse(p['joined'] as String).toLocal().toString().substring(0, 10)}',
-              style: const TextStyle(color: Colors.grey, fontSize: 11.5),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   String _timeAgo(DateTime t) {
@@ -436,17 +437,20 @@ class _CommunityPageState extends State<CommunityPage> {
             children: [
               Row(
                 children: [
-                  CircleAvatar(
-                    radius: 16,
-                    backgroundColor: post.byCreator ? Colors.purple : blue,
-                    child: Text(
-                      post.authorName.isNotEmpty
-                          ? post.authorName[0].toUpperCase()
-                          : '?',
-                      style: const TextStyle(
-                          color: white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold),
+                  GestureDetector(
+                    onTap: () => showUserProfileDialog(context, post.authorId),
+                    child: CircleAvatar(
+                      radius: 16,
+                      backgroundColor: post.byCreator ? Colors.purple : blue,
+                      child: Text(
+                        post.authorName.isNotEmpty
+                            ? post.authorName[0].toUpperCase()
+                            : '?',
+                        style: const TextStyle(
+                            color: white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -454,10 +458,14 @@ class _CommunityPageState extends State<CommunityPage> {
                     child: Row(
                       children: [
                         Flexible(
-                          child: Text(post.authorName,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w700, fontSize: 14)),
+                          child: GestureDetector(
+                            onTap: () =>
+                                showUserProfileDialog(context, post.authorId),
+                            child: Text(post.authorName,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w700, fontSize: 14)),
+                          ),
                         ),
                         if (post.byCreator) ...[
                           const SizedBox(width: 5),
@@ -747,10 +755,14 @@ class _PostModalState extends State<_PostModal> {
                           children: [
                             Row(children: [
                               Flexible(
-                                child: Text(post.authorName,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w700)),
+                                child: GestureDetector(
+                                  onTap: () => showUserProfileDialog(
+                                      context, post.authorId),
+                                  child: Text(post.authorName,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700)),
+                                ),
                               ),
                               if (post.byCreator)
                                 const Padding(
@@ -913,10 +925,14 @@ class _PostModalState extends State<_PostModal> {
                 Row(
                   children: [
                     Flexible(
-                      child: Text(reply.authorName,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 13)),
+                      child: GestureDetector(
+                        onTap: () =>
+                            showUserProfileDialog(context, reply.authorId),
+                        child: Text(reply.authorName,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 13)),
+                      ),
                     ),
                     if (reply.byCreator)
                       const Padding(

@@ -222,6 +222,7 @@ class _LoginPageState extends State<LoginPage> {
         keyboardType: keyboardType,
         controller: controller,
         cursorColor: black,
+        style: const TextStyle(color: black),
         obscureText: obscureText,
         decoration: InputDecoration(
           labelText: labelText,

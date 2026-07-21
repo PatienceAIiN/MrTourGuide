@@ -1,8 +1,8 @@
 /// Version of THIS build. Keep in sync with pubspec.yaml `version:`.
 /// The OTA check compares [appBuildNumber] with the backend's
 /// /app/version manifest (backend/app_version.json).
-const String appVersion = '1.0.1';
-const int appBuildNumber = 2;
+const String appVersion = '1.0.2';
+const int appBuildNumber = 3;
 
 /// Google OAuth web client id — audience for ID tokens (all platforms).
 const String googleWebClientId =

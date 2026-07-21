@@ -13,6 +13,31 @@ import '../services/haptic_service.dart';
 import '../services/media_api.dart';
 import '../widgets/ux.dart';
 
+/// "Feel it" tap: play the place's experience video with haptics right away;
+/// only open the place page when no experience is ready yet.
+Future<void> feelPlace(BuildContext context, City city) async {
+  Haptics.light();
+  List<VideoItem> videos = const [];
+  try {
+    videos = (await MediaApi.fetchVideos(city.slug, limit: 1)).videos;
+  } catch (_) {}
+  if (!context.mounted) return;
+  if (videos.isNotEmpty) {
+    Haptics.string();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (context) => ExperiencePlayerPage(video: videos.first)),
+    );
+  } else {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (context) => DetailScreen(place: Place.fromCity(city))),
+    );
+  }
+}
+
 /// Search: live results over cities + experience videos, recent searches
 /// (each deletable), and an optional AI overview (Groq + web search via the
 /// backend) controlled by the ✨ toggle.
@@ -296,16 +321,8 @@ class _SearchPageState extends State<SearchPage> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 11.5, color: Colors.grey),
             ),
-            trailing: const Icon(Icons.chevron_right, color: blue),
-            onTap: () {
-              Haptics.light();
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (context) =>
-                        DetailScreen(place: Place.fromCity(city))),
-              );
-            },
+            trailing: const Icon(Icons.play_circle_fill, color: blue, size: 26),
+            onTap: () => feelPlace(context, city),
           ),
         ),
     ];

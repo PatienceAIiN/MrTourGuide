@@ -1299,6 +1299,38 @@ Future<Response> _listItineraries(Request request) async {
   });
 }
 
+/// Edit a saved itinerary's title and/or plan (owner only).
+Future<Response> _updateItinerary(Request request, String id) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final itineraryId = int.tryParse(id);
+  final title = (body?['title'] as String?)?.trim();
+  final plan = (body?['plan'] as String?)?.trim();
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (itineraryId == null) return _json(400, {'error': 'Bad itinerary id.'});
+  if ((title == null || title.isEmpty) && (plan == null || plan.isEmpty)) {
+    return _json(400, {'error': 'Nothing to update.'});
+  }
+  if ((title?.length ?? 0) > 120 || (plan?.length ?? 0) > 8000) {
+    return _json(400, {'error': 'Itinerary too long to save.'});
+  }
+  final rows = await _db.execute(
+    Sql.named('UPDATE itineraries SET '
+        'title = COALESCE(@t, title), plan = COALESCE(@p, plan) '
+        'WHERE id = @id AND user_id = @u RETURNING id'),
+    parameters: {
+      't': (title?.isEmpty ?? true) ? null : title,
+      'p': (plan?.isEmpty ?? true) ? null : plan,
+      'id': itineraryId,
+      'u': userId,
+    },
+  );
+  if (rows.isEmpty) {
+    return _json(403, {'error': 'You can only edit your own itineraries.'});
+  }
+  return _json(200, {'ok': true});
+}
+
 Future<Response> _deleteItinerary(Request request, String id) async {
   final body = await _readJsonBody(request);
   final userId = body?['userId'] as int?;
@@ -2040,6 +2072,38 @@ Future<Response> _updateAbout(Request request) async {
   return _json(200, {'ok': true});
 }
 
+/// Permanent account deletion (profile "Delete profile"): removes the
+/// user's community activity, saved itineraries, owned uploads and the
+/// account row itself. DPDP: user data is gone from the catalog and DB.
+Future<Response> _deleteAccount(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final exists = await _db.execute(
+    Sql.named('SELECT 1 FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (exists.isEmpty) return _json(404, {'error': 'Account not found.'});
+  try {
+    for (final sql in [
+      'DELETE FROM reactions WHERE user_id = @id',
+      'DELETE FROM replies WHERE author_id = @id',
+      'DELETE FROM reactions WHERE post_id IN '
+          '(SELECT id FROM posts WHERE author_id = @id)',
+      'DELETE FROM replies WHERE post_id IN '
+          '(SELECT id FROM posts WHERE author_id = @id)',
+      'DELETE FROM posts WHERE author_id = @id',
+      'DELETE FROM videos WHERE owner_id = @id',
+      'DELETE FROM users WHERE id = @id', // itineraries cascade
+    ]) {
+      await _db.execute(Sql.named(sql), parameters: {'id': userId});
+    }
+    return _json(200, {'ok': true});
+  } catch (_) {
+    return _json(500, {'error': 'Could not delete the account. Try again.'});
+  }
+}
+
 /// Public profile card (community username taps).
 Future<Response> _publicProfile(Request request, String id) async {
   final userId = int.tryParse(id);
@@ -2209,6 +2273,7 @@ Future<void> main() async {
     ..post('/ai/itinerary', _aiItinerary)
     ..post('/itineraries', _saveItinerary)
     ..get('/itineraries', _listItineraries)
+    ..post('/itineraries/<id>/update', _updateItinerary)
     ..post('/itineraries/<id>/delete', _deleteItinerary)
     ..get('/community/posts', _communityPosts)
     ..post('/community/posts', _createPost)
@@ -2225,6 +2290,7 @@ Future<void> main() async {
     ..post('/auth/change-password', _changePassword)
     ..post('/users/avatar', _uploadAvatar)
     ..post('/users/about', _updateAbout)
+    ..post('/users/delete-account', _deleteAccount)
     ..get('/users/<id>/profile', _publicProfile)
     ..post('/feedback', _feedback)
     ..get('/app/version', _appVersion)

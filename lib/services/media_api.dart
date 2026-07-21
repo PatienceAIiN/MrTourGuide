@@ -297,6 +297,23 @@ class MediaApi {
     ];
   }
 
+  /// Edit a saved itinerary's title and/or plan (owner only).
+  static Future<void> updateItinerary({
+    required int id,
+    required int userId,
+    String? title,
+    String? plan,
+  }) =>
+      _postJson('/itineraries/$id/update', {
+        'userId': userId,
+        if (title != null) 'title': title,
+        if (plan != null) 'plan': plan,
+      });
+
+  /// Permanently deletes the signed-in user's account and data.
+  static Future<void> deleteAccount(int userId) =>
+      _postJson('/users/delete-account', {'userId': userId});
+
   static Future<void> deleteItinerary({required int id, required int userId}) =>
       _postJson('/itineraries/$id/delete', {'userId': userId});
 
