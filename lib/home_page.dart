@@ -1,286 +1,472 @@
+import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
+
+import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/detail.dart';
+import 'package:mrtouride/experience_player.dart';
+import 'package:mrtouride/models/place.dart';
+import 'package:mrtouride/services/auth_api.dart';
+import 'package:mrtouride/services/media_api.dart';
+import 'package:mrtouride/widgets/ux.dart';
 
 class HomeScreen extends StatefulWidget {
+  final void Function(int index)? onSelectTab;
+  HomeScreen({super.key, this.onSelectTab});
+
   @override
   _HomePageState createState() => _HomePageState();
 }
+
 class _HomePageState extends State<HomeScreen> {
+  // Live catalog: city covers (internet / creator-uploaded) + latest videos.
+  List<Place> places = [];
+  List<VideoItem> trending = [];
+  bool loading = true;
+  String? error;
+
+  // Rotating headline below the greeting.
+  static const _phrases = [
+    'Where do you want\nto feel today?',
+    'The Taj at sunrise —\nfrom your couch.',
+    'Wind, waves, footsteps.\nIn your hands.',
+    'Travel with your senses.\nFrom home.',
+  ];
+  int _phrase = 0;
+  Timer? _phraseTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
+      if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
+    });
+  }
+
+  @override
+  void dispose() {
+    _phraseTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final results = await Future.wait([
+        MediaApi.fetchCities(),
+        MediaApi.fetchTrending(limit: 6),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        places = [for (final c in results[0] as List<City>) Place.fromCity(c)];
+        trending = results[1] as List<VideoItem>;
+        loading = false;
+        error = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        loading = false;
+        error = 'Could not load the catalog. Is the backend running?';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final name = AuthApi.currentUser?.name.split(' ').first ?? 'Explorer';
     return Scaffold(
-      backgroundColor: Color.fromRGBO(244, 243, 243, 1),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        brightness: Brightness.light,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(
-            Icons.menu,
-            color: Colors.black87,
-          ),
-          onPressed: () {},
-        ),
-      ),
+      backgroundColor: pageBg(context),
       body: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                    BorderRadius.vertical(bottom: Radius.circular(30))),
-                padding: EdgeInsets.all(20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      'Hello Mr.Touride',
-                      style: TextStyle(color: Colors.black87, fontSize: 25),
-                    ),
-                    SizedBox(
-                      height: 5,
-                    ),
-                    Text(
-                      'Inspiration',
-                      style: TextStyle(
-                          color: Colors.black,
-                          fontSize: 40,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    SizedBox(
-                      height: 20,
-                    ),
-                    Container(
-                      padding: EdgeInsets.all(5),
-                      decoration: BoxDecoration(
-                          color: Color.fromRGBO(244, 243, 243, 1),
-                          borderRadius: BorderRadius.circular(15)),
-                      child: TextField(
-                        decoration: InputDecoration(
-                            border: InputBorder.none,
-                            prefixIcon: Icon(
-                              Icons.search,
-                              color: Colors.black87,
-                            ),
-                            hintText: "Search you're looking for",
-                            hintStyle:
-                            TextStyle(color: Colors.grey, fontSize: 15)),
+        bottom: false,
+        child: RefreshIndicator(
+          onRefresh: _load,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                // Header
+                Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: cardBg(context),
+                    borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(30)),
+                  ),
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Entrance(
+                        child: Text(
+                          'Hello $name',
+                          style:
+                              TextStyle(color: inkSoft(context), fontSize: 17),
+                        ),
                       ),
-                    ),
-                    SizedBox(
-                      height: 10,
-                    ),
-                  ],
+                      const SizedBox(height: 4),
+                      Entrance(
+                        index: 1,
+                        child: SizedBox(
+                          height: 72,
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 450),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(
+                                position: Tween<Offset>(
+                                  begin: const Offset(0, 0.35),
+                                  end: Offset.zero,
+                                ).animate(animation),
+                                child: child,
+                              ),
+                            ),
+                            child: Text(
+                              _phrases[_phrase],
+                              key: ValueKey(_phrase),
+                              style: TextStyle(
+                                  color: ink(context),
+                                  fontSize: 28,
+                                  height: 1.2,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      // Search — jumps to the Search tab.
+                      Entrance(
+                        index: 2,
+                        child: Springy(
+                          haptic: 'tick',
+                          onTap: () => widget.onSelectTab?.call(3),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: pageBg(context),
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 14),
+                            child: Row(
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12),
+                                  child:
+                                      Icon(Icons.search, color: ink(context)),
+                                ),
+                                const Text(
+                                  'Search cities or experiences',
+                                  style: TextStyle(
+                                      color: Colors.grey, fontSize: 15),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              SizedBox(
-                height: 20,
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      'Most viewed places',
-                      style:
-                      TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                    ),
-
-
-                    SizedBox(
-                      height: 15,
-                    ),
-                    Container(
-                      height: 200,
-
-                      child: ListView(
-
-                        scrollDirection: Axis.horizontal,
-                        children: <Widget>[
-
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/card1.png',
-                              width: 167.0,
-                              height: 247.0,
-                            ),
-
-                          ),
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/card2.png',
-                              width: 167.0,
-                              height: 247.0,
-                            ),
-
-                          ),
-
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/card3.png',
-                              width: 167.0,
-                              height: 247.0,
-                            ),
-
-                          ),
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/card4.png',
-                              width: 167.0,
-                              height: 247.0,
-                            ),
-
-                          ),
-
-                        ],
+                const SizedBox(height: 24),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      if (error != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: Text(error!,
+                              style: const TextStyle(
+                                  color: Colors.redAccent, fontSize: 13)),
+                        ),
+                      _sectionHeader('Most viewed places',
+                          onSeeAll: () => widget.onSelectTab?.call(1)),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 230,
+                        child: loading
+                            ? const Center(child: CircularProgressIndicator())
+                            : _adaptiveRail(
+                                count: places.length,
+                                minCardWidth: 170,
+                                gap: 14,
+                                builder: (i, w) => Entrance(
+                                  index: i,
+                                  child: _placeCard(places[i], width: w),
+                                ),
+                              ),
                       ),
-                    ),
-                    SizedBox(
-                      height: 20,
-                    ),
-                    Text(
-
-                      'Top trending vlogs',
-                      style:
-                      TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-
-
-                    ),
-                    SizedBox(
-                      height: 20,
-                    ),
-                    Container(
-                      height: 175,
-
-                      child: ListView(
-
-                        scrollDirection: Axis.horizontal,
-                        children: <Widget>[
-
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/videocard1.png',
-                              width: 335.0,
-                              height: 190.0,
-                            ),
-
-                          ),
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/videocard2.png',
-                              width: 335.0,
-                              height: 190.0,
-                            ),
-
-                          ),
-                          InkWell(
-                            //  height: 150,
-                            // margin: EdgeInsets.all(10.0),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => DetailScreen ()),
-                              );
-                            },
-                            child: Image.asset(
-                              'assets/image/videocard3.png',
-                              width: 335.0,
-                              height: 190.0,
-                            ),
-
-                          ),
-
-
-                        ],
+                      const SizedBox(height: 26),
+                      _sectionHeader('Top trending experiences'),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 190,
+                        child: loading
+                            ? const SizedBox.shrink()
+                            : trending.isEmpty
+                                ? const Center(
+                                    child: Text('No experiences yet.',
+                                        style: TextStyle(color: Colors.grey)))
+                                : _adaptiveRail(
+                                    count: trending.length,
+                                    minCardWidth: 300,
+                                    gap: 14,
+                                    builder: (i, w) => Entrance(
+                                      index: i,
+                                      child:
+                                          _trendingCard(trending[i], width: w),
+                                    ),
+                                  ),
                       ),
-                    ),
-
-                  ],
-                ),
-              )
-            ],
+                      // Keep last row clear of the floating navbar.
+                      const SizedBox(height: 110),
+                    ],
+                  ),
+                )
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget promoCard(image) {
-    return AspectRatio(
-      aspectRatio: 2.62 / 3,
+  /// Auto-adapting rail: when all cards fit, they expand equally to fill the
+  /// full row (no dead space); when they don't, it scrolls horizontally.
+  Widget _adaptiveRail({
+    required int count,
+    required double minCardWidth,
+    required double gap,
+    required Widget Function(int index, double? width) builder,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final needed = count * minCardWidth + (count - 1) * gap;
+        if (count > 0 && needed <= constraints.maxWidth) {
+          // Everything fits: stretch cards evenly across the row.
+          return Row(
+            children: [
+              for (var i = 0; i < count; i++) ...[
+                if (i > 0) SizedBox(width: gap),
+                Expanded(child: builder(i, null)),
+              ],
+            ],
+          );
+        }
+        return ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: count,
+          separatorBuilder: (_, __) => SizedBox(width: gap),
+          itemBuilder: (context, i) => builder(i, minCardWidth),
+        );
+      },
+    );
+  }
+
+  Widget _sectionHeader(String title, {VoidCallback? onSeeAll}) {
+    return Row(
+      children: [
+        Text(title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        const Spacer(),
+        if (onSeeAll != null)
+          TextButton(onPressed: onSeeAll, child: const Text('See all')),
+      ],
+    );
+  }
+
+  /// City cover card — high-res network image, single clean caption.
+  Widget _placeCard(Place place, {double? width}) {
+    return Springy(
+      haptic: 'string',
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => DetailScreen(place: place)),
+      ),
       child: Container(
-        margin: EdgeInsets.only(right: 15.0),
+        width: width,
+        height: 230,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          image: DecorationImage(fit: BoxFit.cover, image: AssetImage(image)),
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.12),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
-        child: Container(
-          decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: LinearGradient(begin: Alignment.bottomRight, stops: [
-                0.1,
-                0.9
-              ], colors: [
-                Colors.black.withOpacity(.8),
-                Colors.black.withOpacity(.1)
-              ])),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _cover(place.image),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.65),
+                  ],
+                  stops: const [0.55, 1],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    place.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    place.location,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
+      ),
+    );
+  }
+
+  /// Trending experience card — ML-extracted poster, opens the player.
+  Widget _trendingCard(VideoItem video, {double? width}) {
+    return Springy(
+      haptic: 'string',
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (context) => ExperiencePlayerPage(video: video)),
+      ),
+      child: Container(
+        width: width,
+        height: 190,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.12),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (video.absoluteThumbUrl != null)
+              _cover(video.absoluteThumbUrl!)
+            else
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                ),
+              ),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.7),
+                  ],
+                  stops: const [0.45, 1],
+                ),
+              ),
+            ),
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withValues(alpha: 0.45),
+                ),
+                child:
+                    const Icon(Icons.play_arrow, color: Colors.white, size: 30),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 10,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          video.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          '${video.city[0].toUpperCase()}${video.city.substring(1)}'
+                          '${video.hapticsReady ? ' · Feel · Sound' : ' · Sound'}',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (video.hapticsReady)
+                    const Icon(Icons.vibration,
+                        color: Colors.purpleAccent, size: 18),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _cover(String src) {
+    return Image.network(
+      src,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, progress) => progress == null
+          ? child
+          : Container(
+              color: Colors.black12,
+              child: const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+      errorBuilder: (context, error, stack) => Container(
+        color: Colors.black12,
+        child: const Icon(Icons.landscape, color: Colors.black26, size: 48),
       ),
     );
   }

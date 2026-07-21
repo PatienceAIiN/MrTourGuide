@@ -1,0 +1,13 @@
+name: mrtouride_backend
+description: Local auth backend for MrTouride (Postgres-backed).
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  shelf: ^1.4.0
+  shelf_router: ^1.1.4
+  postgres: ^3.0.0
+  crypto: ^3.0.3

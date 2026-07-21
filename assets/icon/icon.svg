@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- MrTouride app icon: location pin + feel waves on brand gradient -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#052933"/>
+      <stop offset="1" stop-color="#1E319D"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Feel waves (haptics) -->
+  <g stroke="#9C6BFF" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.9">
+    <path d="M 96 300 q 20 -34 0 -68"/>
+    <path d="M 416 300 q -20 -34 0 -68"/>
+  </g>
+  <g stroke="#7B4FE0" stroke-width="18" stroke-linecap="round" fill="none" opacity="0.55">
+    <path d="M 56 316 q 32 -50 0 -100"/>
+    <path d="M 456 316 q -32 -50 0 -100"/>
+  </g>
+  <!-- Location pin -->
+  <path fill="#3CEBFF" d="M256 96c-62 0-112 50-112 112 0 84 112 208 112 208s112-124 112-208c0-62-50-112-112-112z"/>
+  <!-- Play triangle inside the pin (experiences) -->
+  <path fill="#052933" d="M226 158l84 50-84 50z"/>
+</svg>

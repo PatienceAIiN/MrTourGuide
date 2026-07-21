@@ -1,11 +1,11 @@
 {
-    "name": "mrtouride",
-    "short_name": "mrtouride",
+    "name": "MrTouride — Feel the world from home",
+    "short_name": "MrTouride",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#052933",
+    "theme_color": "#1E319D",
+    "description": "Immersive city experiences with video, MR/VR and real-feel haptics.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

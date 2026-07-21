@@ -13,13 +13,13 @@ class AppButtons extends StatelessWidget {
   bool? isIcon;
   AppButtons(
       {Key? key,
-        this.isIcon = false,
-        this.icon,
-        this.text = "hi",
-        required this.size,
-        required this.color,
-        required this.backgroundColor,
-        required this.borderColor})
+      this.isIcon = false,
+      this.icon,
+      this.text = "hi",
+      required this.size,
+      required this.color,
+      required this.backgroundColor,
+      required this.borderColor})
       : super(key: key);
 
   @override

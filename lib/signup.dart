@@ -1,23 +1,91 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:mrtouride/login.dart';
-import 'constant.dart';
-import 'main.dart';
-
 
 import 'constant.dart';
 import 'navpages/main_page.dart';
+import 'services/auth_api.dart';
+import 'widgets/auth_dialogs.dart';
 
-class SingUpPage extends StatelessWidget {
+class SingUpPage extends StatefulWidget {
   const SingUpPage({super.key});
+
+  @override
+  State<SingUpPage> createState() => _SingUpPageState();
+}
+
+class _SingUpPageState extends State<SingUpPage> {
+  final TextEditingController email = TextEditingController();
+  final TextEditingController name = TextEditingController();
+  final TextEditingController password = TextEditingController();
+  bool loading = false;
+  bool showPassword = false;
+  String role = 'traveler';
+
+  @override
+  void dispose() {
+    email.dispose();
+    name.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _signUp() async {
+    if (name.text.trim().isEmpty) {
+      newSnackBar(context, title: 'Name Required!');
+      return;
+    }
+    if (email.text.trim().isEmpty) {
+      newSnackBar(context, title: 'Email Required!');
+      return;
+    }
+    if (password.text.isEmpty) {
+      newSnackBar(context, title: 'Password Required!');
+      return;
+    }
+
+    setState(() => loading = true);
+    try {
+      final result = await AuthApi.signup(
+        name: name.text.trim(),
+        email: email.text.trim(),
+        password: password.text,
+        role: role,
+      );
+      if (!mounted) return;
+      setState(() => loading = false);
+      // Verify the email before entering the app.
+      final user = await showVerifyEmailDialog(
+        context,
+        email: result.email,
+        devCode: result.devCode,
+      );
+      if (user == null || !mounted) return;
+      email.clear();
+      name.clear();
+      password.clear();
+      _enterApp();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => loading = false);
+      newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _googleSignUp() async {
+    final user =
+        await showGoogleAuthDialog(context, mode: 'signup', role: role);
+    if (user != null && mounted) _enterApp();
+  }
+
+  void _enterApp() {
+    // Clear the auth screens from history — back should never return here.
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => MainPage()),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    TextEditingController email = TextEditingController();
-    TextEditingController name = TextEditingController();
-    TextEditingController password = TextEditingController();
-
     return Scaffold(
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
@@ -27,7 +95,7 @@ class SingUpPage extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      body: Center(
+      body: SingleChildScrollView(
         child: Container(
           margin: const EdgeInsets.all(25),
           child: Form(
@@ -80,116 +148,72 @@ class SingUpPage extends StatelessWidget {
                     controller: password,
                     labelText: 'Password',
                     keyboardType: TextInputType.text,
-                    obscureText: true,
+                    obscureText: !showPassword,
                     textInputAction: TextInputAction.done,
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        showPassword ? Icons.visibility_off : Icons.visibility,
+                        color: Colors.black45,
+                      ),
+                      onPressed: () =>
+                          setState(() => showPassword = !showPassword),
+                    ),
+                  ),
+                ),
+                // Account type: travelers experience, creators publish.
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          avatar: const Icon(Icons.travel_explore, size: 18),
+                          label: const Text('Traveler'),
+                          selected: role == 'traveler',
+                          selectedColor: blue.withValues(alpha: 0.15),
+                          onSelected: (_) => setState(() => role = 'traveler'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ChoiceChip(
+                          avatar: const Icon(Icons.video_camera_back, size: 18),
+                          label: const Text('Creator'),
+                          selected: role == 'creator',
+                          selectedColor: blue.withValues(alpha: 0.15),
+                          onSelected: (_) => setState(() => role = 'creator'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 Padding(
                   padding: const EdgeInsets.all(12),
-                  child: StatefulBuilder(
-                    builder: (BuildContext context, setState) {
-                      return loading
-                          ? MaterialButton(
-                          onPressed: () async {
-                            if (name.text.isNotEmpty) {
-                              if (email.text.isNotEmpty) {
-                                if (password.text.isNotEmpty) {
-                                  setState(() {
-                                    loading = !loading;
-                                  });
-                                } else {
-                                  newSnackBar(context,
-                                      title: 'Password Required!');
-                                }
-                              } else {
-                                newSnackBar(context,
-                                    title: 'Email Required!');
-                              }
-                            } else {
-                              newSnackBar(context, title: 'Name Required!');
-                            }
-
-                            try {
-                              await FirebaseAuth.instance
-                                  .createUserWithEmailAndPassword(
-                                  email: email.text,
-                                  password: password.text)
-                                  .then((value) async {
-                                await FirebaseFirestore.instance
-                                    .collection("/demo/account/users")
-                                    .doc(value.user!.uid)
-                                    .set({
-                                  'uid': value.user!.uid,
-                                  'name': name.text,
-                                  'email': email.text,
-                                }).then((value) {
-                                  email.clear();
-                                  name.clear();
-                                  password.clear();
-                                  Navigator.of(context).pushReplacement(
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              MainPage(),
-                                        ),
-                                      );
-                                      setState(() {
-                                        loading = !loading;
-                                      });
-                                });
-                              });
-                            } on FirebaseAuthException catch (e) {
-                              if (e.code == 'weak-password') {
-                                newSnackBar(context,
-                                    title:
-                                    'The password provided is too weak.');
-                                setState(() {
-                                  loading = !loading;
-                                });
-                              } else if (e.code == 'email-already-in-use') {
-                                newSnackBar(context,
-                                    title:
-                                    'The account already exists for that email.');
-                                setState(() {
-                                  loading = !loading;
-                                });
-                              }
-                            } catch (e) {
-                              newSnackBar(context, title: e);
-                              setState(() {
-                                loading = !loading;
-                              });
-                            }
-                          },
+                  child: loading
+                      ? const Center(
+                          child: CircularProgressIndicator(color: blue),
+                        )
+                      : MaterialButton(
+                          minWidth: double.infinity,
+                          onPressed: _signUp,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8),
                           ),
                           color: blue,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Padding(
-                                padding: EdgeInsets.fromLTRB(0, 15, 0, 15),
-                                child: Text(
-                                  'Sign Up',
-                                  style: TextStyle(color: white),
-                                ),
-                              ),
-                            ],
-                          ))
-                          : Center(
-                        child: MaterialButton(
-                          onPressed: () {},
-                          shape: const CircleBorder(),
-                          color: blue,
                           child: const Padding(
-                            padding: EdgeInsets.all(8.0),
-                            child: CircularProgressIndicator(
-                              color: white,
+                            padding: EdgeInsets.fromLTRB(0, 15, 0, 15),
+                            child: Text(
+                              'Sign Up',
+                              style: TextStyle(color: white),
                             ),
                           ),
                         ),
-                      );
-                    },
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: GoogleButton(
+                    label: 'Sign up with Google',
+                    onPressed: _googleSignUp,
                   ),
                 ),
               ],
@@ -200,12 +224,13 @@ class SingUpPage extends StatelessWidget {
     );
   }
 
-  customFormFeild({
-    controller,
-    labelText,
-    keyboardType,
-    textInputAction,
-    obscureText,
+  Widget customFormFeild({
+    required TextEditingController controller,
+    required String labelText,
+    required TextInputType keyboardType,
+    required TextInputAction textInputAction,
+    required bool obscureText,
+    Widget? suffixIcon,
   }) {
     return Material(
       elevation: 2.0,
@@ -224,6 +249,7 @@ class SingUpPage extends StatelessWidget {
           labelStyle: const TextStyle(color: black),
           contentPadding: const EdgeInsets.all(8),
           border: InputBorder.none,
+          suffixIcon: suffixIcon,
         ),
       ),
     );

@@ -1,0 +1,516 @@
+import 'dart:async';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+
+import '../constant.dart';
+import '../experience_player.dart';
+import '../services/auth_api.dart';
+import '../services/media_api.dart';
+import '../widgets/ux.dart';
+
+/// Experience-video dashboard.
+///
+/// Travelers browse and play city experiences; creators additionally upload
+/// (stored in a local folder for now — Cloudflare R2 later) and tune each
+/// video's feel/sound configuration. New uploads show "Processing" while the
+/// ML pipeline trims/enhances and generates the haptic track, then flip to
+/// ready automatically.
+class DashboardPage extends StatefulWidget {
+  final void Function(int index)? onSelectTab;
+  const DashboardPage({super.key, this.onSelectTab});
+
+  static const int pageSize = 2;
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  List<City> cities = [];
+  String? selectedCity;
+  final List<VideoItem> videos = [];
+  bool hasMore = false;
+  bool loadingCities = true;
+  bool loadingVideos = false;
+  bool uploading = false;
+  String? error;
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCities();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  /// While any visible video is still processing, poll so the "Processing"
+  /// chip flips to ready without manual refreshes.
+  void _managePolling() {
+    final anyProcessing = videos.any((v) => v.isProcessing);
+    if (anyProcessing && _pollTimer == null) {
+      _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+        final shown = videos.length;
+        final city = selectedCity;
+        if (city == null) return;
+        try {
+          final page = await MediaApi.fetchVideos(city,
+              offset: 0, limit: shown.clamp(1, 50));
+          if (!mounted) return;
+          setState(() {
+            videos
+              ..clear()
+              ..addAll(page.videos);
+          });
+          _managePolling();
+        } catch (_) {}
+      });
+    } else if (!anyProcessing) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+    }
+  }
+
+  Future<void> _loadCities() async {
+    setState(() {
+      loadingCities = true;
+      error = null;
+    });
+    try {
+      final result = await MediaApi.fetchCities();
+      if (!mounted) return;
+      setState(() {
+        cities = result;
+        loadingCities = false;
+        selectedCity ??= result.isNotEmpty ? result.first.slug : null;
+      });
+      if (selectedCity != null) await _reloadVideos();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        loadingCities = false;
+        error = e.message;
+      });
+    }
+  }
+
+  Future<void> _reloadVideos() async {
+    videos.clear();
+    hasMore = false;
+    await _loadMore();
+  }
+
+  Future<void> _loadMore() async {
+    final city = selectedCity;
+    if (city == null || loadingVideos) return;
+    setState(() {
+      loadingVideos = true;
+      error = null;
+    });
+    try {
+      final page = await MediaApi.fetchVideos(
+        city,
+        offset: videos.length,
+        limit: DashboardPage.pageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        videos.addAll(page.videos);
+        hasMore = page.hasMore;
+        loadingVideos = false;
+      });
+      _managePolling();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        loadingVideos = false;
+        error = e.message;
+      });
+    }
+  }
+
+  Future<void> _upload() async {
+    final city = selectedCity;
+    if (city == null || uploading) return;
+
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.video,
+      withData: true, // needed on web to get the bytes
+    );
+    final file = picked?.files.single;
+    if (file == null || file.bytes == null) return;
+    if (!mounted) return;
+
+    final title = await _askTitle(file.name);
+    if (title == null || title.trim().isEmpty) return;
+    if (!mounted) return;
+
+    final sizeMb = (file.bytes!.length / (1024 * 1024)).toStringAsFixed(1);
+    final ok = await confirmDialog(
+      context,
+      title: 'Publish experience?',
+      message: '"${title.trim()}" ($sizeMb MB) will be uploaded to '
+          '${_cityName(city)} and processed by the ML pipeline '
+          '(trim, enhance, haptic track).',
+      confirmLabel: 'Upload',
+    );
+    if (!ok || !mounted) return;
+
+    setState(() => uploading = true);
+    try {
+      await MediaApi.uploadVideo(
+        city: city,
+        title: title.trim(),
+        filename: file.name,
+        bytes: file.bytes!,
+      );
+      if (!mounted) return;
+      setState(() => uploading = false);
+      newSnackBar(context,
+          title: 'Uploaded! Processing feel & sound for "${title.trim()}"...');
+      await _loadCities(); // refresh counts + list
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => uploading = false);
+      newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<String?> _askTitle(String filename) {
+    final controller = TextEditingController(
+      text: filename.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll('_', ' '),
+    );
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Video title'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'e.g. Taj Mahal Sunrise'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Creator: per-video experience configuration sheet.
+  Future<void> _configSheet(VideoItem video) async {
+    var config = video.config;
+    var saving = false;
+    await showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Experience settings — ${video.title}',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 4),
+              const Text(
+                'Defaults viewers get for this video (their own settings '
+                'still override).',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              SwitchListTile(
+                title: const Text('Haptics (real feel)'),
+                secondary: const Icon(Icons.vibration, color: Colors.purple),
+                value: config.haptics,
+                activeThumbColor: blue,
+                onChanged: (v) => setSheet(() => config = ExperienceConfig(
+                    haptics: v,
+                    sound: config.sound,
+                    intensity: config.intensity)),
+              ),
+              SwitchListTile(
+                title: const Text('Sound experience'),
+                secondary: const Icon(Icons.volume_up, color: blue),
+                value: config.sound,
+                activeThumbColor: blue,
+                onChanged: (v) => setSheet(() => config = ExperienceConfig(
+                    haptics: config.haptics,
+                    sound: v,
+                    intensity: config.intensity)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.waves, color: Colors.purple),
+                title: const Text('Feel intensity'),
+                subtitle: Slider(
+                  value: config.intensity,
+                  activeColor: Colors.purpleAccent,
+                  onChanged: (v) => setSheet(() => config = ExperienceConfig(
+                      haptics: config.haptics,
+                      sound: config.sound,
+                      intensity: v)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              LoadingButton(
+                busy: saving,
+                label: 'Save configuration',
+                icon: Icons.save,
+                onPressed: () async {
+                  setSheet(() => saving = true);
+                  try {
+                    final updated =
+                        await MediaApi.updateConfig(video.id, config);
+                    if (!context.mounted) return;
+                    Navigator.pop(context);
+                    final i = videos.indexWhere((v) => v.id == updated.id);
+                    if (i >= 0) setState(() => videos[i] = updated);
+                    newSnackBar(this.context,
+                        title: 'Saved experience settings.');
+                  } on AuthException catch (e) {
+                    setSheet(() => saving = false);
+                    if (context.mounted) {
+                      newSnackBar(context, title: e.message);
+                    }
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _cityName(String slug) => cities
+      .firstWhere((c) => c.slug == slug,
+          orElse: () => City(slug: slug, name: slug, videoCount: 0))
+      .name;
+
+  String _formatSize(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isCreator = AuthApi.currentUser?.isCreator ?? false;
+    return Scaffold(
+      backgroundColor: pageBg(context),
+      appBar: AppBar(
+        backgroundColor: cardBg(context),
+        elevation: 0,
+        iconTheme: IconThemeData(color: ink(context)),
+        title: Text('Experience Dashboard',
+            style: TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
+      ),
+      // Creators publish; travelers just experience.
+      floatingActionButton: (selectedCity == null || !isCreator)
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: uploading ? null : _upload,
+              backgroundColor: blue,
+              foregroundColor: white,
+              icon: uploading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          color: white, strokeWidth: 2),
+                    )
+                  : const Icon(Icons.upload),
+              label: Text(uploading ? 'Uploading...' : 'Upload video'),
+            ),
+      body: RefreshIndicator(
+        onRefresh: _loadCities,
+        child: loadingCities
+            ? const Center(child: CircularProgressIndicator(color: blue))
+            : ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(16),
+                children: [
+                  if (error != null)
+                    Card(
+                      color: red.withValues(alpha: 0.1),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(error!, style: const TextStyle(color: red)),
+                      ),
+                    ),
+                  // City selector
+                  SizedBox(
+                    height: 44,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final city in cities)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text('${city.name} (${city.videoCount})'),
+                              selected: selectedCity == city.slug,
+                              selectedColor: blue,
+                              labelStyle: TextStyle(
+                                color: selectedCity == city.slug
+                                    ? white
+                                    : Colors.black87,
+                              ),
+                              onSelected: (_) {
+                                setState(() => selectedCity = city.slug);
+                                _reloadVideos();
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Video list
+                  if (videos.isEmpty && !loadingVideos)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 40),
+                      child: Center(
+                        child: Text(
+                          isCreator
+                              ? 'No experience videos yet.\nUpload the first one!'
+                              : 'No experience videos here yet.\nCheck back soon!',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ),
+                    ),
+                  for (var i = 0; i < videos.length; i++)
+                    Entrance(index: i, child: _videoCard(videos[i], isCreator)),
+                  if (loadingVideos)
+                    const Padding(
+                      padding: EdgeInsets.all(16),
+                      child:
+                          Center(child: CircularProgressIndicator(color: blue)),
+                    ),
+                  if (hasMore && !loadingVideos)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: OutlinedButton.icon(
+                        onPressed: _loadMore,
+                        icon: const Icon(Icons.expand_more),
+                        label: const Text('Load more'),
+                      ),
+                    ),
+                  const SizedBox(height: 72), // keep FAB clear of last card
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _videoCard(VideoItem video, bool isCreator) {
+    final processing = video.isProcessing;
+    return Card(
+      color: cardBg(context),
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: processing
+                  ? [Colors.grey, Colors.blueGrey]
+                  : [const Color(0xFF1E319D), const Color(0xFF3CEBFF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: processing
+              ? const Padding(
+                  padding: EdgeInsets.all(13),
+                  child:
+                      CircularProgressIndicator(color: white, strokeWidth: 2.5),
+                )
+              : const Icon(Icons.play_arrow, color: white, size: 30),
+        ),
+        title: Text(
+          video.title,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                '${_formatSize(video.sizeBytes)} · '
+                '${video.uploadedAt.toLocal().toString().substring(0, 16)}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              _badge(
+                processing
+                    ? 'ML processing...'
+                    : (video.hapticsReady
+                        ? 'Haptics ready'
+                        : 'Haptics pending'),
+                processing
+                    ? Colors.blue
+                    : (video.hapticsReady ? Colors.green : Colors.orange),
+              ),
+            ],
+          ),
+        ),
+        trailing: isCreator
+            ? IconButton(
+                tooltip: 'Experience settings',
+                icon: const Icon(Icons.tune, color: blue),
+                onPressed: () => _configSheet(video),
+              )
+            : const Icon(Icons.chevron_right, color: blue),
+        onTap: processing
+            ? () => newSnackBar(context,
+                title: 'Still processing — feel & sound almost ready!')
+            : () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ExperiencePlayerPage(video: video),
+                  ),
+                );
+              },
+      ),
+    );
+  }
+
+  Widget _badge(String text, MaterialColor color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 11, color: color.shade700),
+      ),
+    );
+  }
+}
