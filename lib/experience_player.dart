@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
-import 'ar_view.dart';
 import 'constant.dart';
+import 'services/haptic_service.dart';
 import 'services/media_api.dart';
 import 'services/settings_service.dart';
 
@@ -89,6 +89,35 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
         });
       }
     });
+  }
+
+  Future<void> _vrNotAvailable() async {
+    MediaApi.sendFeedback(
+      message: 'VR version requested for "${widget.video.title}" '
+          '(${widget.video.city})',
+    ).catchError((_) => '');
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        icon: const Icon(Icons.view_in_ar, color: Colors.purple, size: 36),
+        title: const Text('VR coming soon'),
+        content: const Text(
+          'This experience has no VR capture yet. We\'ve let the creator '
+          'know you want one.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.purple),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _scheduleHide() {
@@ -225,15 +254,7 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                 ),
                 // VR mode hand-off
                 TextButton.icon(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) =>
-                            ArViewPage(title: '${widget.video.title} — VR'),
-                      ),
-                    );
-                  },
+                  onPressed: _vrNotAvailable,
                   icon: const Icon(Icons.view_in_ar, color: lightBlue),
                   label:
                       const Text('VR mode', style: TextStyle(color: lightBlue)),
@@ -306,9 +327,15 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                               Expanded(
                                 child: Slider(
                                   value: intensity,
+                                  divisions: 10,
+                                  label: '${(intensity * 100).round()}%',
                                   activeColor: Colors.purpleAccent,
                                   inactiveColor: Colors.white24,
                                   onChanged: (v) {
+                                    if ((v * 10).round() !=
+                                        (intensity * 10).round()) {
+                                      Haptics.level(v);
+                                    }
                                     setState(() => intensity = max(0.05, v));
                                     _startHaptics();
                                   },

@@ -31,6 +31,19 @@ class Haptics {
     if (_enabled) HapticFeedback.heavyImpact();
   }
 
+  /// Feel the current intensity while scrubbing a slider: light → medium →
+  /// heavy as the value rises. Call on each step change, not every pixel.
+  static void level(double v) {
+    if (!_enabled) return;
+    if (v < 0.34) {
+      HapticFeedback.lightImpact();
+    } else if (v < 0.67) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.heavyImpact();
+    }
+  }
+
   /// Decaying pluck — like a struck guitar string settling.
   static Future<void> string() async {
     if (!_enabled) return;

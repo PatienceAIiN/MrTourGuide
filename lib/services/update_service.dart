@@ -21,7 +21,8 @@ class UpdateInfo {
   });
 
   bool get isNewer => buildNumber > appBuildNumber;
-  String get absoluteApkUrl => '$apiBase$apkUrl';
+  String get absoluteApkUrl =>
+      apkUrl.startsWith('http') ? apkUrl : '$apiBase$apkUrl';
 }
 
 /// OTA update detection against the backend's /app/version manifest.

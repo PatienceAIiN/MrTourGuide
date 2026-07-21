@@ -15,6 +15,7 @@ import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/navpages/my_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
 import 'package:mrtouride/signup.dart';
+import 'package:mrtouride/widgets/content_toast.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 
 void main() {
@@ -53,7 +54,7 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Experience Dashboard'), findsOneWidget);
+    expect(find.text('Explore Experiences'), findsOneWidget);
     expect(
         find.textContaining('Cannot reach the media server'), findsOneWidget);
   });
@@ -129,5 +130,47 @@ void main() {
     expect(find.byIcon(Icons.visibility), findsOneWidget);
     await tester.ensureVisible(find.text('Sign up with Google'));
     expect(find.text('Sign up with Google'), findsOneWidget);
+  });
+
+  testWidgets('New-content toast shows, opens Explore, and dismisses',
+      (WidgetTester tester) async {
+    var opened = false;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => Center(
+            child: ElevatedButton(
+              onPressed: () => ContentToast.show(
+                context,
+                message: '2 new experiences · Golden Temple Evening…',
+                onOpen: () => opened = true,
+              ),
+              child: const Text('fire'),
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('fire'));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.textContaining('2 new experiences'), findsOneWidget);
+
+    // The capsule's tap action opens Explore and dismisses the toast.
+    // (Invoked directly — hit-testing through BackdropFilter is unreliable
+    // in the test harness, but the wiring is what matters here.)
+    final capsule = tester.widget<InkWell>(
+      find
+          .ancestor(
+            of: find.textContaining('2 new experiences'),
+            matching: find.byType(InkWell),
+          )
+          .first,
+    );
+    capsule.onTap!();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(opened, isTrue);
+    expect(find.textContaining('2 new experiences'), findsNothing);
+    await tester.pump(const Duration(seconds: 8)); // drain auto-dismiss timer
   });
 }

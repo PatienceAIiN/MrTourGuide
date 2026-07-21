@@ -1,16 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:mrtouride/ar_view.dart';
 import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/home_page.dart';
 import 'package:mrtouride/navpages/community_page.dart';
+import 'package:mrtouride/navpages/itinerary_page.dart';
 import 'package:mrtouride/navpages/dashboard_page.dart';
 import 'package:mrtouride/navpages/my_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
 import 'package:mrtouride/services/api_base.dart';
+import 'package:mrtouride/services/auth_api.dart';
+import 'package:mrtouride/services/notification_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
+import 'package:mrtouride/widgets/content_toast.dart';
 import 'package:mrtouride/widgets/ux.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -22,6 +28,8 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   late final PageController _pageController;
   int currentIndex = 0;
+  bool hasNewContent = false;
+  Timer? _newContentTimer;
 
   late final List<Widget> pages = [
     HomeScreen(onSelectTab: onTap),
@@ -29,6 +37,7 @@ class _MainPageState extends State<MainPage> {
     CommunityPage(onSelectTab: onTap),
     SearchPage(onSelectTab: onTap),
     MyPage(onSelectTab: onTap),
+    ItineraryPage(onSelectTab: onTap),
   ];
 
   @override
@@ -37,16 +46,41 @@ class _MainPageState extends State<MainPage> {
     _pageController = PageController();
     SettingsService.instance.load();
     _checkForUpdate();
+    // New-content notifications: on entry + a gentle 90s cadence.
+    _checkNewContent();
+    // 5-minute cadence — friendly to the free-tier VM.
+    _newContentTimer =
+        Timer.periodic(const Duration(minutes: 5), (_) => _checkNewContent());
+  }
+
+  Future<void> _checkNewContent() async {
+    final fresh = await NotificationService.check();
+    if (fresh == null || !mounted) return;
+    setState(() => hasNewContent = true);
+    ContentToast.show(
+      context,
+      message: fresh.headline,
+      onOpen: () {
+        NotificationService.markSeen();
+        setState(() => hasNewContent = false);
+        onTap(1); // Explore
+      },
+    );
   }
 
   @override
   void dispose() {
+    _newContentTimer?.cancel();
     _pageController.dispose();
     super.dispose();
   }
 
   /// iOS-like slide between tabs (also swipeable).
   void onTap(int index) {
+    if (index == 1 && hasNewContent) {
+      NotificationService.markSeen();
+      setState(() => hasNewContent = false);
+    }
     final reduce = SettingsService.instance.reduceMotion;
     if (reduce) {
       _pageController.jumpToPage(index);
@@ -100,14 +134,17 @@ class _MainPageState extends State<MainPage> {
           entries: [
             const NavEntry(
                 icon: Icons.home_rounded, label: 'Home', tabIndex: 0),
+            NavEntry(
+                icon: (AuthApi.currentUser?.isCreator ?? false)
+                    ? Icons.video_settings_rounded
+                    : Icons.video_library_rounded,
+                label: (AuthApi.currentUser?.isCreator ?? false)
+                    ? 'Studio'
+                    : 'Explore',
+                tabIndex: 1,
+                badge: hasNewContent),
             const NavEntry(
-                icon: Icons.video_library_rounded,
-                label: 'Explore',
-                tabIndex: 1),
-            const NavEntry(
-                icon: Icons.forum_rounded, label: 'Community', tabIndex: 2),
-            const NavEntry(
-                icon: Icons.person_rounded, label: 'Profile', tabIndex: 4),
+                icon: Icons.route_rounded, label: 'Planner', tabIndex: 5),
             NavEntry(
               icon: Icons.view_in_ar_rounded,
               label: 'MR/VR',
@@ -117,7 +154,8 @@ class _MainPageState extends State<MainPage> {
                 MaterialPageRoute(builder: (context) => const ArViewPage()),
               ),
             ),
-            // Feedback, updates and log out live inside Settings now.
+            const NavEntry(
+                icon: Icons.forum_rounded, label: 'Community', tabIndex: 2),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',
@@ -126,6 +164,8 @@ class _MainPageState extends State<MainPage> {
                 MaterialPageRoute(builder: (context) => const SettingsPage()),
               ),
             ),
+            const NavEntry(
+                icon: Icons.person_rounded, label: 'Profile', tabIndex: 4),
           ],
         ),
       ),

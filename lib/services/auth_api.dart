@@ -13,11 +13,17 @@ class AuthUser {
   /// 'traveler' (viewer) or 'creator' (can upload + configure experiences).
   final String role;
 
-  const AuthUser({
+  /// Profile picture (backend-relative) and short bio — editable in Profile.
+  String? avatarUrl;
+  String? about;
+
+  AuthUser({
     required this.id,
     required this.name,
     required this.email,
     this.role = 'traveler',
+    this.avatarUrl,
+    this.about,
   });
 
   bool get isCreator => role == 'creator';
@@ -27,6 +33,8 @@ class AuthUser {
         name: json['name'] as String,
         email: json['email'] as String,
         role: json['role'] as String? ?? 'traveler',
+        avatarUrl: json['avatarUrl'] as String?,
+        about: json['about'] as String?,
       );
 }
 
@@ -67,9 +75,15 @@ class AuthApi {
     required String email,
     required String password,
     String role = 'traveler',
+    bool acceptedTerms = false,
   }) async {
-    final decoded = await _postRaw('/signup',
-        {'name': name, 'email': email, 'password': password, 'role': role});
+    final decoded = await _postRaw('/signup', {
+      'name': name,
+      'email': email,
+      'password': password,
+      'role': role,
+      'acceptedTerms': acceptedTerms,
+    });
     return SignupResult(
       email: decoded['email'] as String,
       devCode: decoded['devCode'] as String?,
@@ -100,19 +114,23 @@ class AuthApi {
   /// for accounts that were created with Google).
   static Future<AuthUser> google({
     required String mode, // 'signup' | 'signin'
-    required String email,
+    String? email,
+    String? idToken,
     String? name,
     String role = 'traveler',
+    bool acceptedTerms = false,
   }) {
     return _post('/auth/google', {
       'mode': mode,
-      'email': email,
+      if (email != null) 'email': email,
+      if (idToken != null) 'idToken': idToken,
       if (name != null) 'name': name,
       'role': role,
+      'acceptedTerms': acceptedTerms,
     });
   }
 
-  static Future<AuthUser> _post(String path, Map<String, String> body) async {
+  static Future<AuthUser> _post(String path, Map<String, dynamic> body) async {
     final decoded = await _postRaw(path, body);
     final user = AuthUser.fromJson(decoded);
     currentUser = user;
@@ -120,7 +138,7 @@ class AuthApi {
   }
 
   static Future<Map<String, dynamic>> _postRaw(
-      String path, Map<String, String> body) async {
+      String path, Map<String, dynamic> body) async {
     late http.Response response;
     try {
       response = await http

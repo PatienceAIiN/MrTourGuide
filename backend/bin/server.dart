@@ -302,6 +302,32 @@ Middleware _rateLimit() {
   };
 }
 
+/// Short edge-cache for anonymous catalog GETs — Cloudflare absorbs bursts
+/// so the free-tier VM stays cool. Personalized requests stay uncached.
+Middleware _edgeCache() {
+  const cacheable = {'cities', 'videos', 'videos/trending', 'search'};
+  return (Handler inner) {
+    return (Request request) async {
+      final response = await inner(request);
+      if (request.method == 'GET' &&
+          cacheable.contains(request.url.path) &&
+          !request.url.queryParameters.containsKey('userId') &&
+          !request.url.queryParameters.containsKey('ownerId') &&
+          response.statusCode == 200) {
+        return response.change(
+            headers: {'cache-control': 'public, max-age=60'});
+      }
+      if (request.method == 'GET' &&
+          request.url.path.endsWith('/weather') &&
+          response.statusCode == 200) {
+        return response.change(
+            headers: {'cache-control': 'public, max-age=600'});
+      }
+      return response;
+    };
+  };
+}
+
 Middleware _cors() {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -363,12 +389,13 @@ Map<String, Object?> _videoRowToJson(List<dynamic> row) => {
       'status': row[8],
       'config': row[9],
       'thumbUrl': row[10],
+      'ownerId': row[11],
       'url': '/files/${row[1]}/${row[3]}',
     };
 
 const _videoColumns =
     'id, city, title, filename, mime, size_bytes, haptics, uploaded_at, '
-    'status, config, thumb_url';
+    'status, config, thumb_url, owner_id';
 
 /// Simulated ML pipeline: after a short "processing" period the video is
 /// trimmed/enhanced, a poster thumbnail is extracted (real ffmpeg) and a
@@ -432,6 +459,43 @@ void _scheduleMlProcessing(int videoId) {
 // Auth handlers
 // ---------------------------------------------------------------------------
 
+/// Sends a transactional email via Brevo. Returns true on success.
+/// When BREVO_API_KEY is unset (local dev), returns false so callers fall
+/// back to the on-screen dev code.
+Future<bool> _sendEmail(String to, String subject, String html) async {
+  final key = Platform.environment['BREVO_API_KEY'];
+  if (key == null || key.isEmpty) return false;
+  final sender = Platform.environment['BREVO_SENDER_EMAIL'] ?? 'info@patienceai.in';
+  final senderName = Platform.environment['BREVO_SENDER_NAME'] ?? 'Mr.Tour Guide';
+  try {
+    final client = HttpClient();
+    final req = await client.postUrl(Uri.parse('https://api.brevo.com/v3/smtp/email'));
+    req.headers.set('api-key', key);
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'sender': {'name': senderName, 'email': sender},
+      'to': [{'email': to}],
+      'subject': subject,
+      'htmlContent': html,
+    }));
+    final res = await req.close();
+    await res.drain<void>();
+    client.close();
+    return res.statusCode == 201;
+  } catch (_) {
+    return false;
+  }
+}
+
+String _verifyEmailHtml(String code) => '''
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+  <h2 style="color:#1E319D">Mr.Tour Guide</h2>
+  <p>Welcome! Use this code to verify your email:</p>
+  <p style="font-size:34px;letter-spacing:10px;font-weight:bold;color:#052933">$code</p>
+  <p style="color:#777;font-size:13px">If you didn't sign up, ignore this email.<br>
+  Mr.Tour Guide · A product of PatienceAI · patienceai.in</p>
+</div>''';
+
 Future<Response> _signup(Request request) async {
   final body = await _readJsonBody(request);
   final name = (body?['name'] as String?)?.trim() ?? '';
@@ -445,6 +509,10 @@ Future<Response> _signup(Request request) async {
   }
   if (password.length < 6) {
     return _json(400, {'error': 'The password provided is too weak.'});
+  }
+  if (body?['acceptedTerms'] != true) {
+    return _json(400,
+        {'error': 'Please accept the Terms & Privacy Policy to sign up.'});
   }
 
   final salt = _newSalt();
@@ -469,14 +537,16 @@ Future<Response> _signup(Request request) async {
       },
     );
     final row = rows.first;
-    print('VERIFY-EMAIL: code for $email is $code');
+    final sent = await _sendEmail(
+        email, 'Your Mr.Tour Guide verification code', _verifyEmailHtml(code));
+    if (!sent) print('VERIFY-EMAIL (no mailer): code for $email is $code');
     return _json(201, {
       'id': row[0],
       'name': row[1],
       'email': row[2],
       'role': row[3],
       'needsVerification': true,
-      'devCode': code,
+      if (!sent) 'devCode': code,
     });
   } on ServerException catch (e) {
     if (e.code == '23505') {
@@ -520,8 +590,10 @@ Future<Response> _resendCode(Request request) async {
   if (rows.isEmpty) {
     return _json(404, {'error': 'No unverified account for that email.'});
   }
-  print('VERIFY-EMAIL: new code for $email is $code');
-  return _json(200, {'ok': true, 'devCode': code});
+  final sent = await _sendEmail(
+      email, 'Your Mr.Tour Guide verification code', _verifyEmailHtml(code));
+  if (!sent) print('VERIFY-EMAIL (no mailer): new code for $email is $code');
+  return _json(200, {'ok': true, if (!sent) 'devCode': code});
 }
 
 /// Google SSO.
@@ -535,9 +607,37 @@ Future<Response> _resendCode(Request request) async {
 Future<Response> _googleAuth(Request request) async {
   final body = await _readJsonBody(request);
   final mode = body?['mode'] as String? ?? 'signin';
-  final email = (body?['email'] as String?)?.trim().toLowerCase() ?? '';
-  final name = (body?['name'] as String?)?.trim() ?? '';
   final role = body?['role'] == 'creator' ? 'creator' : 'traveler';
+  final idToken = (body?['idToken'] as String?)?.trim();
+
+  String email = (body?['email'] as String?)?.trim().toLowerCase() ?? '';
+  String name = (body?['name'] as String?)?.trim() ?? '';
+
+  final clientId = Platform.environment['GOOGLE_CLIENT_ID'];
+  if (idToken != null && idToken.isNotEmpty) {
+    // Real SSO: validate the Google ID token (signature is checked by
+    // Google's tokeninfo endpoint; we verify audience + verified email).
+    try {
+      final infoRaw = await _httpGetText(
+          'https://oauth2.googleapis.com/tokeninfo?id_token='
+          '${Uri.encodeQueryComponent(idToken)}');
+      final info = jsonDecode(infoRaw) as Map<String, dynamic>;
+      if (clientId != null && info['aud'] != clientId) {
+        return _json(401, {'error': 'Google token audience mismatch.'});
+      }
+      if (info['email_verified'] != 'true' && info['email_verified'] != true) {
+        return _json(401, {'error': 'Google email not verified.'});
+      }
+      email = (info['email'] as String).toLowerCase();
+      if (name.isEmpty) name = info['name'] as String? ?? '';
+    } catch (_) {
+      return _json(401, {'error': 'Invalid Google sign-in token.'});
+    }
+  } else if (Platform.environment['ALLOW_DEV_GOOGLE'] != '1') {
+    // Without a token only local dev mode may pass a bare email.
+    return _json(401, {'error': 'Google sign-in requires a valid token.'});
+  }
+
   if (email.isEmpty || !email.contains('@')) {
     return _json(400, {'error': 'Valid Google email required.'});
   }
@@ -549,6 +649,10 @@ Future<Response> _googleAuth(Request request) async {
   );
 
   if (mode == 'signup') {
+    if (body?['acceptedTerms'] != true) {
+      return _json(400,
+          {'error': 'Please accept the Terms & Privacy Policy to sign up.'});
+    }
     if (existing.isNotEmpty) {
       return _json(409, {'error': 'The account already exists for that email.'});
     }
@@ -595,7 +699,7 @@ Future<Response> _login(Request request) async {
 
   final rows = await _db.execute(
     Sql.named('SELECT id, name, email, password_hash, salt, role, provider, '
-        'verified FROM users WHERE email = @email'),
+        'verified, avatar_url, about FROM users WHERE email = @email'),
     parameters: {'email': email},
   );
   if (rows.isEmpty) {
@@ -616,8 +720,14 @@ Future<Response> _login(Request request) async {
       'needsVerification': true,
     });
   }
-  return _json(
-      200, {'id': row[0], 'name': row[1], 'email': row[2], 'role': row[5]});
+  return _json(200, {
+    'id': row[0],
+    'name': row[1],
+    'email': row[2],
+    'role': row[5],
+    'avatarUrl': row[8],
+    'about': row[9],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -625,12 +735,18 @@ Future<Response> _login(Request request) async {
 // ---------------------------------------------------------------------------
 
 Future<Response> _cities(Request request) async {
+  // ownerId: chip counters show only that creator's uploads.
+  final owner = int.tryParse(request.url.queryParameters['ownerId'] ?? '');
+  final join = owner == null
+      ? "LEFT JOIN videos v ON v.city = c.slug AND v.status = 'ready'"
+      : 'LEFT JOIN videos v ON v.city = c.slug AND v.owner_id = @owner';
   final rows = await _db.execute(
-      'SELECT c.slug, c.name, COUNT(v.id), c.cover_url, c.location, '
-      'c.description, c.rating FROM cities c '
-      'LEFT JOIN videos v ON v.city = c.slug '
-      'GROUP BY c.slug, c.name, c.cover_url, c.location, c.description, '
-      'c.rating ORDER BY c.name');
+      Sql.named('SELECT c.slug, c.name, COUNT(v.id), c.cover_url, c.location, '
+          'c.description, c.rating, c.model_url FROM cities c '
+          '$join '
+          'GROUP BY c.slug, c.name, c.cover_url, c.location, c.description, '
+          'c.rating, c.model_url ORDER BY c.name'),
+      parameters: {if (owner != null) 'owner': owner});
   return _json(200, {
     'cities': [
       for (final r in rows)
@@ -642,6 +758,7 @@ Future<Response> _cities(Request request) async {
           'location': r[4],
           'description': r[5],
           'rating': r[6],
+          'modelUrl': r[7],
         }
     ]
   });
@@ -650,6 +767,10 @@ Future<Response> _cities(Request request) async {
 /// Creator: upload a high-res cover image for a city (raw bytes).
 /// The cover shows in the app's home carousel and place page hero.
 Future<Response> _uploadCover(Request request, String city) async {
+  final coverUser = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  if (coverUser == null || await _roleOf(coverUser) != 'creator') {
+    return _json(403, {'error': 'Only creator accounts can change covers.'});
+  }
   final known = await _db.execute(
     Sql.named('SELECT 1 FROM cities WHERE slug = @city'),
     parameters: {'city': _sanitizeFilename(city)},
@@ -1078,6 +1199,66 @@ Future<Response> _deletePost(Request request, String id) async {
   return _json(200, {'ok': true});
 }
 
+// AI itinerary planner: Groq compound-mini (web search built in) drafts a
+// day-by-day plan; the app pairs it with photos + YouTube via /search/media.
+final Map<String, (DateTime, Map<String, Object?>)> _itineraryCache = {};
+
+Future<Response> _aiItinerary(Request request) async {
+  final apiKey = Platform.environment['GROQ_API_KEY'];
+  if (apiKey == null || apiKey.isEmpty) {
+    return _json(503, {'error': 'AI planner is not configured.'});
+  }
+  final body = await _readJsonBody(request);
+  final query = (body?['query'] as String?)?.trim() ?? '';
+  if (query.isEmpty) return _json(400, {'error': 'query required'});
+
+  final cacheKey = query.toLowerCase();
+  final cached = _itineraryCache[cacheKey];
+  if (cached != null &&
+      DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
+    return _json(200, cached.$2);
+  }
+
+  try {
+    final client = HttpClient();
+    final req = await client
+        .postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
+    req.headers.set('Authorization', 'Bearer $apiKey');
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'model': 'groq/compound-mini',
+      'messages': [
+        {
+          'role': 'system',
+          'content': "You are Mr.Tour Guide's AI travel planner. Draft a "
+              'concise, practical day-by-day itinerary for the request. '
+              "Format strictly: a one-line intro, then lines starting with "
+              "'Day N: <title>' each followed by 2-3 short sentences, then "
+              "a final section starting with 'Tips:' (best time, transport, "
+              'accessibility notes). Max 5 days. Plain text only — no '
+              'markdown symbols.'
+        },
+        {'role': 'user', 'content': query},
+      ],
+      'max_tokens': 700,
+      'temperature': 0.5,
+    }));
+    final res = await req.close();
+    final text = await res.transform(utf8.decoder).join();
+    client.close();
+    final decoded = jsonDecode(text) as Map<String, dynamic>;
+    final plan = decoded['choices']?[0]?['message']?['content'] as String?;
+    if (plan == null) {
+      return _json(502, {'error': 'AI planner unavailable right now.'});
+    }
+    final payload = <String, Object?>{'plan': plan.trim()};
+    _itineraryCache[cacheKey] = (DateTime.now(), payload);
+    return _json(200, payload);
+  } catch (_) {
+    return _json(502, {'error': 'AI planner unavailable right now.'});
+  }
+}
+
 // Rich search media: place photos (Wikimedia Commons) + YouTube suggestions.
 // Cached 30 min per query; all fetched server-side (no keys, no client CORS).
 final Map<String, (DateTime, Map<String, Object?>)> _mediaCache = {};
@@ -1227,6 +1408,29 @@ Future<Response> _aiSearch(Request request) async {
   }
 }
 
+/// What's new since a timestamp — powers the in-app "new content" toast.
+/// Excludes the caller's own uploads so creators aren't notified of
+/// themselves.
+Future<Response> _whatsNew(Request request) async {
+  final since = DateTime.tryParse(request.url.queryParameters['since'] ?? '');
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  if (since == null) return _json(400, {'error': 'since (ISO time) required'});
+  final rows = await _db.execute(
+    Sql.named("SELECT $_videoColumns FROM videos WHERE status = 'ready' "
+        'AND uploaded_at > @since '
+        '${userId != null ? 'AND (owner_id IS NULL OR owner_id != @me) ' : ''}'
+        'ORDER BY uploaded_at DESC LIMIT 5'),
+    parameters: {
+      'since': since,
+      if (userId != null) 'me': userId,
+    },
+  );
+  return _json(200, {
+    'count': rows.length,
+    'videos': [for (final r in rows) _videoRowToJson(r)],
+  });
+}
+
 /// Latest ready experience videos across all cities (home "trending" rail).
 Future<Response> _trending(Request request) async {
   final limit =
@@ -1245,13 +1449,29 @@ Future<Response> _videos(Request request) async {
   final city = params['city'] ?? '';
   final offset = int.tryParse(params['offset'] ?? '0') ?? 0;
   final limit = (int.tryParse(params['limit'] ?? '5') ?? 5).clamp(1, 50);
-  if (city.isEmpty) return _json(400, {'error': 'city query param required'});
+  final mine = params['mine'] == '1';
+  final userId = int.tryParse(params['userId'] ?? '');
+  if (city.isEmpty && !mine) {
+    return _json(400, {'error': 'city query param required'});
+  }
 
+  // "mine": a creator's own uploads (any status). Public: ready-only.
+  final where = mine
+      ? 'owner_id = @owner ${city.isEmpty ? '' : 'AND city = @city'}'
+      : "city = @city AND status = 'ready'";
+  if (mine && userId == null) {
+    return _json(401, {'error': 'Sign in to view your uploads.'});
+  }
   // Fetch one extra row to know whether more pages exist.
   final rows = await _db.execute(
-    Sql.named('SELECT $_videoColumns FROM videos WHERE city = @city '
+    Sql.named('SELECT $_videoColumns FROM videos WHERE $where '
         'ORDER BY uploaded_at DESC, id DESC OFFSET @offset LIMIT @limit'),
-    parameters: {'city': city, 'offset': offset, 'limit': limit + 1},
+    parameters: {
+      if (city.isNotEmpty) 'city': city,
+      if (mine) 'owner': userId,
+      'offset': offset,
+      'limit': limit + 1,
+    },
   );
   final hasMore = rows.length > limit;
   final page = hasMore ? rows.take(limit) : rows;
@@ -1292,9 +1512,14 @@ Future<Response> _upload(Request request) async {
   final city = params['city'] ?? '';
   final title = (params['title'] ?? '').trim();
   final original = _sanitizeFilename(params['filename'] ?? 'upload.bin');
+  final userId = int.tryParse(params['userId'] ?? '');
 
   if (city.isEmpty || title.isEmpty) {
     return _json(400, {'error': 'city and title query params required'});
+  }
+  // Only creator accounts publish experiences.
+  if (userId == null || await _roleOf(userId) != 'creator') {
+    return _json(403, {'error': 'Only creator accounts can upload.'});
   }
   final known = await _db.execute(
     Sql.named('SELECT 1 FROM cities WHERE slug = @city'),
@@ -1316,19 +1541,34 @@ Future<Response> _upload(Request request) async {
 
   final rows = await _db.execute(
     Sql.named('INSERT INTO videos (city, title, filename, mime, size_bytes, '
-        "status) VALUES (@city, @title, @filename, @mime, @size, 'processing') "
-        'RETURNING $_videoColumns'),
+        "status, owner_id) VALUES (@city, @title, @filename, @mime, @size, "
+        "'processing', @owner) RETURNING $_videoColumns"),
     parameters: {
       'city': city,
       'title': title,
       'filename': stored,
       'mime': _mimeFor(original),
       'size': size,
+      'owner': userId,
     },
   );
   final video = _videoRowToJson(rows.first);
   _scheduleMlProcessing(video['id'] as int);
   return _json(201, {'video': video});
+}
+
+/// Owner check: only the uploader may manage a video.
+Future<Response?> _requireOwner(int videoId, int? userId) async {
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final rows = await _db.execute(
+    Sql.named('SELECT owner_id FROM videos WHERE id = @id'),
+    parameters: {'id': videoId},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
+  if (rows.first[0] != userId) {
+    return _json(403, {'error': 'You can only manage your own uploads.'});
+  }
+  return null;
 }
 
 /// Creator: update a video's experience configuration (haptics/sound/feel).
@@ -1337,6 +1577,8 @@ Future<Response> _updateConfig(Request request, String id) async {
   if (videoId == null) return _json(400, {'error': 'Bad video id.'});
   final body = await _readJsonBody(request);
   if (body == null) return _json(400, {'error': 'JSON body required.'});
+  final gate = await _requireOwner(videoId, body['userId'] as int?);
+  if (gate != null) return gate;
 
   final config = {
     'haptics': body['haptics'] is bool ? body['haptics'] : true,
@@ -1393,10 +1635,14 @@ Future<Map<String, dynamic>> _versionManifest() async {
 Future<Response> _appVersion(Request request) async {
   final manifest = await _versionManifest();
   final apk = File('$_backendDir/apk/mrtouride.apk');
+  // The manifest may point at an absolute URL (e.g. Cloudflare R2 public
+  // bucket) and explicitly control availability; otherwise fall back to the
+  // locally served /apk file.
   return _json(200, {
     ...manifest,
-    'apkAvailable': await apk.exists(),
-    'apkUrl': '/apk',
+    'apkAvailable':
+        manifest['apkAvailable'] as bool? ?? await apk.exists(),
+    'apkUrl': manifest['apkUrl'] as String? ?? '/apk',
   });
 }
 
@@ -1567,6 +1813,162 @@ Future<Response> _landing(Request request) async {
   return Response.ok(html, headers: {'content-type': 'text/html; charset=utf-8'});
 }
 
+/// Owner deletes an upload (row cascade removes reactions is N/A here;
+/// stored files stay in R2/cache as orphans — cheap and recoverable).
+Future<Response> _deleteVideo(Request request, String id) async {
+  final videoId = int.tryParse(id);
+  if (videoId == null) return _json(400, {'error': 'Bad video id.'});
+  final body = await _readJsonBody(request);
+  final gate = await _requireOwner(videoId, body?['userId'] as int?);
+  if (gate != null) return gate;
+  await _db.execute(
+    Sql.named('DELETE FROM videos WHERE id = @id'),
+    parameters: {'id': videoId},
+  );
+  return _json(200, {'ok': true});
+}
+
+/// Owner renames an upload.
+Future<Response> _renameVideo(Request request, String id) async {
+  final videoId = int.tryParse(id);
+  if (videoId == null) return _json(400, {'error': 'Bad video id.'});
+  final body = await _readJsonBody(request);
+  final title = (body?['title'] as String?)?.trim() ?? '';
+  if (title.isEmpty || title.length > 120) {
+    return _json(400, {'error': 'Title must be 1-120 characters.'});
+  }
+  final gate = await _requireOwner(videoId, body?['userId'] as int?);
+  if (gate != null) return gate;
+  final rows = await _db.execute(
+    Sql.named(
+        'UPDATE videos SET title = @t WHERE id = @id RETURNING $_videoColumns'),
+    parameters: {'t': title, 'id': videoId},
+  );
+  return _json(200, {'video': _videoRowToJson(rows.first)});
+}
+
+const _maxAvatarBytes = 5 * 1024 * 1024;
+
+/// Profile picture upload: 5 MB cap, recompressed server-side to 512px JPEG
+/// (storage-friendly), stored via MediaStorage under avatars/.
+Future<Response> _uploadAvatar(Request request) async {
+  final params = request.url.queryParameters;
+  final userId = int.tryParse(params['userId'] ?? '');
+  if (userId == null || await _roleOf(userId) == null) {
+    return _json(401, {'error': 'Sign in first.'});
+  }
+  final original = _sanitizeFilename(params['filename'] ?? 'avatar.jpg');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'jpg', 'jpeg', 'png', 'webp'}.contains(ext)) {
+    return _json(400, {'error': 'Only JPG, PNG or WebP images.'});
+  }
+  final bytes = <int>[];
+  await for (final chunk in request.read()) {
+    bytes.addAll(chunk);
+    if (bytes.length > _maxAvatarBytes) {
+      return _json(413, {'error': 'Profile pictures are limited to 5 MB.'});
+    }
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_av_$stamp.$ext');
+  await tmpIn.writeAsBytes(bytes);
+  final tmpOut = File('${Directory.systemTemp.path}/mrt_av_$stamp.jpg');
+  final result = await Process.run('ffmpeg', [
+    '-y', '-loglevel', 'error',
+    '-i', tmpIn.path,
+    '-vf', "scale='min(512,iw)':-2",
+    '-q:v', '6',
+    tmpOut.path,
+  ]);
+  final name = 'u${userId}_$stamp.jpg';
+  final data =
+      result.exitCode == 0 ? await tmpOut.readAsBytes() : bytes;
+  await _storage.save('avatars', name, Stream.value(data));
+  await tmpIn.delete();
+  if (await tmpOut.exists()) await tmpOut.delete();
+  final url = '/files/avatars/$name';
+  await _db.execute(
+    Sql.named('UPDATE users SET avatar_url = @url WHERE id = @id'),
+    parameters: {'url': url, 'id': userId},
+  );
+  return _json(201, {'avatarUrl': url});
+}
+
+/// Short bio ("about").
+Future<Response> _updateAbout(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final about = (body?['about'] as String?)?.trim() ?? '';
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (about.length > 300) {
+    return _json(400, {'error': 'Keep your bio under 300 characters.'});
+  }
+  await _db.execute(
+    Sql.named('UPDATE users SET about = @a WHERE id = @id'),
+    parameters: {'a': about.isEmpty ? null : about, 'id': userId},
+  );
+  return _json(200, {'ok': true});
+}
+
+/// Public profile card (community username taps).
+Future<Response> _publicProfile(Request request, String id) async {
+  final userId = int.tryParse(id);
+  if (userId == null) return _json(400, {'error': 'Bad user id.'});
+  final rows = await _db.execute(
+    Sql.named('SELECT u.name, u.role, u.avatar_url, u.about, u.created_at, '
+        '(SELECT count(*) FROM videos v WHERE v.owner_id = u.id) '
+        'FROM users u WHERE u.id = @id'),
+    parameters: {'id': userId},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'User not found.'});
+  final r = rows.first;
+  return _json(200, {
+    'id': userId,
+    'name': r[0],
+    'role': r[1],
+    'avatarUrl': r[2],
+    'about': r[3],
+    'joined': (r[4] as DateTime).toIso8601String(),
+    'uploads': r[5],
+  });
+}
+
+/// Password change (verifies the old password first).
+Future<Response> _changePassword(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final oldPassword = body?['oldPassword'] as String? ?? '';
+  final newPassword = body?['newPassword'] as String? ?? '';
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (newPassword.length < 6) {
+    return _json(400, {'error': 'New password is too weak (min 6 chars).'});
+  }
+  final rows = await _db.execute(
+    Sql.named('SELECT password_hash, salt, provider FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Unknown user.'});
+  if (rows.first[2] == 'google') {
+    return _json(409, {'error': 'Google accounts manage their password with Google.'});
+  }
+  final oldHash = _hashPassword(oldPassword, rows.first[1] as String);
+  if (!_constantTimeEquals(oldHash, rows.first[0] as String)) {
+    return _json(401, {'error': 'Current password is incorrect.'});
+  }
+  final salt = _newSalt();
+  await _db.execute(
+    Sql.named('UPDATE users SET password_hash = @hash, salt = @salt WHERE id = @id'),
+    parameters: {
+      'hash': _hashPassword(newPassword, salt),
+      'salt': salt,
+      'id': userId,
+    },
+  );
+  return _json(200, {'ok': true});
+}
+
 Future<Response> _serveFile(Request request, String city, String name) async {
   // Sanitize to block path traversal.
   final file =
@@ -1578,6 +1980,9 @@ Future<Response> _serveFile(Request request, String city, String name) async {
       'content-type': _mimeFor(name),
       'content-length': '${await file.length()}',
       'accept-ranges': 'bytes',
+      // Filenames are content-stamped → let Cloudflare/browsers cache hard.
+      // Keeps the free-tier VM out of the media path almost entirely.
+      'cache-control': 'public, max-age=604800, immutable',
     },
   );
 }
@@ -1593,7 +1998,9 @@ Future<Connection> _openDb() {
   if (url != null && url.isNotEmpty) {
     final u = Uri.parse(url);
     final userInfo = u.userInfo.split(':');
-    print('DB: connecting to ${u.host}/${u.path.replaceFirst('/', '')}');
+    final ssl = u.queryParameters['sslmode'] != 'disable';
+    print('DB: connecting to ${u.host}/${u.path.replaceFirst('/', '')} '
+        '(ssl: $ssl)');
     return Connection.open(
       Endpoint(
         host: u.host,
@@ -1602,7 +2009,8 @@ Future<Connection> _openDb() {
         username: Uri.decodeComponent(userInfo[0]),
         password: userInfo.length > 1 ? Uri.decodeComponent(userInfo[1]) : null,
       ),
-      settings: ConnectionSettings(sslMode: SslMode.require),
+      settings: ConnectionSettings(
+          sslMode: ssl ? SslMode.require : SslMode.disable),
     );
   }
   print('DB: connecting to local Postgres (unix socket)');
@@ -1655,11 +2063,13 @@ Future<void> main() async {
     ..post('/cities/<city>/cover', _uploadCover)
     ..get('/videos', _videos)
     ..get('/videos/trending', _trending)
+    ..get('/whats-new', _whatsNew)
     ..get('/videos/suggest', _suggest)
     ..get('/cities/<slug>/weather', _weather)
     ..get('/search', _search)
     ..get('/search/media', _searchMedia)
     ..post('/ai/search', _aiSearch)
+    ..post('/ai/itinerary', _aiItinerary)
     ..get('/community/posts', _communityPosts)
     ..post('/community/posts', _createPost)
     ..post('/community/posts/<id>/react', _react)
@@ -1670,6 +2080,12 @@ Future<void> main() async {
     ..post('/community/upload-image', _uploadCommunityImage)
     ..post('/upload', _upload)
     ..post('/videos/<id>/config', _updateConfig)
+    ..post('/videos/<id>/delete', _deleteVideo)
+    ..post('/videos/<id>/rename', _renameVideo)
+    ..post('/auth/change-password', _changePassword)
+    ..post('/users/avatar', _uploadAvatar)
+    ..post('/users/about', _updateAbout)
+    ..get('/users/<id>/profile', _publicProfile)
     ..post('/feedback', _feedback)
     ..get('/app/version', _appVersion)
     ..get('/apk', _apk)
@@ -1678,6 +2094,7 @@ Future<void> main() async {
   final handler = const Pipeline()
       .addMiddleware(logRequests())
       .addMiddleware(_rateLimit())
+      .addMiddleware(_edgeCache())
       .addMiddleware(_cors())
       .addHandler(router.call);
 

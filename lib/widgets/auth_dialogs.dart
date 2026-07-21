@@ -1,8 +1,55 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../constant.dart';
+import '../services/app_info.dart';
 import '../services/auth_api.dart';
 import 'ux.dart';
+
+/// Production Google SSO.
+///
+/// On Android/iOS this launches the native Google account chooser and sends
+/// the verified ID token to the backend (audience = the web client id). On
+/// web — our dev harness — it falls back to the dev dialog.
+Future<AuthUser?> signInWithGoogle(
+  BuildContext context, {
+  required String mode, // 'signup' | 'signin'
+  String role = 'traveler',
+}) async {
+  if (kIsWeb) {
+    return showGoogleAuthDialog(context, mode: mode, role: role);
+  }
+  try {
+    final signIn = GoogleSignIn.instance;
+    await signIn.initialize(serverClientId: googleWebClientId);
+    final account = await signIn.authenticate();
+    final idToken = account.authentication.idToken;
+    if (idToken == null) {
+      throw const AuthException('Google did not return a sign-in token.');
+    }
+    return await AuthApi.google(
+      mode: mode,
+      idToken: idToken,
+      role: role,
+      acceptedTerms: true, // gated by the signup page checkbox
+    );
+  } on AuthException catch (e) {
+    if (context.mounted) newSnackBar(context, title: e.message);
+    return null;
+  } on GoogleSignInException catch (e) {
+    if (e.code == GoogleSignInExceptionCode.canceled) return null;
+    if (context.mounted) {
+      newSnackBar(context, title: 'Google sign-in failed. Try again.');
+    }
+    return null;
+  } catch (_) {
+    if (context.mounted) {
+      newSnackBar(context, title: 'Google sign-in failed. Try again.');
+    }
+    return null;
+  }
+}
 
 /// Email verification: user enters the 6-digit code sent to their inbox.
 /// Returns the signed-in user on success, null if dismissed.
@@ -203,6 +250,7 @@ Future<AuthUser?> showGoogleAuthDialog(
                     email: email.text.trim(),
                     name: name.text.trim().isEmpty ? null : name.text.trim(),
                     role: role,
+                    acceptedTerms: true, // gated by the signup page checkbox
                   );
                   if (context.mounted) Navigator.pop(context, user);
                 } on AuthException catch (e) {

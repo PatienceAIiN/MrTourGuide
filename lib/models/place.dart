@@ -13,6 +13,9 @@ class Place {
   final String description;
   final double rating;
 
+  /// 3D model URL for MR/VR, when available for this place.
+  final String? modelUrl;
+
   const Place({
     required this.citySlug,
     required this.title,
@@ -20,6 +23,7 @@ class Place {
     required this.image,
     required this.description,
     this.rating = 4.0,
+    this.modelUrl,
   });
 
   bool get isNetworkImage => image.startsWith('http');
@@ -32,6 +36,7 @@ class Place {
         image: city.absoluteCoverUrl ?? 'assets/image/card1.png',
         description: city.description,
         rating: city.rating,
+        modelUrl: city.modelUrl,
       );
 }
 

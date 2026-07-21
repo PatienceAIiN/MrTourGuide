@@ -20,7 +20,11 @@ class _ArModel {
 class ArViewPage extends StatefulWidget {
   final String title;
 
-  const ArViewPage({super.key, this.title = 'MR/VR Experience'});
+  /// When set, this exact model loads and starts immediately (a real place
+  /// capture) — the test-model chips are hidden.
+  final String? modelSrc;
+
+  const ArViewPage({super.key, this.title = 'MR/VR Experience', this.modelSrc});
 
   @override
   State<ArViewPage> createState() => _ArViewPageState();
@@ -44,7 +48,11 @@ class _ArViewPageState extends State<ArViewPage> {
 
   @override
   Widget build(BuildContext context) {
-    final model = models[selected];
+    final direct = widget.modelSrc;
+    final model = direct != null
+        ? _ArModel(widget.title, direct,
+            'Live MR/VR capture — drag to orbit, use the AR button on phone.')
+        : models[selected];
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -75,30 +83,31 @@ class _ArViewPageState extends State<ArViewPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      for (var i = 0; i < models.length; i++)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: ChoiceChip(
-                            label: Text(models[i].label),
-                            selected: selected == i,
-                            selectedColor: Colors.purple,
-                            labelStyle: TextStyle(
-                              color: selected == i
-                                  ? Colors.white
-                                  : Colors.white70,
-                              fontSize: 12.5,
+                  if (direct == null)
+                    Row(
+                      children: [
+                        for (var i = 0; i < models.length; i++)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              label: Text(models[i].label),
+                              selected: selected == i,
+                              selectedColor: Colors.purple,
+                              labelStyle: TextStyle(
+                                color: selected == i
+                                    ? Colors.white
+                                    : Colors.white70,
+                                fontSize: 12.5,
+                              ),
+                              backgroundColor: const Color(0xFF26262E),
+                              onSelected: (_) {
+                                Haptics.tick();
+                                setState(() => selected = i);
+                              },
                             ),
-                            backgroundColor: const Color(0xFF26262E),
-                            onSelected: (_) {
-                              Haptics.tick();
-                              setState(() => selected = i);
-                            },
                           ),
-                        ),
-                    ],
-                  ),
+                      ],
+                    ),
                   const SizedBox(height: 8),
                   Text(
                     model.note,
@@ -116,9 +125,7 @@ class _ArViewPageState extends State<ArViewPage> {
                           'place this in your room — real camera MR. Creator '
                           'VR/MR captures play from Explore.',
                           style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 11,
-                              height: 1.4),
+                              color: Colors.white38, fontSize: 11, height: 1.4),
                         ),
                       ),
                     ],

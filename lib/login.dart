@@ -59,7 +59,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _googleSignIn() async {
-    final user = await showGoogleAuthDialog(context, mode: 'signin');
+    final user = await signInWithGoogle(context, mode: 'signin');
     if (user != null && mounted) _enterApp();
   }
 
@@ -173,11 +173,9 @@ class _LoginPageState extends State<LoginPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Text(
+                      Text(
                         "Don't have an account? ",
-                        style: TextStyle(
-                          color: black,
-                        ),
+                        style: TextStyle(color: ink(context)),
                       ),
                       TextButton(
                         onPressed: () {

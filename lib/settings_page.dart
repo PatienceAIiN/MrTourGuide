@@ -6,6 +6,7 @@ import 'main.dart';
 import 'services/api_base.dart';
 import 'services/app_info.dart';
 import 'services/auth_api.dart';
+import 'services/haptic_service.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
 import 'widgets/feedback_dialog.dart';
@@ -75,8 +76,15 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: const Text('Feel intensity'),
                 subtitle: Slider(
                   value: s.intensity,
+                  divisions: 10,
+                  label: '${(s.intensity * 100).round()}%',
                   activeColor: Colors.purpleAccent,
-                  onChanged: (v) => _update(() => s.intensity = v),
+                  onChanged: (v) {
+                    if ((v * 10).round() != (s.intensity * 10).round()) {
+                      Haptics.level(v); // feel each level as you scrub
+                    }
+                    _update(() => s.intensity = v);
+                  },
                 ),
               ),
             SwitchListTile(

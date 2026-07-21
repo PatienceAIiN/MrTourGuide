@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'api_base.dart';
-import 'auth_api.dart' show AuthException;
+import 'auth_api.dart' show AuthApi, AuthException;
 
 class City {
   final String slug;
@@ -17,6 +17,9 @@ class City {
   final String description;
   final double rating;
 
+  /// 3D model (.glb URL) for the MR/VR view, when a creator has provided one.
+  final String? modelUrl;
+
   const City({
     required this.slug,
     required this.name,
@@ -25,6 +28,7 @@ class City {
     this.location = '',
     this.description = '',
     this.rating = 4.5,
+    this.modelUrl,
   });
 
   /// Absolute cover URL (creator uploads are backend-relative).
@@ -42,6 +46,7 @@ class City {
         location: json['location'] as String? ?? '',
         description: json['description'] as String? ?? '',
         rating: (json['rating'] as num?)?.toDouble() ?? 4.5,
+        modelUrl: json['modelUrl'] as String?,
       );
 }
 
@@ -187,8 +192,10 @@ class MediaApi {
     );
   }
 
-  static Future<List<City>> fetchCities() async {
-    final decoded = await _get('/cities');
+  static Future<List<City>> fetchCities({bool mine = false}) async {
+    final me = AuthApi.currentUser?.id;
+    final decoded =
+        await _get('/cities${mine && me != null ? '?ownerId=$me' : ''}');
     return [
       for (final c in decoded['cities'] as List)
         City.fromJson(c as Map<String, dynamic>)
@@ -219,6 +226,12 @@ class MediaApi {
           )
       ],
     );
+  }
+
+  /// AI itinerary plan (backend → Groq with web search).
+  static Future<String> aiItinerary(String query) async {
+    final decoded = await _postJson('/ai/itinerary', {'query': query});
+    return decoded['plan'] as String;
   }
 
   /// Minimal AI overview for a search query (backend → Groq + web search).
@@ -254,9 +267,11 @@ class MediaApi {
     String city, {
     int offset = 0,
     int limit = 5,
+    bool mine = false,
   }) async {
-    final decoded =
-        await _get('/videos?city=$city&offset=$offset&limit=$limit');
+    final me = AuthApi.currentUser?.id;
+    final decoded = await _get('/videos?city=$city&offset=$offset'
+        '&limit=$limit${mine && me != null ? '&mine=1&userId=$me' : ''}');
     return VideoPage(
       videos: [
         for (final v in decoded['videos'] as List)
@@ -276,6 +291,7 @@ class MediaApi {
       'city': city,
       'title': title,
       'filename': filename,
+      'userId': '${AuthApi.currentUser?.id ?? ''}',
     });
     late http.Response response;
     try {
@@ -295,11 +311,89 @@ class MediaApi {
     throw AuthException(decoded['error'] as String? ?? 'Upload failed.');
   }
 
-  /// Creator: persist per-video experience settings.
+  /// Creator: persist per-video experience settings (owner only).
   static Future<VideoItem> updateConfig(
       int videoId, ExperienceConfig config) async {
-    final decoded = await _postJson('/videos/$videoId/config', config.toJson());
+    final decoded = await _postJson('/videos/$videoId/config',
+        {...config.toJson(), 'userId': AuthApi.currentUser?.id});
     return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+  }
+
+  /// Creator: delete an owned upload.
+  static Future<void> deleteVideo(int videoId) async {
+    await _postJson(
+        '/videos/$videoId/delete', {'userId': AuthApi.currentUser?.id});
+  }
+
+  /// Creator: rename an owned upload.
+  static Future<VideoItem> renameVideo(int videoId, String title) async {
+    final decoded = await _postJson('/videos/$videoId/rename',
+        {'userId': AuthApi.currentUser?.id, 'title': title});
+    return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+  }
+
+  /// Upload a profile picture (server compresses to 512px JPEG).
+  static Future<String> uploadAvatar(String filename, Uint8List bytes) async {
+    if (bytes.length > 5 * 1024 * 1024) {
+      throw const AuthException('Profile pictures are limited to 5 MB.');
+    }
+    final uri = Uri.parse('$apiBase/users/avatar').replace(queryParameters: {
+      'userId': '${AuthApi.currentUser?.id ?? ''}',
+      'filename': filename,
+    });
+    late http.Response response;
+    try {
+      response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: bytes)
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const AuthException('Upload failed — is the backend up?');
+    }
+    final decoded = _decode(response.body);
+    if (response.statusCode != 201) {
+      throw AuthException(decoded['error'] as String? ?? 'Upload failed.');
+    }
+    return decoded['avatarUrl'] as String;
+  }
+
+  /// Update the short bio.
+  static Future<void> updateAbout(String about) async {
+    await _postJson(
+        '/users/about', {'userId': AuthApi.currentUser?.id, 'about': about});
+  }
+
+  /// Public profile card for community username taps.
+  static Future<Map<String, dynamic>> publicProfile(int userId) =>
+      _get('/users/$userId/profile');
+
+  /// Creator: replace a city's cover image from the app.
+  static Future<void> uploadCityCover({
+    required String city,
+    required String filename,
+    required Uint8List bytes,
+  }) async {
+    final uri = Uri.parse('$apiBase/cities/$city/cover').replace(
+        queryParameters: {
+          'filename': filename,
+          'userId': '${AuthApi.currentUser?.id ?? ''}'
+        });
+    late http.Response response;
+    try {
+      response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: bytes)
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const AuthException('Cover upload failed — is the backend up?');
+    }
+    if (response.statusCode != 201) {
+      final decoded = _decode(response.body);
+      throw AuthException(
+          decoded['error'] as String? ?? 'Cover upload failed.');
+    }
   }
 
   static Future<String> sendFeedback({
@@ -334,6 +428,9 @@ class MediaApi {
     }
     return decoded;
   }
+
+  /// Raw GET for lightweight callers (notifications etc.).
+  static Future<Map<String, dynamic>> getJson(String path) => _get(path);
 
   static Future<Map<String, dynamic>> _get(String path) async {
     late http.Response response;

@@ -519,8 +519,8 @@ class _SearchPageState extends State<SearchPage> {
           else
             Text(
               ai!.overview,
-              style: const TextStyle(
-                  fontSize: 13.5, height: 1.5, color: Colors.black87),
+              style:
+                  TextStyle(fontSize: 13.5, height: 1.5, color: ink(context)),
             ),
         ],
       ),

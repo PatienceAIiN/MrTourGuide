@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
+import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/login.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/settings_service.dart';
@@ -212,7 +213,7 @@ class _HomePageState extends State<HomePage> {
                           },
                           //defining shape
                           shape: RoundedRectangleBorder(
-                              side: BorderSide(color: Colors.black),
+                              side: BorderSide(color: ink(context)),
                               borderRadius: BorderRadius.circular(50)),
                           child: Text(
                             "Login",

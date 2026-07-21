@@ -14,12 +14,16 @@ class NavEntry {
   final VoidCallback? action;
   final Color? color;
 
+  /// Show a small "new content" dot on this entry.
+  final bool badge;
+
   const NavEntry({
     required this.icon,
     required this.label,
     this.tabIndex,
     this.action,
     this.color,
+    this.badge = false,
   });
 }
 
@@ -27,7 +31,7 @@ class NavEntry {
 ///
 /// Merges tab navigation and global actions (MR/VR, settings, feedback,
 /// update, logout) into one bar — no side drawer needed.
-class AppBottomNav extends StatelessWidget {
+class AppBottomNav extends StatefulWidget {
   final int currentIndex;
   final List<NavEntry> entries;
   final void Function(int tabIndex) onSelectTab;
@@ -38,6 +42,27 @@ class AppBottomNav extends StatelessWidget {
     required this.entries,
     required this.onSelectTab,
   });
+
+  @override
+  State<AppBottomNav> createState() => _AppBottomNavState();
+}
+
+class _AppBottomNavState extends State<AppBottomNav> {
+  int get currentIndex => widget.currentIndex;
+  List<NavEntry> get entries => widget.entries;
+  void Function(int) get onSelectTab => widget.onSelectTab;
+
+  // Clicky-wheel scrolling: a soft tick roughly every item width.
+  double _scrollAccum = 0;
+
+  bool _onScroll(ScrollUpdateNotification n) {
+    _scrollAccum += (n.scrollDelta ?? 0).abs();
+    if (_scrollAccum >= 48) {
+      _scrollAccum = 0;
+      Haptics.tick();
+    }
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,19 +89,23 @@ class AppBottomNav extends StatelessWidget {
                 ),
               ],
             ),
-            // Centered when everything fits; scrolls horizontally when not.
+            // Centered when everything fits; scrolls horizontally when not
+            // — with a soft haptic tick as it scrolls.
             child: Center(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var i = 0; i < entries.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 2),
-                      _item(context, entries[i]),
+              child: NotificationListener<ScrollUpdateNotification>(
+                onNotification: _onScroll,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var i = 0; i < entries.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 2),
+                        _item(context, entries[i]),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -113,7 +142,25 @@ class AppBottomNav extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(e.icon, size: 24, color: color),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(e.icon, size: 24, color: color),
+                if (e.badge)
+                  Positioned(
+                    right: -3,
+                    top: -2,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Color(0xFF3CEBFF),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: 3),
             Text(
               e.label,

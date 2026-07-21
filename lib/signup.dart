@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import 'constant.dart';
 import 'navpages/main_page.dart';
 import 'services/auth_api.dart';
@@ -18,6 +20,7 @@ class _SingUpPageState extends State<SingUpPage> {
   final TextEditingController password = TextEditingController();
   bool loading = false;
   bool showPassword = false;
+  bool acceptedTerms = false;
   String role = 'traveler';
 
   @override
@@ -41,6 +44,11 @@ class _SingUpPageState extends State<SingUpPage> {
       newSnackBar(context, title: 'Password Required!');
       return;
     }
+    if (!acceptedTerms) {
+      newSnackBar(context,
+          title: 'Please accept the Terms & Privacy Policy first.');
+      return;
+    }
 
     setState(() => loading = true);
     try {
@@ -49,6 +57,7 @@ class _SingUpPageState extends State<SingUpPage> {
         email: email.text.trim(),
         password: password.text,
         role: role,
+        acceptedTerms: acceptedTerms,
       );
       if (!mounted) return;
       setState(() => loading = false);
@@ -71,8 +80,12 @@ class _SingUpPageState extends State<SingUpPage> {
   }
 
   Future<void> _googleSignUp() async {
-    final user =
-        await showGoogleAuthDialog(context, mode: 'signup', role: role);
+    if (!acceptedTerms) {
+      newSnackBar(context,
+          title: 'Please accept the Terms & Privacy Policy first.');
+      return;
+    }
+    final user = await signInWithGoogle(context, mode: 'signup', role: role);
     if (user != null && mounted) _enterApp();
   }
 
@@ -185,6 +198,53 @@ class _SingUpPageState extends State<SingUpPage> {
                         ),
                       ),
                     ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: CheckboxListTile(
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    value: acceptedTerms,
+                    activeColor: blue,
+                    onChanged: (v) =>
+                        setState(() => acceptedTerms = v ?? false),
+                    title: Text.rich(
+                      TextSpan(
+                        text: 'I agree to the ',
+                        style: const TextStyle(fontSize: 12.5),
+                        children: [
+                          WidgetSpan(
+                            alignment: PlaceholderAlignment.baseline,
+                            baseline: TextBaseline.alphabetic,
+                            child: InkWell(
+                              onTap: () => launchUrl(Uri.parse(
+                                  'https://mrtourguide.patienceai.in/#terms')),
+                              child: const Text('Terms',
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: blue,
+                                      decoration: TextDecoration.underline)),
+                            ),
+                          ),
+                          const TextSpan(text: ' and '),
+                          WidgetSpan(
+                            alignment: PlaceholderAlignment.baseline,
+                            baseline: TextBaseline.alphabetic,
+                            child: InkWell(
+                              onTap: () => launchUrl(Uri.parse(
+                                  'https://mrtourguide.patienceai.in/#privacy')),
+                              child: const Text('Privacy Policy',
+                                  style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: blue,
+                                      decoration: TextDecoration.underline)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 Padding(

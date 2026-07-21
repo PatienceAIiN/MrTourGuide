@@ -3,7 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../constant.dart';
+import '../services/api_base.dart';
 import '../services/auth_api.dart';
+import '../services/media_api.dart';
 import '../services/community_api.dart';
 import '../services/haptic_service.dart';
 import '../widgets/ux.dart';
@@ -177,6 +179,79 @@ class _CommunityPageState extends State<CommunityPage> {
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }
+  }
+
+  /// Public profile card for any community member.
+  Future<void> _showProfile(int userId) async {
+    Haptics.tick();
+    Map<String, dynamic>? profile;
+    try {
+      profile = await MediaApi.publicProfile(userId);
+    } catch (_) {}
+    if (!mounted || profile == null) return;
+    final p = profile;
+    final isCreatorUser = p['role'] == 'creator';
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 34,
+              backgroundColor: isCreatorUser ? Colors.purple : blue,
+              backgroundImage: p['avatarUrl'] != null
+                  ? NetworkImage('$apiBase${p['avatarUrl']}')
+                  : null,
+              child: p['avatarUrl'] == null
+                  ? Text(
+                      (p['name'] as String).isNotEmpty
+                          ? (p['name'] as String)[0].toUpperCase()
+                          : '?',
+                      style: const TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold,
+                          color: white),
+                    )
+                  : null,
+            ),
+            const SizedBox(height: 10),
+            Text(p['name'] as String,
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: (isCreatorUser ? Colors.purple : blue)
+                    .withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                isCreatorUser ? '✦ Creator' : 'Traveler',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: isCreatorUser ? Colors.purple : blue),
+              ),
+            ),
+            if ((p['about'] as String?)?.isNotEmpty ?? false) ...[
+              const SizedBox(height: 10),
+              Text(p['about'] as String,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, height: 1.45)),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              '${p['uploads']} experiences · joined '
+              '${DateTime.parse(p['joined'] as String).toLocal().toString().substring(0, 10)}',
+              style: const TextStyle(color: Colors.grey, fontSize: 11.5),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _timeAgo(DateTime t) {

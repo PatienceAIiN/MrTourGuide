@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../constant.dart';
 import '../experience_player.dart';
 import '../services/auth_api.dart';
+import '../services/haptic_service.dart';
 import '../services/media_api.dart';
 import '../widgets/ux.dart';
 
@@ -37,6 +38,13 @@ class _DashboardPageState extends State<DashboardPage> {
   String? error;
   Timer? _pollTimer;
 
+  /// Creator studio: 'mine' shows own uploads (any status), 'catalog' the
+  /// public feed. Travelers always see the catalog.
+  String studioFeed = 'mine';
+
+  bool get _mineMode =>
+      (AuthApi.currentUser?.isCreator ?? false) && studioFeed == 'mine';
+
   @override
   void initState() {
     super.initState();
@@ -54,13 +62,13 @@ class _DashboardPageState extends State<DashboardPage> {
   void _managePolling() {
     final anyProcessing = videos.any((v) => v.isProcessing);
     if (anyProcessing && _pollTimer == null) {
-      _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
         final shown = videos.length;
         final city = selectedCity;
         if (city == null) return;
         try {
           final page = await MediaApi.fetchVideos(city,
-              offset: 0, limit: shown.clamp(1, 50));
+              offset: 0, limit: shown.clamp(1, 50), mine: _mineMode);
           if (!mounted) return;
           setState(() {
             videos
@@ -82,7 +90,8 @@ class _DashboardPageState extends State<DashboardPage> {
       error = null;
     });
     try {
-      final result = await MediaApi.fetchCities();
+      final result = await MediaApi.fetchCities(
+          mine: AuthApi.currentUser?.isCreator ?? false);
       if (!mounted) return;
       setState(() {
         cities = result;
@@ -117,6 +126,7 @@ class _DashboardPageState extends State<DashboardPage> {
         city,
         offset: videos.length,
         limit: DashboardPage.pageSize,
+        mine: _mineMode,
       );
       if (!mounted) return;
       setState(() {
@@ -258,11 +268,18 @@ class _DashboardPageState extends State<DashboardPage> {
                 title: const Text('Feel intensity'),
                 subtitle: Slider(
                   value: config.intensity,
+                  divisions: 10,
+                  label: '${(config.intensity * 100).round()}%',
                   activeColor: Colors.purpleAccent,
-                  onChanged: (v) => setSheet(() => config = ExperienceConfig(
-                      haptics: config.haptics,
-                      sound: config.sound,
-                      intensity: v)),
+                  onChanged: (v) {
+                    if ((v * 10).round() != (config.intensity * 10).round()) {
+                      Haptics.level(v);
+                    }
+                    setSheet(() => config = ExperienceConfig(
+                        haptics: config.haptics,
+                        sound: config.sound,
+                        intensity: v));
+                  },
                 ),
               ),
               const SizedBox(height: 8),
@@ -297,6 +314,73 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  Future<void> _changeCover() async {
+    final city = selectedCity;
+    if (city == null) return;
+    final picked = await FilePicker.platform
+        .pickFiles(type: FileType.image, withData: true);
+    final file = picked?.files.single;
+    if (file == null || file.bytes == null || !mounted) return;
+    try {
+      await MediaApi.uploadCityCover(
+          city: city, filename: file.name, bytes: file.bytes!);
+      if (!mounted) return;
+      newSnackBar(context, title: 'New cover live for ${_cityName(city)}.');
+      await _loadCities();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _renameVideo(VideoItem video) async {
+    final controller = TextEditingController(text: video.title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Rename experience'),
+        content: TextField(controller: controller, autofocus: true),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Rename')),
+        ],
+      ),
+    );
+    if (title == null || title.isEmpty || title == video.title) return;
+    try {
+      final updated = await MediaApi.renameVideo(video.id, title);
+      if (!mounted) return;
+      final i = videos.indexWhere((v) => v.id == updated.id);
+      if (i >= 0) setState(() => videos[i] = updated);
+      newSnackBar(context, title: 'Renamed to "$title".');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _deleteVideo(VideoItem video) async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete "${video.title}"?',
+      message: 'This removes the experience for everyone. It cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    );
+    if (!ok) return;
+    try {
+      await MediaApi.deleteVideo(video.id);
+      if (!mounted) return;
+      newSnackBar(context, title: 'Deleted "${video.title}".');
+      await _loadCities();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
   String _cityName(String slug) => cities
       .firstWhere((c) => c.slug == slug,
           orElse: () => City(slug: slug, name: slug, videoCount: 0))
@@ -318,7 +402,10 @@ class _DashboardPageState extends State<DashboardPage> {
         backgroundColor: cardBg(context),
         elevation: 0,
         iconTheme: IconThemeData(color: ink(context)),
-        title: Text('Experience Dashboard',
+        title: Text(
+            (AuthApi.currentUser?.isCreator ?? false)
+                ? 'Creator Studio'
+                : 'Explore Experiences',
             style: TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
       ),
       // Creators publish; travelers just experience.
@@ -354,6 +441,26 @@ class _DashboardPageState extends State<DashboardPage> {
                         child: Text(error!, style: const TextStyle(color: red)),
                       ),
                     ),
+                  if (isCreator) ...[
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                            value: 'mine',
+                            icon: Icon(Icons.video_settings, size: 17),
+                            label: Text('My uploads')),
+                        ButtonSegment(
+                            value: 'catalog',
+                            icon: Icon(Icons.public, size: 17),
+                            label: Text('Catalog')),
+                      ],
+                      selected: {studioFeed},
+                      onSelectionChanged: (s) {
+                        setState(() => studioFeed = s.first);
+                        _reloadVideos();
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   // City selector
                   SizedBox(
                     height: 44,
@@ -370,13 +477,20 @@ class _DashboardPageState extends State<DashboardPage> {
                               labelStyle: TextStyle(
                                 color: selectedCity == city.slug
                                     ? white
-                                    : Colors.black87,
+                                    : ink(context),
                               ),
                               onSelected: (_) {
                                 setState(() => selectedCity = city.slug);
                                 _reloadVideos();
                               },
                             ),
+                          ),
+                        if (isCreator)
+                          ActionChip(
+                            avatar: const Icon(Icons.image_outlined,
+                                size: 17, color: blue),
+                            label: const Text('Change cover'),
+                            onPressed: _changeCover,
                           ),
                       ],
                     ),
@@ -478,11 +592,29 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
         ),
-        trailing: isCreator
-            ? IconButton(
-                tooltip: 'Experience settings',
-                icon: const Icon(Icons.tune, color: blue),
-                onPressed: () => _configSheet(video),
+        trailing: isCreator && _mineMode
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Rename',
+                    icon: const Icon(Icons.edit_outlined, color: blue),
+                    onPressed: () => _renameVideo(video),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Experience settings',
+                    icon: const Icon(Icons.tune, color: blue),
+                    onPressed: () => _configSheet(video),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Delete upload',
+                    icon: const Icon(Icons.delete_outline, color: red),
+                    onPressed: () => _deleteVideo(video),
+                  ),
+                ],
               )
             : const Icon(Icons.chevron_right, color: blue),
         onTap: processing

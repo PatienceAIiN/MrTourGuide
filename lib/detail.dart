@@ -5,7 +5,7 @@ import 'ar_view.dart';
 import 'constant.dart';
 import 'experience_player.dart';
 import 'models/place.dart';
-import 'services/auth_api.dart' show AuthException;
+import 'services/auth_api.dart';
 import 'services/media_api.dart';
 import 'widgets/ux.dart';
 
@@ -68,6 +68,39 @@ class _DetailScreenState extends State<DetailScreen> {
         videosError = e.message;
       });
     }
+  }
+
+  /// No MR/VR capture exists for this place yet — tell the user kindly and
+  /// log the interest so creators get the signal.
+  Future<void> _mrvrNotAvailable() async {
+    // Fire-and-forget: the request lands in the feedback inbox creators see.
+    MediaApi.sendFeedback(
+      email: AuthApi.currentUser?.email,
+      message: 'MR/VR requested for ${place.title} (${place.citySlug})',
+    ).catchError((_) => '');
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        icon: const Icon(Icons.view_in_ar, color: Colors.purple, size: 36),
+        title: const Text('MR/VR coming soon'),
+        content: Text(
+          'No MR/VR experience is available for ${place.title} yet. '
+          "We've let our creators know you want one — it will appear here "
+          'the moment it lands.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.purple),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _heroImage() {
@@ -195,10 +228,10 @@ class _DetailScreenState extends State<DetailScreen> {
                             Text(
                               place.description,
                               textAlign: TextAlign.justify,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 14,
                                   height: 1.5,
-                                  color: Colors.black87),
+                                  color: ink(context)),
                             ),
                           ],
                         ),
@@ -219,15 +252,17 @@ class _DetailScreenState extends State<DetailScreen> {
                               shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14)),
                             ),
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => ArViewPage(
-                                      title: '${place.title} — MR/VR'),
-                                ),
-                              );
-                            },
+                            onPressed: place.modelUrl != null
+                                ? () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => ArViewPage(
+                                          title: '${place.title} — MR/VR',
+                                          modelSrc: place.modelUrl,
+                                        ),
+                                      ),
+                                    )
+                                : _mrvrNotAvailable,
                             icon: const Icon(Icons.view_in_ar),
                             label: const Text('MR/VR'),
                           ),

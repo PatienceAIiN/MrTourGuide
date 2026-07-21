@@ -1,6 +1,8 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../constant.dart';
+import '../services/api_base.dart';
 import '../main.dart';
 import '../services/auth_api.dart';
 import '../services/media_api.dart';
@@ -67,18 +69,46 @@ class _MyPageState extends State<MyPage> {
                 padding: const EdgeInsets.all(20),
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      radius: 32,
-                      backgroundColor: blue,
-                      child: Text(
-                        (user?.name.isNotEmpty ?? false)
-                            ? user!.name[0].toUpperCase()
-                            : '?',
-                        style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: white),
-                      ),
+                    Stack(
+                      children: [
+                        CircleAvatar(
+                          radius: 32,
+                          backgroundColor: blue,
+                          backgroundImage: user?.avatarUrl != null
+                              ? NetworkImage('$apiBase${user!.avatarUrl}')
+                              : null,
+                          child: user?.avatarUrl == null
+                              ? Text(
+                                  (user?.name.isNotEmpty ?? false)
+                                      ? user!.name[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.bold,
+                                      color: white),
+                                )
+                              : null,
+                        ),
+                        if (user != null)
+                          Positioned(
+                            right: -2,
+                            bottom: -2,
+                            child: InkWell(
+                              onTap: _changeAvatar,
+                              customBorder: const CircleBorder(),
+                              child: Container(
+                                padding: const EdgeInsets.all(5),
+                                decoration: BoxDecoration(
+                                  color: cardBg(context),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: blue, width: 1.5),
+                                ),
+                                child: const Icon(Icons.photo_camera,
+                                    size: 14, color: blue),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     const SizedBox(width: 16),
                     Expanded(
@@ -155,6 +185,62 @@ class _MyPageState extends State<MyPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _changeAvatar() async {
+    final picked = await FilePicker.platform
+        .pickFiles(type: FileType.image, withData: true);
+    final file = picked?.files.single;
+    if (file == null || file.bytes == null || !mounted) return;
+    if (file.bytes!.length > 5 * 1024 * 1024) {
+      newSnackBar(context, title: 'Profile pictures are limited to 5 MB.');
+      return;
+    }
+    try {
+      final url = await MediaApi.uploadAvatar(file.name, file.bytes!);
+      if (!mounted) return;
+      setState(() => AuthApi.currentUser?.avatarUrl = url);
+      newSnackBar(context, title: 'Profile picture updated.');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _editAbout() async {
+    final controller =
+        TextEditingController(text: AuthApi.currentUser?.about ?? '');
+    final about = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('About you'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 300,
+          maxLines: 3,
+          decoration: const InputDecoration(
+              hintText: 'A short bio shown on your profile…'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (about == null || !mounted) return;
+    try {
+      await MediaApi.updateAbout(about);
+      if (!mounted) return;
+      setState(() => AuthApi.currentUser?.about = about);
+      newSnackBar(context, title: 'Bio saved.');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
   }
 
   Widget _statCard(String label, String value, IconData icon) {
