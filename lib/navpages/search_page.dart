@@ -5,8 +5,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../constant.dart';
+import '../detail.dart';
 import '../experience_player.dart';
-import '../services/auth_api.dart' show AuthException;
+import '../models/place.dart';
+import '../services/auth_api.dart';
+import '../services/haptic_service.dart';
 import '../services/media_api.dart';
 import '../widgets/ux.dart';
 
@@ -35,6 +38,8 @@ class _SearchPageState extends State<SearchPage> {
   bool aiEnabled = false;
   AiOverview? ai;
   bool aiLoading = false;
+  bool aiSaving = false;
+  bool aiSaved = false;
   MediaSuggestions? media;
 
   @override
@@ -141,6 +146,7 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       aiLoading = true;
       ai = null;
+      aiSaved = false;
     });
     try {
       final overview = await MediaApi.aiSearch(q);
@@ -158,6 +164,151 @@ class _SearchPageState extends State<SearchPage> {
   void _runTerm(String term) {
     query.text = term;
     _search(term);
+  }
+
+  /// "Save as itinerary": keeps the AI answer under the user's account,
+  /// visible later in the Planner tab.
+  Future<void> _saveAi() async {
+    final user = AuthApi.currentUser;
+    final overview = ai;
+    if (overview == null || aiSaving || aiSaved) return;
+    if (user == null) {
+      newSnackBar(context, title: 'Sign in to save itineraries.');
+      return;
+    }
+    final q = query.text.trim();
+    setState(() => aiSaving = true);
+    try {
+      final title = q.length > 60 ? '${q.substring(0, 57)}...' : q;
+      await MediaApi.saveItinerary(
+          userId: user.id, title: title, query: q, plan: overview.overview);
+      Haptics.medium();
+      if (!mounted) return;
+      setState(() {
+        aiSaving = false;
+        aiSaved = true;
+      });
+      newSnackBar(context, title: 'Saved — find it in the Planner tab.');
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => aiSaving = false);
+      newSnackBar(context, title: e.message);
+    }
+  }
+
+  /// AI text split into the overview body and "Getting there:"/"Stay:" rows.
+  List<Widget> _aiBody() {
+    final text = ai!.overview;
+    final widgets = <Widget>[];
+    final plain = StringBuffer();
+    for (final raw in text.split('\n')) {
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+      final m =
+          RegExp(r'^(Getting there|Stay)\s*:\s*(.*)', caseSensitive: false)
+              .firstMatch(line);
+      if (m == null) {
+        plain.writeln(line);
+        continue;
+      }
+      final isTravel = m.group(1)!.toLowerCase().startsWith('getting');
+      widgets.add(Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(isTravel ? Icons.flight_takeoff : Icons.hotel,
+                size: 16, color: isTravel ? blue : Colors.teal),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text.rich(
+                TextSpan(
+                  text: '${m.group(1)}: ',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                      color: ink(context)),
+                  children: [
+                    TextSpan(
+                      text: m.group(2),
+                      style: const TextStyle(fontWeight: FontWeight.normal),
+                    ),
+                  ],
+                ),
+                style:
+                    TextStyle(fontSize: 13, height: 1.45, color: ink(context)),
+              ),
+            ),
+          ],
+        ),
+      ));
+    }
+    return [
+      Text(
+        plain.toString().trim(),
+        style: TextStyle(fontSize: 13.5, height: 1.5, color: ink(context)),
+      ),
+      ...widgets,
+    ];
+  }
+
+  /// Matching on-platform experiences under the AI answer — visuals,
+  /// details and a redirect straight into the place page.
+  List<Widget> _aiPlaces() {
+    final places = ai?.places ?? const <City>[];
+    if (places.isEmpty) return const [];
+    return [
+      const Padding(
+        padding: EdgeInsets.only(top: 12, bottom: 4),
+        child: Text('Feel it on Mr.TourGuide',
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12.5,
+                color: Colors.purple)),
+      ),
+      for (final city in places)
+        Card(
+          color: cardBg(context),
+          margin: const EdgeInsets.only(top: 6),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: ListTile(
+            dense: true,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: city.absoluteCoverUrl != null
+                  ? Image.network(city.absoluteCoverUrl!,
+                      width: 56,
+                      height: 42,
+                      fit: BoxFit.cover,
+                      errorBuilder: (c, e, s) =>
+                          const Icon(Icons.place, color: blue, size: 28))
+                  : const Icon(Icons.place, color: blue, size: 28),
+            ),
+            title: Text(city.name,
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(
+              '${city.location.isEmpty ? 'Experiences' : city.location}'
+              ' · ★ ${city.rating.toStringAsFixed(1)}'
+              ' · ${city.videoCount} experience'
+              '${city.videoCount == 1 ? '' : 's'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+            ),
+            trailing: const Icon(Icons.chevron_right, color: blue),
+            onTap: () {
+              Haptics.light();
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (context) =>
+                        DetailScreen(place: Place.fromCity(city))),
+              );
+            },
+          ),
+        ),
+    ];
   }
 
   String _formatSize(int bytes) {
@@ -499,6 +650,36 @@ class _SearchPageState extends State<SearchPage> {
                       fontSize: 13,
                       color: Colors.purple)),
               const Spacer(),
+              if (ai != null)
+                aiSaving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.purple))
+                    : InkWell(
+                        onTap: aiSaved ? null : _saveAi,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Row(
+                            children: [
+                              Icon(
+                                  aiSaved
+                                      ? Icons.bookmark_added
+                                      : Icons.bookmark_add_outlined,
+                                  size: 16,
+                                  color: Colors.purple),
+                              const SizedBox(width: 4),
+                              Text(aiSaved ? 'Saved' : 'Save',
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.purple)),
+                            ],
+                          ),
+                        ),
+                      ),
             ],
           ),
           const SizedBox(height: 8),
@@ -516,12 +697,10 @@ class _SearchPageState extends State<SearchPage> {
                     style: TextStyle(color: Colors.grey, fontSize: 13)),
               ],
             )
-          else
-            Text(
-              ai!.overview,
-              style:
-                  TextStyle(fontSize: 13.5, height: 1.5, color: ink(context)),
-            ),
+          else ...[
+            ..._aiBody(),
+            ..._aiPlaces(),
+          ],
         ],
       ),
     );

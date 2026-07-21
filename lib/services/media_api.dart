@@ -149,7 +149,43 @@ class CityWeather {
 class AiOverview {
   final String overview;
   final String model;
-  const AiOverview({required this.overview, required this.model});
+
+  /// Places available on the platform that match the query — shown as
+  /// suggestion cards with a redirect into the experience.
+  final List<City> places;
+  const AiOverview(
+      {required this.overview, required this.model, this.places = const []});
+}
+
+/// AI plan + matching on-platform places.
+class ItineraryResult {
+  final String plan;
+  final List<City> places;
+  const ItineraryResult({required this.plan, this.places = const []});
+}
+
+/// An AI plan saved under the user's account.
+class SavedItinerary {
+  final int id;
+  final String title;
+  final String query;
+  final String plan;
+  final DateTime createdAt;
+  const SavedItinerary({
+    required this.id,
+    required this.title,
+    required this.query,
+    required this.plan,
+    required this.createdAt,
+  });
+
+  factory SavedItinerary.fromJson(Map<String, dynamic> json) => SavedItinerary(
+        id: json['id'] as int,
+        title: json['title'] as String,
+        query: json['query'] as String? ?? '',
+        plan: json['plan'] as String,
+        createdAt: DateTime.parse(json['createdAt'] as String),
+      );
 }
 
 class YtSuggestion {
@@ -229,10 +265,40 @@ class MediaApi {
   }
 
   /// AI itinerary plan (backend → Groq with web search).
-  static Future<String> aiItinerary(String query) async {
+  static Future<ItineraryResult> aiItinerary(String query) async {
     final decoded = await _postJson('/ai/itinerary', {'query': query});
-    return decoded['plan'] as String;
+    return ItineraryResult(
+      plan: decoded['plan'] as String,
+      places: _parsePlaces(decoded['places']),
+    );
   }
+
+  static List<City> _parsePlaces(Object? raw) => [
+        for (final p in (raw as List? ?? const []))
+          City.fromJson(p as Map<String, dynamic>)
+      ];
+
+  /// Save an AI plan under the user's account ("Save as itinerary").
+  static Future<void> saveItinerary({
+    required int userId,
+    required String title,
+    required String query,
+    required String plan,
+  }) =>
+      _postJson('/itineraries',
+          {'userId': userId, 'title': title, 'query': query, 'plan': plan});
+
+  /// The user's saved itineraries, newest first.
+  static Future<List<SavedItinerary>> fetchItineraries(int userId) async {
+    final decoded = await _get('/itineraries?userId=$userId');
+    return [
+      for (final i in decoded['itineraries'] as List)
+        SavedItinerary.fromJson(i as Map<String, dynamic>)
+    ];
+  }
+
+  static Future<void> deleteItinerary({required int id, required int userId}) =>
+      _postJson('/itineraries/$id/delete', {'userId': userId});
 
   /// Minimal AI overview for a search query (backend → Groq + web search).
   static Future<AiOverview> aiSearch(String query) async {
@@ -240,6 +306,7 @@ class MediaApi {
     return AiOverview(
       overview: decoded['overview'] as String,
       model: decoded['model'] as String? ?? 'groq',
+      places: _parsePlaces(decoded['places']),
     );
   }
 

@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mrtouride/login.dart';
 import 'package:mrtouride/main.dart';
 import 'package:mrtouride/navpages/dashboard_page.dart';
+import 'package:mrtouride/navpages/itinerary_page.dart';
 import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/navpages/my_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
@@ -69,6 +70,22 @@ void main() {
 
     expect(
         find.textContaining('Cannot reach the media server'), findsOneWidget);
+  });
+
+  testWidgets('AI Itinerary page renders prompt, quick chips and plans',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const MaterialApp(home: ItineraryPage()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('AI Itinerary'), findsOneWidget);
+    expect(find.text('Weekend in the Golden Triangle'), findsOneWidget);
+
+    // Ask for a plan; network is blocked in tests, so it lands on the
+    // error state instead of a plan — but the flow must not crash.
+    await tester.enterText(find.byType(TextField), '3 days in Rajasthan');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('My Profile page renders account card',

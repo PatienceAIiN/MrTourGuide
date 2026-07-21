@@ -1199,6 +1199,123 @@ Future<Response> _deletePost(Request request, String id) async {
   return _json(200, {'ok': true});
 }
 
+/// Cities on the platform matching any word of an AI query — powers the
+/// "available on Mr.TourGuide" suggestion cards under AI answers, with the
+/// same JSON shape as /cities so the app reuses its City model.
+Future<List<Map<String, Object?>>> _matchPlaces(String query) async {
+  final words = query
+      .toLowerCase()
+      .split(RegExp(r'[^a-z]+'))
+      .where((w) => w.length > 3)
+      .toSet();
+  if (words.isEmpty) return [];
+  final like = words.map((w) => '%$w%').toList();
+  try {
+    final rows = await _db.execute(
+      Sql.named("SELECT c.slug, c.name, "
+          "(SELECT count(*) FROM videos v WHERE v.city = c.slug "
+          "AND v.status = 'ready'), c.cover_url, c.location, c.description, "
+          'c.rating, c.model_url FROM cities c '
+          'WHERE EXISTS (SELECT 1 FROM unnest(@words::text[]) w WHERE '
+          'lower(c.name) LIKE w OR lower(c.slug) LIKE w OR '
+          'lower(c.location) LIKE w OR lower(c.description) LIKE w) '
+          'ORDER BY c.rating DESC LIMIT 4'),
+      parameters: {'words': like},
+    );
+    return [
+      for (final r in rows)
+        {
+          'slug': r[0],
+          'name': r[1],
+          'videoCount': r[2],
+          'coverUrl': r[3],
+          'location': r[4],
+          'description': r[5],
+          'rating': r[6],
+          'modelUrl': r[7],
+        }
+    ];
+  } catch (_) {
+    return [];
+  }
+}
+
+/// Save an AI plan/overview under the signed-in user's account.
+Future<Response> _saveItinerary(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final title = (body?['title'] as String?)?.trim() ?? '';
+  final query = (body?['query'] as String?)?.trim() ?? '';
+  final plan = (body?['plan'] as String?)?.trim() ?? '';
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (title.isEmpty || plan.isEmpty) {
+    return _json(400, {'error': 'title and plan required'});
+  }
+  if (title.length > 120 || plan.length > 8000) {
+    return _json(400, {'error': 'Itinerary too long to save.'});
+  }
+  final count = await _db.execute(
+    Sql.named('SELECT count(*) FROM itineraries WHERE user_id = @u'),
+    parameters: {'u': userId},
+  );
+  if ((count.first[0] as int) >= 30) {
+    return _json(400, {'error': 'Saved limit reached — delete an old one.'});
+  }
+  try {
+    final row = await _db.execute(
+      Sql.named('INSERT INTO itineraries (user_id, title, query, plan) '
+          'VALUES (@u, @t, @q, @p) RETURNING id, created_at'),
+      parameters: {'u': userId, 't': title, 'q': query, 'p': plan},
+    );
+    return _json(200, {
+      'id': row.first[0],
+      'createdAt': (row.first[1] as DateTime).toIso8601String(),
+    });
+  } catch (_) {
+    // Unknown user (FK) or transient DB error — never a 500 to the app.
+    return _json(401, {'error': 'Sign in first.'});
+  }
+}
+
+Future<Response> _listItineraries(Request request) async {
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final rows = await _db.execute(
+    Sql.named('SELECT id, title, query, plan, created_at FROM itineraries '
+        'WHERE user_id = @u ORDER BY created_at DESC'),
+    parameters: {'u': userId},
+  );
+  return _json(200, {
+    'itineraries': [
+      for (final r in rows)
+        {
+          'id': r[0],
+          'title': r[1],
+          'query': r[2],
+          'plan': r[3],
+          'createdAt': (r[4] as DateTime).toIso8601String(),
+        }
+    ]
+  });
+}
+
+Future<Response> _deleteItinerary(Request request, String id) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final itineraryId = int.tryParse(id);
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (itineraryId == null) return _json(400, {'error': 'Bad itinerary id.'});
+  final rows = await _db.execute(
+    Sql.named('DELETE FROM itineraries WHERE id = @id AND user_id = @u '
+        'RETURNING id'),
+    parameters: {'id': itineraryId, 'u': userId},
+  );
+  if (rows.isEmpty) {
+    return _json(403, {'error': 'You can only delete your own itineraries.'});
+  }
+  return _json(200, {'ok': true});
+}
+
 // AI itinerary planner: Groq compound-mini (web search built in) drafts a
 // day-by-day plan; the app pairs it with photos + YouTube via /search/media.
 final Map<String, (DateTime, Map<String, Object?>)> _itineraryCache = {};
@@ -1234,13 +1351,16 @@ Future<Response> _aiItinerary(Request request) async {
               'concise, practical day-by-day itinerary for the request. '
               "Format strictly: a one-line intro, then lines starting with "
               "'Day N: <title>' each followed by 2-3 short sentences, then "
-              "a final section starting with 'Tips:' (best time, transport, "
-              'accessibility notes). Max 5 days. Plain text only — no '
-              'markdown symbols.'
+              "a section starting with 'Getting there:' (realistic flight "
+              'and train options with typical routes), then a section '
+              "starting with 'Stay:' (hotel, homestay and budget options), "
+              "then a final section starting with 'Tips:' (best time, local "
+              'transport, accessibility notes). Max 5 days. Plain text only '
+              '— no markdown symbols.'
         },
         {'role': 'user', 'content': query},
       ],
-      'max_tokens': 700,
+      'max_tokens': 900,
       'temperature': 0.5,
     }));
     final res = await req.close();
@@ -1251,7 +1371,10 @@ Future<Response> _aiItinerary(Request request) async {
     if (plan == null) {
       return _json(502, {'error': 'AI planner unavailable right now.'});
     }
-    final payload = <String, Object?>{'plan': plan.trim()};
+    final payload = <String, Object?>{
+      'plan': plan.trim(),
+      'places': await _matchPlaces(query),
+    };
     _itineraryCache[cacheKey] = (DateTime.now(), payload);
     return _json(200, payload);
   } catch (_) {
@@ -1376,16 +1499,20 @@ Future<Response> _aiSearch(Request request) async {
         {
           'role': 'system',
           'content':
-              "You are MrTouride's travel AI. The user searches for places, "
-                  'monuments or travel experiences (often in India). Reply '
-                  'with a MINIMAL overview: 2-4 short sentences. Focus on '
-                  'what the place feels like, accessibility for elderly/'
-                  'disabled visitors, and current practical tips. No '
-                  'headings, no lists, no markdown.'
+              "You are Mr.Tour Guide's travel AI helper. The user searches "
+                  'for places, monuments or travel experiences (often in '
+                  'India). Reply with a MINIMAL overview: 2-4 short '
+                  'sentences on what the place feels like, accessibility '
+                  'for elderly/disabled visitors, and current practical '
+                  'tips. Then, when the query is about a reachable place, '
+                  "add one line starting with 'Getting there:' (realistic "
+                  'flight and train options) and one line starting with '
+                  "'Stay:' (hotel and homestay suggestions with typical "
+                  'budgets). No other headings, no lists, no markdown.'
         },
         {'role': 'user', 'content': query},
       ],
-      'max_tokens': 220,
+      'max_tokens': 380,
       'temperature': 0.4,
     }));
     final res = await req.close();
@@ -1400,6 +1527,7 @@ Future<Response> _aiSearch(Request request) async {
     final payload = <String, Object?>{
       'overview': overview.trim(),
       'model': decoded['model'] ?? 'groq/compound-mini',
+      'places': await _matchPlaces(query),
     };
     _aiCache[cacheKey] = (DateTime.now(), payload);
     return _json(200, payload);
@@ -2028,6 +2156,15 @@ Future<Connection> _openDb() {
 Future<void> main() async {
   _db = await _openDb();
 
+  // Saved AI itineraries (auto-migrates on every deploy).
+  await _db.execute('CREATE TABLE IF NOT EXISTS itineraries ('
+      'id SERIAL PRIMARY KEY, '
+      'user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, '
+      'title TEXT NOT NULL, '
+      'query TEXT NOT NULL, '
+      'plan TEXT NOT NULL, '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+
   final uploadsDir =
       '${File(Platform.script.toFilePath()).parent.parent.path}/uploads';
   final r2Endpoint = Platform.environment['R2_ENDPOINT'];
@@ -2070,6 +2207,9 @@ Future<void> main() async {
     ..get('/search/media', _searchMedia)
     ..post('/ai/search', _aiSearch)
     ..post('/ai/itinerary', _aiItinerary)
+    ..post('/itineraries', _saveItinerary)
+    ..get('/itineraries', _listItineraries)
+    ..post('/itineraries/<id>/delete', _deleteItinerary)
     ..get('/community/posts', _communityPosts)
     ..post('/community/posts', _createPost)
     ..post('/community/posts/<id>/react', _react)
