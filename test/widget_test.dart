@@ -133,6 +133,7 @@ void main() {
 
     expect(find.byIcon(Icons.visibility), findsOneWidget);
     expect(find.text('Sign in with Google'), findsOneWidget);
+    expect(find.text('Forgot password?'), findsOneWidget);
 
     // Toggle visibility.
     await tester.tap(find.byIcon(Icons.visibility));

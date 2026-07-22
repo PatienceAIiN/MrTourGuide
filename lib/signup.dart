@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 
-import 'package:url_launcher/url_launcher.dart';
-
 import 'constant.dart';
 import 'widgets/ux.dart';
 import 'navpages/main_page.dart';
 import 'services/auth_api.dart';
 import 'widgets/auth_dialogs.dart';
+import 'widgets/legal_sheet.dart';
 
 class SingUpPage extends StatefulWidget {
   const SingUpPage({super.key});
@@ -217,8 +216,7 @@ class _SingUpPageState extends State<SingUpPage> {
                             alignment: PlaceholderAlignment.baseline,
                             baseline: TextBaseline.alphabetic,
                             child: InkWell(
-                              onTap: () => launchUrl(Uri.parse(
-                                  'https://mrtourguide.patienceai.in/#terms')),
+                              onTap: () => showLegalSheet(context),
                               child: const Text('Terms',
                                   style: TextStyle(
                                       fontSize: 12.5,
@@ -231,8 +229,7 @@ class _SingUpPageState extends State<SingUpPage> {
                             alignment: PlaceholderAlignment.baseline,
                             baseline: TextBaseline.alphabetic,
                             child: InkWell(
-                              onTap: () => launchUrl(Uri.parse(
-                                  'https://mrtourguide.patienceai.in/#privacy')),
+                              onTap: () => showLegalSheet(context),
                               child: const Text('Privacy Policy',
                                   style: TextStyle(
                                       fontSize: 12.5,

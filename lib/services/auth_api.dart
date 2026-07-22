@@ -152,6 +152,21 @@ class AuthApi {
     return _post('/login', {'email': email, 'password': password});
   }
 
+  /// Emails a 6-digit password-reset code (password accounts only).
+  static Future<String?> forgotPassword(String email) async {
+    final decoded = await _postRaw('/auth/forgot', {'email': email});
+    return decoded['devCode'] as String?;
+  }
+
+  static Future<void> resetPassword({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    await _postRaw('/auth/reset',
+        {'email': email, 'code': code, 'newPassword': newPassword});
+  }
+
   /// Google SSO (signup creates a pre-verified account; signin only works
   /// for accounts that were created with Google).
   static Future<AuthUser> google({

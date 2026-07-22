@@ -1046,7 +1046,7 @@ label{font-size:11px;color:var(--mut);display:block;margin:8px 0 3px}
 <script>
 const modal=document.getElementById('modal');let current=null;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function show(p){for(const x of ['users','logs','deleted','add']){document.getElementById('p-'+x).style.display=x===p?'':'none';document.getElementById('t-'+x).className=x===p?'on':''}
+function show(p){for(const x of ['users','logs','deleted','add','places']){document.getElementById('p-'+x).style.display=x===p?'':'none';document.getElementById('t-'+x).className=x===p?'on':''}
 if(p==='users')loadUsers();if(p==='logs')loadLogs();if(p==='deleted')loadDeleted();if(p==='places')loadCities()}
 async function api(path,opts){const r=await fetch('/admin/api/'+path,opts);if(!r.ok&&r.status===401){location.reload();return null}return r.json()}
 async function loadUsers(){const d=await api('users');if(!d)return;const u=d.users;
@@ -1170,6 +1170,16 @@ String _accountDeletedHtml(String name, {required bool byAdmin}) => '''
 </div>
 ''';
 
+String _resetEmailHtml(String code) => '''
+<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+  <h2 style="color:#1E319D">Mr.Tour Guide</h2>
+  <p>Use this code to reset your password:</p>
+  <p style="font-size:34px;letter-spacing:10px;font-weight:bold;color:#052933">$code</p>
+  <p style="color:#777;font-size:13px">If you didn't request a password reset,
+  you can safely ignore this email — your password stays unchanged.<br>
+  Mr.Tour Guide · A product of PatienceAI · patienceai.in</p>
+</div>''';
+
 String _verifyEmailHtml(String code) => '''
 <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
   <h2 style="color:#1E319D">Mr.Tour Guide</h2>
@@ -1263,6 +1273,56 @@ Future<Response> _verify(Request request) async {
       .then((_) {});
   return _json(
       200, {'id': row[0], 'name': row[1], 'email': row[2], 'role': row[3]});
+}
+
+/// Forgot password: emails a 6-digit OTP (works for password accounts).
+Future<Response> _forgotPassword(Request request) async {
+  final body = await _readJsonBody(request);
+  final email = (body?['email'] as String?)?.trim().toLowerCase() ?? '';
+  if (email.isEmpty) return _json(400, {'error': 'Email required.'});
+  final code = (100000 + Random.secure().nextInt(900000)).toString();
+  final rows = await _db.execute(
+    Sql.named("UPDATE users SET verify_code = @c WHERE email = @e "
+        "AND provider = 'password' RETURNING name"),
+    parameters: {'c': code, 'e': email},
+  );
+  if (rows.isEmpty) {
+    return _json(404,
+        {'error': 'No password account for that email (Google accounts '
+            'sign in with Google).'});
+  }
+  final sent = await _sendEmail(email, 'Your Mr.Tour Guide password reset code',
+      _resetEmailHtml(code));
+  return _json(200, {'ok': true, if (!sent) 'devCode': code});
+}
+
+/// Reset password with the emailed OTP.
+Future<Response> _resetPassword(Request request) async {
+  final body = await _readJsonBody(request);
+  final email = (body?['email'] as String?)?.trim().toLowerCase() ?? '';
+  final code = (body?['code'] as String?)?.trim() ?? '';
+  final newPassword = body?['newPassword'] as String? ?? '';
+  if (email.isEmpty || code.isEmpty) {
+    return _json(400, {'error': 'Email and code required.'});
+  }
+  if (newPassword.length < 6) {
+    return _json(400, {'error': 'The new password is too weak (6+ chars).'});
+  }
+  final salt = _newSalt();
+  final rows = await _db.execute(
+    Sql.named('UPDATE users SET password_hash = @h, salt = @s, '
+        'verify_code = NULL, verified = true '
+        'WHERE email = @e AND verify_code = @c RETURNING id'),
+    parameters: {
+      'h': _hashPassword(newPassword, salt),
+      's': salt,
+      'e': email,
+      'c': code,
+    },
+  );
+  if (rows.isEmpty) return _json(400, {'error': 'Invalid or expired code.'});
+  _logActivity('user:${rows.first[0]}', 'password-reset', email);
+  return _json(200, {'ok': true});
 }
 
 Future<Response> _resendCode(Request request) async {
@@ -3932,6 +3992,8 @@ Future<void> main() async {
     ..post('/login', _login)
     ..post('/verify', _verify)
     ..post('/resend-code', _resendCode)
+    ..post('/auth/forgot', _forgotPassword)
+    ..post('/auth/reset', _resetPassword)
     ..post('/auth/google', _googleAuth)
     ..get('/cities', _cities)
     ..post('/cities', _addCity)

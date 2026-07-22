@@ -10,6 +10,7 @@ import '../services/haptic_service.dart';
 import '../services/image_tools.dart';
 import '../services/media_api.dart';
 import '../widgets/image_viewer.dart';
+import '../widgets/password_reset.dart';
 import '../widgets/ux.dart';
 
 /// Profile tab: account info, experience-library stats, sign out.
@@ -278,6 +279,16 @@ class _MyPageState extends State<MyPage> {
                   borderRadius: BorderRadius.circular(16)),
               child: Column(
                 children: [
+                  if (AuthApi.currentUser != null) ...[
+                    ListTile(
+                      leading: const Icon(Icons.lock_reset, color: blue),
+                      title: const Text('Change password'),
+                      subtitle:
+                          const Text('Verify with a code sent to your email'),
+                      onTap: _changePassword,
+                    ),
+                    const Divider(height: 1),
+                  ],
                   ListTile(
                     leading: const Icon(Icons.logout, color: red),
                     title: const Text('Sign out', style: TextStyle(color: red)),
@@ -535,6 +546,15 @@ class _MyPageState extends State<MyPage> {
       );
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _changePassword() async {
+    final email = AuthApi.currentUser?.email;
+    if (email == null) return;
+    final ok = await showForgotPasswordFlow(context, presetEmail: email);
+    if (ok && mounted) {
+      newSnackBar(context, title: 'Password changed.');
     }
   }
 

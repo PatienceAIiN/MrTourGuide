@@ -6,6 +6,7 @@ import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/signup.dart';
 import 'package:mrtouride/widgets/auth_dialogs.dart';
+import 'package:mrtouride/widgets/password_reset.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -168,8 +169,9 @@ class _LoginPageState extends State<LoginPage> {
                       ],
                     ),
                   ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       Text(
                         "Don't have an account? ",
@@ -188,6 +190,22 @@ class _LoginPageState extends State<LoginPage> {
                           style: TextStyle(
                             color: blue,
                           ),
+                        ),
+                      ),
+                      Text('·', style: TextStyle(color: ink(context))),
+                      TextButton(
+                        onPressed: () async {
+                          final ok = await showForgotPasswordFlow(context);
+                          if (ok && mounted) {
+                            // ignore: use_build_context_synchronously
+                            newSnackBar(context,
+                                title: 'Password changed — sign in with '
+                                    'your new password.');
+                          }
+                        },
+                        child: const Text(
+                          'Forgot password?',
+                          style: TextStyle(color: blue),
                         ),
                       ),
                     ],
