@@ -841,15 +841,16 @@ class MediaApi {
     try {
       response = await http
           .get(Uri.parse('$apiBase$path'))
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 12));
     } catch (_) {
       // The first request after the phone dozes often dies while the
-      // radio wakes up — one quiet retry absorbs it.
+      // radio wakes up — one quiet retry absorbs it. Kept short so a slow
+      // or unreachable backend surfaces an error fast instead of freezing.
       try {
-        await Future.delayed(const Duration(milliseconds: 800));
+        await Future.delayed(const Duration(milliseconds: 600));
         response = await http
             .get(Uri.parse('$apiBase$path'))
-            .timeout(const Duration(seconds: 20));
+            .timeout(const Duration(seconds: 12));
       } catch (_) {
         throw const AuthException(
             'Could not sync — check your internet and try again.');

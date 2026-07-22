@@ -103,15 +103,6 @@ class _GuideVibePageState extends State<GuideVibePage> {
     final isCreator = AuthApi.currentUser?.isCreator ?? false;
     return Scaffold(
       backgroundColor: Colors.black,
-      floatingActionButton: isCreator
-          ? FloatingActionButton.extended(
-              backgroundColor: blue,
-              foregroundColor: Colors.white,
-              onPressed: _openUpload,
-              icon: const Icon(Icons.add),
-              label: const Text('Create'),
-            )
-          : null,
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : _error != null
@@ -135,7 +126,7 @@ class _GuideVibePageState extends State<GuideVibePage> {
                             active: i == _index,
                           ),
                         ),
-                        // Header label + close-to-Home affordance.
+                        // Header label.
                         Positioned(
                           top: MediaQuery.of(context).padding.top + 12,
                           left: 0,
@@ -160,6 +151,39 @@ class _GuideVibePageState extends State<GuideVibePage> {
                             ),
                           ),
                         ),
+                        // Creator "Create" — top-right so it never hides
+                        // behind the floating navbar (which the feed extends
+                        // under) or collides with the action rail.
+                        if (isCreator)
+                          Positioned(
+                            top: MediaQuery.of(context).padding.top + 6,
+                            right: 8,
+                            child: Material(
+                              color: Colors.black.withValues(alpha: 0.32),
+                              shape: const StadiumBorder(),
+                              child: InkWell(
+                                customBorder: const StadiumBorder(),
+                                onTap: _openUpload,
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 7),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.add_a_photo_outlined,
+                                          color: Colors.white, size: 17),
+                                      SizedBox(width: 6),
+                                      Text('Create',
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w800)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
                     ),
     );
@@ -205,11 +229,21 @@ class _GuideVibePageState extends State<GuideVibePage> {
               const SizedBox(height: 6),
               Text(
                 isCreator
-                    ? 'Be the first — tap Create to share a short.'
+                    ? 'Be the first — share a short.'
                     : 'Check back soon — creators are just getting started.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.white54, fontSize: 13),
               ),
+              if (isCreator) ...[
+                const SizedBox(height: 18),
+                ElevatedButton.icon(
+                  onPressed: _openUpload,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: blue, foregroundColor: Colors.white),
+                  icon: const Icon(Icons.add_a_photo_outlined, size: 18),
+                  label: const Text('Create GuideVibe'),
+                ),
+              ],
             ],
           ),
         ),
