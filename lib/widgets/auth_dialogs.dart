@@ -40,7 +40,10 @@ Future<AuthUser?> signInWithGoogle(
   } on GoogleSignInException catch (e) {
     if (e.code == GoogleSignInExceptionCode.canceled) return null;
     if (context.mounted) {
-      newSnackBar(context, title: 'Google sign-in failed. Try again.');
+      newSnackBar(context,
+          title: 'Google sign-in failed (${e.code.name}). If this says '
+              'clientConfigurationError, the app needs its SHA key added '
+              'in Firebase.');
     }
     return null;
   } catch (_) {

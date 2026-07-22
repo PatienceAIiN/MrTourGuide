@@ -1080,22 +1080,19 @@ async function loadDeleted(){const d=await api('logs?action=user-deleted');if(!d
 document.getElementById('deleted').innerHTML=d.logs.map(l=>'<tr><td class="mut">'+l.at.slice(0,19).replace('T',' ')+'</td>'+
 '<td>'+esc(l.details)+'</td></tr>').join('')||'<tr><td colspan=2 class="mut">No deletions yet.</td></tr>'}
 async function loadCities(){const d=await api('cities');if(!d)return;
-document.getElementById('cities').innerHTML=d.cities.map(c=>'<tr>'+
-'<td>'+(c.coverUrl?'<img src="/api'+c.coverUrl+'" style="width:64px;height:40px;object-fit:cover;border-radius:6px">':'<span class="mut">auto…</span>')+'</td>'+
-'<td><b>'+esc(c.name)+'</b><div class="mut">'+c.slug+'</div></td>'+
-'<td>'+esc(c.location||'')+'</td><td>'+c.videos+'</td><td>'+c.ratings+'</td>'+
-'<td style="white-space:nowrap">'+
-'<button class="btn ghost" onclick="editCity(\''+c.slug+'\',\''+esc(c.name).replace(/'/g,"\\'")+'\')">Edit</button> '+
-'<button class="btn ghost" onclick="refreshCover(\''+c.slug+'\')">↻ Cover</button> '+
-'<button class="btn red" onclick="deleteCity(\''+c.slug+'\')">Delete</button></td></tr>').join('')}
-async function createCity(){const d=await api('cities',{method:'POST',headers:{'content-type':'application/json'},
-body:JSON.stringify({name:document.getElementById('c-name').value,location:document.getElementById('c-loc').value,description:document.getElementById('c-desc').value})});
+const tb=document.getElementById('cities');tb.innerHTML='';
+for(const c of d.cities){const tr=document.createElement('tr');
+const cov=c.coverUrl?'<img src="/api'+c.coverUrl+'" style="width:64px;height:40px;object-fit:cover;border-radius:6px">':'<span class="mut">auto…</span>';
+tr.innerHTML='<td>'+cov+'</td><td><b>'+esc(c.name)+'</b><div class="mut">'+c.slug+'</div></td><td>'+esc(c.location||'')+'</td><td>'+c.videos+'</td><td>'+c.ratings+'</td><td style="white-space:nowrap"></td>';
+const td=tr.lastElementChild;
+const mk=(t,cls,fn)=>{const b=document.createElement('button');b.className=cls;b.textContent=t;b.onclick=fn;td.appendChild(b);td.append(' ')};
+mk('Edit','btn ghost',()=>editCity(c.slug,c.name));mk('↻ Cover','btn ghost',()=>refreshCover(c.slug));mk('Delete','btn red',()=>deleteCity(c.slug));
+tb.appendChild(tr)}}
+async function createCity(){const d=await api('cities',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.getElementById('c-name').value,location:document.getElementById('c-loc').value,description:document.getElementById('c-desc').value})});
 document.getElementById('c-msg').textContent=d.error||'Added — cover embedding…';if(!d.error)setTimeout(loadCities,4000)}
 async function editCity(slug,cur){const name=prompt('New name for '+cur+' (blank = keep):','');const loc=prompt('New location (blank = keep):','');
-const d=await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},
-body:JSON.stringify({name:name||null,location:loc||null})});if(d.error)alert(d.error);loadCities()}
-async function refreshCover(slug){await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},
-body:JSON.stringify({refreshCover:true})});setTimeout(loadCities,5000)}
+const d=await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:name||null,location:loc||null})});if(d.error)alert(d.error);loadCities()}
+async function refreshCover(slug){await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({refreshCover:true})});setTimeout(loadCities,5000)}
 async function deleteCity(slug){if(!confirm('Delete '+slug+' and ALL its experiences?'))return;
 const d=await api('cities/'+slug+'/delete',{method:'POST'});if(d.error)alert(d.error);loadCities()}
 loadUsers();

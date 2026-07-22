@@ -9,6 +9,7 @@ import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
 import 'services/local_notifs.dart';
 import 'navpages/my_page.dart';
+import 'news_webview.dart';
 import 'services/api_base.dart';
 import 'services/media_api.dart';
 import 'services/settings_service.dart';
@@ -177,6 +178,21 @@ class _SettingsPageState extends State<SettingsPage> {
               value: s.reduceMotion,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.reduceMotion = v),
+            ),
+          ]),
+          _section('Legal', [
+            ListTile(
+              leading: const Icon(Icons.policy_outlined, color: blue),
+              title: const Text('Terms & Privacy'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const NewsWebViewPage(
+                      title: 'Terms & Privacy',
+                      url: 'https://mrtourguide.patienceai.in/#terms'),
+                ),
+              ),
             ),
           ]),
           _section('Feedback & updates', [

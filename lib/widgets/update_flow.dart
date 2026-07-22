@@ -35,6 +35,8 @@ Future<void> runUpdateFlow(BuildContext context, UpdateInfo info) async {
       title: 'Downloading v${info.version} in the background…');
   const notifId = 4242;
   var lastPct = -1;
+  LocalNotifs.showProgress(
+      notifId, 'Downloading Mr.TourGuide v${info.version}', 0);
   UpdateInstaller.download(info, (p) {
     final pct = (p * 100).round();
     if (pct != lastPct && pct % 4 == 0) {

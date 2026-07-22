@@ -1,7 +1,98 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../constant.dart';
 import '../services/haptic_service.dart';
+import '../services/media_api.dart';
+
+/// Modern capsule hero: live city covers cross-fade inside a tall
+/// capsule, gently floating — the auth pages' visual anchor.
+class CapsuleHero extends StatefulWidget {
+  const CapsuleHero({super.key});
+
+  @override
+  State<CapsuleHero> createState() => _CapsuleHeroState();
+}
+
+class _CapsuleHeroState extends State<CapsuleHero> {
+  List<String> covers = [];
+  int index = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    MediaApi.fetchCities().then((cities) {
+      if (!mounted) return;
+      setState(() => covers = [
+            for (final c in cities)
+              if (c.absoluteCoverUrl != null) c.absoluteCoverUrl!
+          ]);
+      _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (mounted && covers.length > 1) {
+          setState(() => index = (index + 1) % covers.length);
+        }
+      });
+    }).catchError((_) {});
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Floaty(
+      amplitude: 8,
+      child: Container(
+        width: 168,
+        height: 220,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(100),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF1E319D).withValues(alpha: 0.25),
+              blurRadius: 30,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(100),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 700),
+            switchInCurve: Curves.easeOutCubic,
+            child: covers.isEmpty
+                ? Container(
+                    key: const ValueKey('fallback'),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+                      ),
+                    ),
+                    child: const Center(
+                        child: Icon(Icons.travel_explore,
+                            color: Colors.white70, size: 48)),
+                  )
+                : Image.network(
+                    covers[index],
+                    key: ValueKey(index),
+                    fit: BoxFit.cover,
+                    width: 168,
+                    height: 220,
+                    errorBuilder: (c, e, s) => Container(color: Colors.black12),
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// Gentle endless float — breathes life into images and icons.
 class Floaty extends StatefulWidget {

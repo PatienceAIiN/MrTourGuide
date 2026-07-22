@@ -4,6 +4,7 @@ import 'ar_view.dart';
 import 'constant.dart';
 import 'experience_player.dart';
 import 'models/place.dart';
+import 'news_webview.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
 import 'services/media_api.dart';
@@ -21,6 +22,7 @@ class DetailScreen extends StatefulWidget {
 
 class _DetailScreenState extends State<DetailScreen> {
   List<VideoItem> videos = [];
+  List<YtSuggestion> ytPicks = [];
   late double rating = place.rating;
   late int ratingCount = place.ratingCount;
   int myStars = 0;
@@ -44,6 +46,10 @@ class _DetailScreenState extends State<DetailScreen> {
     }).catchError((_) {});
     MediaApi.fetchSuggestions(place.citySlug).then((s) {
       if (mounted) setState(() => suggestions = s);
+    }).catchError((_) {});
+    // Real, playable picks for THIS place (server-cached 30 min).
+    MediaApi.searchMedia('${place.title} ${place.location}').then((m) {
+      if (mounted) setState(() => ytPicks = m.youtube);
     }).catchError((_) {});
   }
 
@@ -385,14 +391,73 @@ class _DetailScreenState extends State<DetailScreen> {
                     for (var i = 0; i < videos.length; i++)
                       Entrance(index: i + 2, child: _videoCard(videos[i])),
                   const SizedBox(height: 20),
-                  // Vlogs
-                  _sectionTitle('Top trending vlogs'),
-                  _horizontalGallery(const [
-                    'assets/image/tajmahalvlog1.png',
-                    'assets/image/tajmahalvlog2.png',
-                    'assets/image/tajmahalvlog3.png',
-                  ], width: 300, height: 170),
-                  const SizedBox(height: 20),
+                  // Real, playable picks for this place.
+                  if (ytPicks.isNotEmpty) ...[
+                    _sectionTitle('Picked for you'),
+                    SizedBox(
+                      height: 216,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: ytPicks.length,
+                        separatorBuilder: (c, i) => const SizedBox(width: 12),
+                        itemBuilder: (context, i) => InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => NewsWebViewPage(
+                                  title: ytPicks[i].title, url: ytPicks[i].url),
+                            ),
+                          ),
+                          child: SizedBox(
+                            width: 300,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(16),
+                                      child: Image.network(
+                                        ytPicks[i].thumbnail.replaceFirst(
+                                            'mqdefault', 'hqdefault'),
+                                        width: 300,
+                                        height: 170,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (c, e, st) => Container(
+                                            width: 300,
+                                            height: 170,
+                                            color: Colors.black12),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.all(9),
+                                      decoration: const BoxDecoration(
+                                          color: Colors.black45,
+                                          shape: BoxShape.circle),
+                                      child: const Icon(Icons.play_arrow,
+                                          color: Colors.white, size: 28),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Flexible(
+                                  child: Text(ytPicks[i].title,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 13)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
                   // ML-based cross-city recommendations
                   if (suggestions.isNotEmpty) ...[
                     _sectionTitle('You may also feel · ML picks'),

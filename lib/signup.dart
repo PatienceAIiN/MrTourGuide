@@ -120,12 +120,7 @@ class _SingUpPageState extends State<SingUpPage> {
                 Container(
                   margin: const EdgeInsets.only(top: 30),
                   child: const Center(
-                    child: Floaty(
-                      child: Image(
-                        image: AssetImage("assets/image/bg.png"),
-                        width: 200,
-                      ),
-                    ),
+                    child: CapsuleHero(),
                   ),
                 ),
                 const Padding(
