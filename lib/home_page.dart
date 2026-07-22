@@ -99,7 +99,7 @@ class _HomePageState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         loading = false;
-        error = 'Could not load the catalog. Is the backend running?';
+        error = 'Could not sync — check your internet.';
       });
     }
   }
@@ -459,28 +459,25 @@ class _HomePageState extends State<HomeScreen> {
                                 ),
                               ),
                       ),
-                      const SizedBox(height: 26),
-                      _sectionHeader('Top trending experiences'),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        height: 190,
-                        child: loading
-                            ? const SizedBox.shrink()
-                            : trending.isEmpty
-                                ? const Center(
-                                    child: Text('No experiences yet.',
-                                        style: TextStyle(color: Colors.grey)))
-                                : _adaptiveRail(
-                                    count: trending.length,
-                                    minCardWidth: 300,
-                                    gap: 14,
-                                    builder: (i, w) => Entrance(
-                                      index: i,
-                                      child:
-                                          _trendingCard(trending[i], width: w),
-                                    ),
-                                  ),
-                      ),
+                      // Empty platforms skip straight to Picked-for-you —
+                      // no dead 'No experiences yet' box.
+                      if (trending.isNotEmpty) ...[
+                        const SizedBox(height: 26),
+                        _sectionHeader('Top trending experiences'),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          height: 190,
+                          child: _adaptiveRail(
+                            count: trending.length,
+                            minCardWidth: 300,
+                            gap: 14,
+                            builder: (i, w) => Entrance(
+                              index: i,
+                              child: _trendingCard(trending[i], width: w),
+                            ),
+                          ),
+                        ),
+                      ],
                       // Picked for you: real, playable travel videos —
                       // seeded by this user's own searches and plans.
                       if (forYou.isNotEmpty) ...[

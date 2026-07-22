@@ -836,8 +836,17 @@ class MediaApi {
           .get(Uri.parse('$apiBase$path'))
           .timeout(const Duration(seconds: 20));
     } catch (_) {
-      throw const AuthException(
-          'Could not sync — check your internet and try again.');
+      // The first request after the phone dozes often dies while the
+      // radio wakes up — one quiet retry absorbs it.
+      try {
+        await Future.delayed(const Duration(milliseconds: 800));
+        response = await http
+            .get(Uri.parse('$apiBase$path'))
+            .timeout(const Duration(seconds: 20));
+      } catch (_) {
+        throw const AuthException(
+            'Could not sync — check your internet and try again.');
+      }
     }
     final decoded = _decode(response.body);
     if (response.statusCode != 200) {

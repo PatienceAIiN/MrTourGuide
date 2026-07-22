@@ -831,6 +831,116 @@ Future<Response> _adminDeleteUser(Request request, String id) async {
   }
 }
 
+/// Admin: list places with stats.
+Future<Response> _adminCities(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final rows = await _db.execute(
+      'SELECT c.slug, c.name, c.location, c.description, c.cover_url, '
+      "(SELECT count(*) FROM videos v WHERE v.city = c.slug), "
+      '(SELECT count(*) FROM place_ratings pr WHERE pr.city_slug = c.slug) '
+      'FROM cities c ORDER BY c.name');
+  return _json(200, {
+    'cities': [
+      for (final r in rows)
+        {
+          'slug': r[0],
+          'name': r[1],
+          'location': r[2],
+          'description': r[3],
+          'coverUrl': r[4],
+          'videos': r[5],
+          'ratings': r[6],
+        }
+    ]
+  });
+}
+
+/// Admin: add a place — the HD cover embeds automatically.
+Future<Response> _adminAddCity(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final body = await _readJsonBody(request);
+  final name = (body?['name'] as String?)?.trim() ?? '';
+  final location = (body?['location'] as String?)?.trim() ?? '';
+  final description = (body?['description'] as String?)?.trim() ?? '';
+  if (name.isEmpty || name.length > 60) {
+    return _json(400, {'error': 'Name required (max 60 chars).'});
+  }
+  final slug = name
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  final dup = await _db.execute(
+    Sql.named('SELECT 1 FROM cities WHERE slug = @s'),
+    parameters: {'s': slug},
+  );
+  if (dup.isNotEmpty) return _json(409, {'error': 'Place already exists.'});
+  await _db.execute(
+    Sql.named('INSERT INTO cities (slug, name, location, description, '
+        'rating) VALUES (@s, @n, @l, @d, 4.5)'),
+    parameters: {
+      's': slug,
+      'n': name,
+      'l': location,
+      'd': description.isEmpty
+          ? 'A new destination on Mr.TourGuide — experiences coming soon.'
+          : description,
+    },
+  );
+  _logActivity('admin', 'city-added', '$name ($slug)');
+  _autoCityCover(slug, name, location); // HD cover embeds itself
+  return _json(201, {'slug': slug});
+}
+
+/// Admin: update a place; empty cover_url triggers a fresh auto-embed.
+Future<Response> _adminUpdateCity(Request request, String slug) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final body = await _readJsonBody(request);
+  final name = (body?['name'] as String?)?.trim();
+  final location = (body?['location'] as String?)?.trim();
+  final description = (body?['description'] as String?)?.trim();
+  final refreshCover = body?['refreshCover'] == true;
+  final rows = await _db.execute(
+    Sql.named('UPDATE cities SET '
+        'name = COALESCE(@n, name), '
+        'location = COALESCE(@l, location), '
+        'description = COALESCE(@d, description) '
+        '${refreshCover ? ', cover_url = NULL ' : ''}'
+        'WHERE slug = @s RETURNING name, location'),
+    parameters: {
+      'n': (name?.isEmpty ?? true) ? null : name,
+      'l': location,
+      'd': (description?.isEmpty ?? true) ? null : description,
+      's': slug,
+    },
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Place not found.'});
+  _logActivity('admin', 'city-updated', '$slug');
+  if (refreshCover) {
+    _autoCityCover(
+        slug, rows.first[0] as String, rows.first[1] as String? ?? '');
+  }
+  return _json(200, {'ok': true});
+}
+
+/// Admin: delete a place and everything published under it.
+Future<Response> _adminDeleteCity(Request request, String slug) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final exists = await _db.execute(
+    Sql.named('SELECT name FROM cities WHERE slug = @s'),
+    parameters: {'s': slug},
+  );
+  if (exists.isEmpty) return _json(404, {'error': 'Place not found.'});
+  for (final sql in [
+    'DELETE FROM place_ratings WHERE city_slug = @s',
+    'DELETE FROM videos WHERE city = @s',
+    'DELETE FROM cities WHERE slug = @s',
+  ]) {
+    await _db.execute(Sql.named(sql), parameters: {'s': slug});
+  }
+  _logActivity('admin', 'city-deleted', '${exists.first[0]} ($slug)');
+  return _json(200, {'ok': true});
+}
+
 /// Admin: fire a live welcome mail and report Brevo's verdict.
 Future<Response> _adminTestMail(Request request) async {
   if (!_adminAuthed(request)) return _adminChallenge();
@@ -897,6 +1007,7 @@ label{font-size:11px;color:var(--mut);display:block;margin:8px 0 3px}
 <button id="t-logs" onclick="show('logs')">Activity logs</button>
 <button id="t-deleted" onclick="show('deleted')">Deleted users</button>
 <button id="t-add" onclick="show('add')">+ Add user</button>
+<button id="t-places" onclick="show('places')">Places</button>
 </div>
 <div id="p-users" class="card"><div id="stats"></div><table><thead><tr>
 <th>#</th><th>Name</th><th>Email</th><th>Role</th><th>Verified</th><th>Uploads</th><th>Posts</th><th>Joined</th>
@@ -910,6 +1021,17 @@ label{font-size:11px;color:var(--mut);display:block;margin:8px 0 3px}
 <div class="row"><div><label>Password</label><input id="a-pass" type="password"></div><div><label>Role</label>
 <select id="a-role"><option value="traveler">Traveler</option><option value="creator">Creator</option></select></div></div>
 <div style="margin-top:12px"><button class="btn" onclick="createUser()">Create user</button> <span id="a-msg" class="mut"></span></div></div>
+<div id="p-places" class="card" style="display:none">
+<div class="row" style="margin-bottom:14px">
+<div><label>Place name</label><input id="c-name"></div>
+<div><label>Location (City, Country)</label><input id="c-loc"></div>
+<div><label>Description</label><input id="c-desc"></div>
+</div>
+<button class="btn" onclick="createCity()">Add place (HD cover auto-embeds)</button>
+<span id="c-msg" class="mut"></span>
+<table style="margin-top:14px"><thead><tr>
+<th>Cover</th><th>Name</th><th>Location</th><th>Videos</th><th>Ratings</th><th></th></tr></thead>
+<tbody id="cities"></tbody></table></div>
 <div id="modal" onclick="if(event.target===this)this.style.display='none'"><div class="box">
 <h3 id="m-title" style="margin-bottom:2px"></h3><div id="m-sub" class="mut" style="margin-bottom:10px"></div>
 <div id="m-stats" style="margin-bottom:8px"></div>
@@ -925,7 +1047,7 @@ label{font-size:11px;color:var(--mut);display:block;margin:8px 0 3px}
 const modal=document.getElementById('modal');let current=null;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function show(p){for(const x of ['users','logs','deleted','add']){document.getElementById('p-'+x).style.display=x===p?'':'none';document.getElementById('t-'+x).className=x===p?'on':''}
-if(p==='users')loadUsers();if(p==='logs')loadLogs();if(p==='deleted')loadDeleted()}
+if(p==='users')loadUsers();if(p==='logs')loadLogs();if(p==='deleted')loadDeleted();if(p==='places')loadCities()}
 async function api(path,opts){const r=await fetch('/admin/api/'+path,opts);if(!r.ok&&r.status===401){location.reload();return null}return r.json()}
 async function loadUsers(){const d=await api('users');if(!d)return;const u=d.users;
 document.getElementById('stats').innerHTML=
@@ -957,6 +1079,25 @@ document.getElementById('logs').innerHTML=d.logs.map(l=>'<tr><td class="mut">'+l
 async function loadDeleted(){const d=await api('logs?action=user-deleted');if(!d)return;
 document.getElementById('deleted').innerHTML=d.logs.map(l=>'<tr><td class="mut">'+l.at.slice(0,19).replace('T',' ')+'</td>'+
 '<td>'+esc(l.details)+'</td></tr>').join('')||'<tr><td colspan=2 class="mut">No deletions yet.</td></tr>'}
+async function loadCities(){const d=await api('cities');if(!d)return;
+document.getElementById('cities').innerHTML=d.cities.map(c=>'<tr>'+
+'<td>'+(c.coverUrl?'<img src="/api'+c.coverUrl+'" style="width:64px;height:40px;object-fit:cover;border-radius:6px">':'<span class="mut">auto…</span>')+'</td>'+
+'<td><b>'+esc(c.name)+'</b><div class="mut">'+c.slug+'</div></td>'+
+'<td>'+esc(c.location||'')+'</td><td>'+c.videos+'</td><td>'+c.ratings+'</td>'+
+'<td style="white-space:nowrap">'+
+'<button class="btn ghost" onclick="editCity(\''+c.slug+'\',\''+esc(c.name).replace(/'/g,"\\'")+'\')">Edit</button> '+
+'<button class="btn ghost" onclick="refreshCover(\''+c.slug+'\')">↻ Cover</button> '+
+'<button class="btn red" onclick="deleteCity(\''+c.slug+'\')">Delete</button></td></tr>').join('')}
+async function createCity(){const d=await api('cities',{method:'POST',headers:{'content-type':'application/json'},
+body:JSON.stringify({name:document.getElementById('c-name').value,location:document.getElementById('c-loc').value,description:document.getElementById('c-desc').value})});
+document.getElementById('c-msg').textContent=d.error||'Added — cover embedding…';if(!d.error)setTimeout(loadCities,4000)}
+async function editCity(slug,cur){const name=prompt('New name for '+cur+' (blank = keep):','');const loc=prompt('New location (blank = keep):','');
+const d=await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},
+body:JSON.stringify({name:name||null,location:loc||null})});if(d.error)alert(d.error);loadCities()}
+async function refreshCover(slug){await api('cities/'+slug+'/update',{method:'POST',headers:{'content-type':'application/json'},
+body:JSON.stringify({refreshCover:true})});setTimeout(loadCities,5000)}
+async function deleteCity(slug){if(!confirm('Delete '+slug+' and ALL its experiences?'))return;
+const d=await api('cities/'+slug+'/delete',{method:'POST'});if(d.error)alert(d.error);loadCities()}
 loadUsers();
 </script></body></html>""";
 
@@ -3848,6 +3989,10 @@ Future<void> main() async {
     ..post('/admin/api/users/<id>/delete', _adminDeleteUser)
     ..get('/admin/api/logs', _adminLogs)
     ..get('/admin/api/test-mail', _adminTestMail)
+    ..get('/admin/api/cities', _adminCities)
+    ..post('/admin/api/cities', _adminAddCity)
+    ..post('/admin/api/cities/<slug>/update', _adminUpdateCity)
+    ..post('/admin/api/cities/<slug>/delete', _adminDeleteCity)
     ..get('/app/version', _appVersion)
     ..get('/apk', _apk)
     ..get('/files/<city>/<name>', _serveFile);

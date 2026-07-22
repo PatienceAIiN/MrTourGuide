@@ -234,14 +234,14 @@ class CommunityApi {
           .timeout(const Duration(seconds: 10));
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the community server. Is the backend running?');
+          'Could not sync — check your internet and try again.');
     }
     final Map<String, dynamic> decoded;
     try {
       decoded = jsonDecode(response.body) as Map<String, dynamic>;
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the community server. Is the backend running?');
+          'Could not sync — check your internet and try again.');
     }
     if (response.statusCode >= 400) {
       throw AuthException(decoded['error'] as String? ?? 'Request failed.');
