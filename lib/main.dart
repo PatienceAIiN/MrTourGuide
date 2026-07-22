@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/login.dart';
+import 'package:mrtouride/navpages/main_page.dart';
+import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/signup.dart';
@@ -93,6 +95,15 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    // Persistent login: an existing session skips the welcome screen.
+    AuthApi.restoreSession().then((user) {
+      if (user != null && mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => MainPage()),
+          (route) => false,
+        );
+      }
+    });
     MediaApi.fetchCities().then((cities) {
       if (!mounted) return;
       setState(() {

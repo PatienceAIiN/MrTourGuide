@@ -299,7 +299,8 @@ class _MyPageState extends State<MyPage> {
       destructive: true,
     );
     if (!ok || !mounted) return;
-    AuthApi.currentUser = null;
+    await AuthApi.signOut();
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const HomePage()),
       (route) => false,
@@ -331,8 +332,8 @@ class _MyPageState extends State<MyPage> {
     if (!really || !mounted) return;
     try {
       await MediaApi.deleteAccount(user.id);
+      await AuthApi.signOut();
       if (!mounted) return;
-      AuthApi.currentUser = null;
       newSnackBar(context, title: 'Your profile has been deleted.');
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (context) => const HomePage()),

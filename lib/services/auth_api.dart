@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_base.dart';
 
@@ -64,9 +65,50 @@ class SignupResult {
 /// Client for the local Postgres-backed auth backend (backend/bin/server.dart).
 class AuthApi {
   static const String _base = apiBase;
+  static const _kSession = 'auth.session';
 
   /// The currently signed-in user, if any.
   static AuthUser? currentUser;
+
+  /// Restores the persisted session (if any) — the user stays signed in
+  /// across app restarts until they explicitly sign out.
+  static Future<AuthUser?> restoreSession() async {
+    if (currentUser != null) return currentUser;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kSession);
+      if (raw == null) return null;
+      currentUser = AuthUser.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      return currentUser;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _persistSession(AuthUser user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _kSession,
+          jsonEncode({
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'role': user.role,
+            'avatarUrl': user.avatarUrl,
+            'about': user.about,
+          }));
+    } catch (_) {}
+  }
+
+  /// Signs out and forgets the persisted session.
+  static Future<void> signOut() async {
+    currentUser = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kSession);
+    } catch (_) {}
+  }
 
   /// Password signup. The account requires email verification before login;
   /// call [verify] with the emailed code to complete it.
@@ -134,6 +176,7 @@ class AuthApi {
     final decoded = await _postRaw(path, body);
     final user = AuthUser.fromJson(decoded);
     currentUser = user;
+    await _persistSession(user);
     return user;
   }
 
