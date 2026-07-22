@@ -42,6 +42,7 @@ class _HomePageState extends State<HomeScreen> {
   ];
   int _phrase = 0;
   Timer? _phraseTimer;
+  Timer? _syncTimer;
 
   @override
   void initState() {
@@ -53,11 +54,16 @@ class _HomePageState extends State<HomeScreen> {
     _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
       if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
     });
+    // Quiet resync: fresh places and trending with no manual refresh.
+    _syncTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (mounted) _load();
+    });
   }
 
   @override
   void dispose() {
     _phraseTimer?.cancel();
+    _syncTimer?.cancel();
     super.dispose();
   }
 
@@ -277,10 +283,23 @@ class _HomePageState extends State<HomeScreen> {
                         child: Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                'Hello $name',
-                                style: TextStyle(
-                                    color: inkSoft(context), fontSize: 17),
+                              child: Text.rich(
+                                TextSpan(
+                                  text: 'Hello ',
+                                  style: TextStyle(
+                                      color: inkSoft(context), fontSize: 17),
+                                  children: [
+                                    TextSpan(
+                                      text: name,
+                                      style: const TextStyle(
+                                        color: Color(0xFF1E319D),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                    const TextSpan(text: ' 👋'),
+                                  ],
+                                ),
                               ),
                             ),
                             // Notifications bell — new-content inbox.

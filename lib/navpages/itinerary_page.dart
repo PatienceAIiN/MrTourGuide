@@ -513,34 +513,6 @@ class _ItineraryPageState extends State<ItineraryPage> {
               Entrance(index: i, child: _sectionCard(_sections()[i])),
             _followUpComposer(),
             ..._placesSection(result!.places),
-            if (media?.images.isNotEmpty ?? false) ...[
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 10),
-                child: Text('Visuals',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              ),
-              SizedBox(
-                height: 120,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: media!.images.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 10),
-                  itemBuilder: (context, i) => GestureDetector(
-                    onTap: () => showImageViewer(context, media!.images[i],
-                        caption: lastQuery),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(media!.images[i],
-                          width: 170,
-                          height: 120,
-                          fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => const SizedBox.shrink()),
-                    ),
-                  ),
-                ),
-              ),
-            ],
             if (media?.youtube.isNotEmpty ?? false) ...[
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),

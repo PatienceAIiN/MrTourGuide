@@ -36,6 +36,41 @@ class LocalNotifs {
     } catch (_) {}
   }
 
+  /// Ongoing progress notification — visible even when the user switches
+  /// apps while an update downloads.
+  static Future<void> showProgress(int id, String title, int percent) async {
+    if (kIsWeb) return;
+    await init();
+    try {
+      await _plugin.show(
+        id,
+        title,
+        '$percent% downloaded',
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            'mrtouride_progress',
+            'Downloads',
+            channelDescription: 'Update download progress',
+            importance: Importance.low,
+            priority: Priority.low,
+            onlyAlertOnce: true,
+            showProgress: true,
+            maxProgress: 100,
+            progress: percent,
+            ongoing: percent < 100,
+          ),
+        ),
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> cancel(int id) async {
+    if (kIsWeb) return;
+    try {
+      await _plugin.cancel(id);
+    } catch (_) {}
+  }
+
   static Future<void> show(String title, String body, {String? payload}) async {
     if (kIsWeb) return;
     await init();

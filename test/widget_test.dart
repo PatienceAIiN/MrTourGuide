@@ -44,7 +44,9 @@ void main() {
     // The page is taller than the viewport; the button must be reachable
     // by scrolling.
     await tester.ensureVisible(find.text('Sign Up'));
-    await tester.pumpAndSettle();
+    // The artwork floats forever, so settle-forever would time out — a
+    // fixed pump is enough for the scroll to finish.
+    await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('Sign Up'), findsOneWidget);
   });
 

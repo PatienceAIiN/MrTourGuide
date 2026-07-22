@@ -29,10 +29,21 @@ Future<void> runUpdateFlow(BuildContext context, UpdateInfo info) async {
     return;
   }
 
-  // Background mode: no blocking dialog — download quietly, notify on done.
+  // Background mode: no blocking dialog — a progress notification shows
+  // the download even when the user switches apps.
   newSnackBar(context,
       title: 'Downloading v${info.version} in the background…');
-  UpdateInstaller.download(info, (_) {}).then((path) async {
+  const notifId = 4242;
+  var lastPct = -1;
+  UpdateInstaller.download(info, (p) {
+    final pct = (p * 100).round();
+    if (pct != lastPct && pct % 4 == 0) {
+      lastPct = pct;
+      LocalNotifs.showProgress(
+          notifId, 'Downloading Mr.TourGuide v${info.version}', pct);
+    }
+  }).then((path) async {
+    await LocalNotifs.cancel(notifId);
     Haptics.string();
     await LocalNotifs.show(
       'Update ready to install',
@@ -51,6 +62,7 @@ Future<void> runUpdateFlow(BuildContext context, UpdateInfo info) async {
       if (install) await UpdateInstaller.install(path);
     }
   }).catchError((Object e) {
+    LocalNotifs.cancel(notifId);
     if (context.mounted) {
       newSnackBar(context,
           title: e is UpdateDownloadException

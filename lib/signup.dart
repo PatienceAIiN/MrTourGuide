@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'constant.dart';
+import 'widgets/ux.dart';
 import 'navpages/main_page.dart';
 import 'services/auth_api.dart';
 import 'widgets/auth_dialogs.dart';
@@ -119,9 +120,11 @@ class _SingUpPageState extends State<SingUpPage> {
                 Container(
                   margin: const EdgeInsets.only(top: 30),
                   child: const Center(
-                    child: Image(
-                      image: AssetImage("assets/image/bg.png"),
-                      width: 200,
+                    child: Floaty(
+                      child: Image(
+                        image: AssetImage("assets/image/bg.png"),
+                        width: 200,
+                      ),
                     ),
                   ),
                 ),

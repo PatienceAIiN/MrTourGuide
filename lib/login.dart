@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'constant.dart';
+import 'widgets/ux.dart';
 import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/signup.dart';
@@ -92,9 +93,11 @@ class _LoginPageState extends State<LoginPage> {
                         Container(
                           margin: const EdgeInsets.only(top: 30),
                           child: const Center(
-                            child: Image(
-                              image: AssetImage("assets/image/logbg.png"),
-                              width: 200,
+                            child: Floaty(
+                              child: Image(
+                                image: AssetImage("assets/image/logbg.png"),
+                                width: 200,
+                              ),
                             ),
                           ),
                         ),

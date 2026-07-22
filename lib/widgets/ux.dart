@@ -3,6 +3,40 @@ import 'package:flutter/material.dart';
 import '../constant.dart';
 import '../services/haptic_service.dart';
 
+/// Gentle endless float — breathes life into images and icons.
+class Floaty extends StatefulWidget {
+  final Widget child;
+  final double amplitude;
+  const Floaty({super.key, required this.child, this.amplitude = 6});
+
+  @override
+  State<Floaty> createState() => _FloatyState();
+}
+
+class _FloatyState extends State<Floaty> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(seconds: 3))
+        ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) => Transform.translate(
+        offset: Offset(0, -widget.amplitude / 2 + widget.amplitude * _c.value),
+        child: child,
+      ),
+      child: widget.child,
+    );
+  }
+}
+
 /// Consistent confirmation dialog. Returns true when confirmed.
 Future<bool> confirmDialog(
   BuildContext context, {

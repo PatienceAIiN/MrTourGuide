@@ -15,6 +15,7 @@ import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/image_tools.dart';
 import '../services/media_api.dart';
+import '../services/tab_events.dart';
 import '../widgets/ux.dart';
 
 /// Experience-video dashboard.
@@ -53,14 +54,49 @@ class _DashboardPageState extends State<DashboardPage> {
 
   bool get _mineMode => AuthApi.currentUser != null && studioFeed == 'mine';
 
+  Timer? _syncTimer;
+
   @override
   void initState() {
     super.initState();
     _loadCities();
+    // Realtime feel: quiet resync every 45s — new uploads and counts just
+    // appear, no pull-to-refresh needed (catalog GETs are edge-cached).
+    _syncTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      if (mounted) _silentSync();
+    });
+    TabEvents.changed.addListener(_onTabChanged);
+  }
+
+  void _onTabChanged() {
+    // Landing on this tab always shows the freshest catalog.
+    if (mounted && TabEvents.changed.value == 1) _silentSync();
+  }
+
+  Future<void> _silentSync() async {
+    try {
+      final result = await MediaApi.fetchCities(
+          mine: AuthApi.currentUser?.isCreator ?? false);
+      if (!mounted) return;
+      setState(() => cities = result);
+      final city = selectedCity;
+      if (city == null) return;
+      final page = await MediaApi.fetchVideos(city,
+          offset: 0, limit: videos.length.clamp(2, 50), mine: _mineMode);
+      if (!mounted) return;
+      setState(() {
+        videos
+          ..clear()
+          ..addAll(page.videos);
+        hasMore = page.hasMore;
+      });
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    TabEvents.changed.removeListener(_onTabChanged);
+    _syncTimer?.cancel();
     _pollTimer?.cancel();
     super.dispose();
   }
