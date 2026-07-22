@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'ar_view.dart';
 import 'constant.dart';
@@ -181,16 +180,25 @@ class _DetailScreenState extends State<DetailScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(
+                            // Wrap: rating flows to the next line on narrow
+                            // screens instead of overflowing the card.
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                const Icon(Icons.location_on,
-                                    color: blue, size: 18),
-                                const SizedBox(width: 4),
-                                Text(place.location,
-                                    style: const TextStyle(
-                                        color: Colors.grey, fontSize: 13)),
-                                if (weather != null) ...[
-                                  const SizedBox(width: 10),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.location_on,
+                                        color: blue, size: 18),
+                                    const SizedBox(width: 4),
+                                    Text(place.location,
+                                        style: const TextStyle(
+                                            color: Colors.grey, fontSize: 13)),
+                                  ],
+                                ),
+                                if (weather != null)
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 8, vertical: 2),
@@ -207,21 +215,22 @@ class _DetailScreenState extends State<DetailScreen> {
                                           fontWeight: FontWeight.w600),
                                     ),
                                   ),
-                                ],
-                                const Spacer(),
-                                Row(children: [
-                                  for (var i = 0; i < 5; i++)
-                                    Icon(
-                                        i < place.rating.round()
-                                            ? Icons.star
-                                            : Icons.star_border,
-                                        color: Colors.amber,
-                                        size: 16),
-                                  const SizedBox(width: 4),
-                                  Text(place.rating.toStringAsFixed(1),
-                                      style: const TextStyle(
-                                          color: Colors.grey, fontSize: 12)),
-                                ]),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    for (var i = 0; i < 5; i++)
+                                      Icon(
+                                          i < place.rating.round()
+                                              ? Icons.star
+                                              : Icons.star_border,
+                                          color: Colors.amber,
+                                          size: 16),
+                                    const SizedBox(width: 4),
+                                    Text(place.rating.toStringAsFixed(1),
+                                        style: const TextStyle(
+                                            color: Colors.grey, fontSize: 12)),
+                                  ],
+                                ),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -239,53 +248,33 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Actions
+                  // Single action: MR/VR. Feel controls live inside each
+                  // experience (creator-configured in the player).
                   Entrance(
                     index: 1,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: Colors.purple,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14)),
-                            ),
-                            onPressed: place.modelUrl != null
-                                ? () => Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => ArViewPage(
-                                          title: '${place.title} — MR/VR',
-                                          modelSrc: place.modelUrl,
-                                        ),
-                                      ),
-                                    )
-                                : _mrvrNotAvailable,
-                            icon: const Icon(Icons.view_in_ar),
-                            label: const Text('MR/VR'),
-                          ),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.purple,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.purple,
-                              side: const BorderSide(color: Colors.purple),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14)),
-                            ),
-                            onPressed: () {
-                              launchUrl(Uri.parse(
-                                  'https://developer.bhaptics.com/application/upSOC6r1v4rRJgcFauTL'));
-                            },
-                            icon: const Icon(Icons.vibration),
-                            label: const Text('Feel It'),
-                          ),
-                        ),
-                      ],
+                        onPressed: place.modelUrl != null
+                            ? () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => ArViewPage(
+                                      title: '${place.title} — MR/VR',
+                                      modelSrc: place.modelUrl,
+                                    ),
+                                  ),
+                                )
+                            : _mrvrNotAvailable,
+                        icon: const Icon(Icons.view_in_ar),
+                        label: const Text('MR/VR'),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 24),

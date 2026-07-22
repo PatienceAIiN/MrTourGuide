@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -156,67 +158,229 @@ class _DashboardPageState extends State<DashboardPage> {
     if (file == null || file.bytes == null) return;
     if (!mounted) return;
 
-    final title = await _askTitle(file.name);
-    if (title == null || title.trim().isEmpty) return;
-    if (!mounted) return;
-
-    final sizeMb = (file.bytes!.length / (1024 * 1024)).toStringAsFixed(1);
-    final ok = await confirmDialog(
-      context,
-      title: 'Publish experience?',
-      message: '"${title.trim()}" ($sizeMb MB) will be uploaded to '
-          '${_cityName(city)} and processed by the ML pipeline '
-          '(trim, enhance, haptic track).',
-      confirmLabel: 'Upload',
-    );
-    if (!ok || !mounted) return;
-
-    setState(() => uploading = true);
-    try {
-      await MediaApi.uploadVideo(
-        city: city,
-        title: title.trim(),
-        filename: file.name,
-        bytes: file.bytes!,
-      );
-      if (!mounted) return;
-      setState(() => uploading = false);
-      newSnackBar(context,
-          title: 'Uploaded! Processing feel & sound for "${title.trim()}"...');
-      await _loadCities(); // refresh counts + list
-    } on AuthException catch (e) {
-      if (!mounted) return;
-      setState(() => uploading = false);
-      newSnackBar(context, title: e.message);
-    }
+    await _uploadControlSheet(city, file.name, file.bytes!);
   }
 
-  Future<String?> _askTitle(String filename) {
-    final controller = TextEditingController(
+  /// The publish control window: everything about the experience is set
+  /// here before upload — title, video type (Normal / VR 360° / MR), feel
+  /// mapping (auto ML track or per-frame fine-tuning), feel intensity and
+  /// playback defaults.
+  Future<void> _uploadControlSheet(
+      String city, String filename, Uint8List bytes) async {
+    final titleCtl = TextEditingController(
       text: filename.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll('_', ' '),
     );
-    return showDialog<String>(
+    var config = const ExperienceConfig();
+    var busy = false;
+    final sizeMb = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text('Video title'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'e.g. Taj Mahal Sunrise'),
+      isScrollControlled: true,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheet) => Padding(
+          padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 14,
+              bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: Colors.grey.withValues(alpha: 0.4),
+                        borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    const Icon(Icons.cloud_upload, color: blue, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('Publish to ${_cityName(city)}',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text('$filename · $sizeMb MB',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: titleCtl,
+                  decoration: const InputDecoration(
+                    labelText: 'Experience title',
+                    hintText: 'e.g. Taj Mahal Sunrise',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Video type',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 8),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                        value: 'normal',
+                        icon: Icon(Icons.smart_display, size: 16),
+                        label: Text('Normal')),
+                    ButtonSegment(
+                        value: 'vr',
+                        icon: Icon(Icons.vrpano, size: 16),
+                        label: Text('VR 360°')),
+                    ButtonSegment(
+                        value: 'mr',
+                        icon: Icon(Icons.view_in_ar, size: 16),
+                        label: Text('MR')),
+                  ],
+                  selected: {config.kind},
+                  onSelectionChanged: (s) {
+                    Haptics.tick();
+                    setSheet(() => config = config.copyWith(kind: s.first));
+                  },
+                ),
+                const SizedBox(height: 16),
+                const Text('Feel mapping',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ChoiceChip(
+                      avatar: const Icon(Icons.auto_awesome, size: 15),
+                      label: const Text('Auto (ML haptic track)'),
+                      selected: config.feelMode == 'auto',
+                      onSelected: (_) {
+                        Haptics.tick();
+                        setSheet(
+                            () => config = config.copyWith(feelMode: 'auto'));
+                      },
+                    ),
+                    ChoiceChip(
+                      avatar: const Icon(Icons.tune, size: 15),
+                      label: const Text('Per-frame (fine control)'),
+                      selected: config.feelMode == 'perframe',
+                      onSelected: (_) {
+                        Haptics.tick();
+                        setSheet(() =>
+                            config = config.copyWith(feelMode: 'perframe'));
+                      },
+                    ),
+                  ],
+                ),
+                if (config.feelMode == 'perframe')
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: Text(
+                      'After processing, open Experience settings on the video '
+                      'to fine-tune the feel frame by frame.',
+                      style: TextStyle(color: Colors.grey, fontSize: 11.5),
+                    ),
+                  ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.waves, color: Colors.purple),
+                  title: const Text('Feel intensity'),
+                  subtitle: Slider(
+                    value: config.intensity,
+                    divisions: 10,
+                    label: '${(config.intensity * 100).round()}%',
+                    activeColor: Colors.purpleAccent,
+                    onChanged: (v) {
+                      if ((v * 10).round() != (config.intensity * 10).round()) {
+                        Haptics.level(v);
+                      }
+                      setSheet(() => config = config.copyWith(intensity: v));
+                    },
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Haptics (real feel)'),
+                  secondary: const Icon(Icons.vibration, color: Colors.purple),
+                  value: config.haptics,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(haptics: v)),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Sound experience'),
+                  secondary: const Icon(Icons.volume_up, color: blue),
+                  value: config.sound,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(sound: v)),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Autoplay for viewers'),
+                  secondary: const Icon(Icons.play_circle, color: blue),
+                  value: config.autoplay,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(autoplay: v)),
+                ),
+                const SizedBox(height: 10),
+                LoadingButton(
+                  busy: busy,
+                  label: 'Upload & publish',
+                  icon: Icons.cloud_upload,
+                  onPressed: () async {
+                    final title = titleCtl.text.trim();
+                    if (title.isEmpty) {
+                      newSnackBar(context, title: 'Give the video a title.');
+                      return;
+                    }
+                    setSheet(() => busy = true);
+                    setState(() => uploading = true);
+                    try {
+                      final video = await MediaApi.uploadVideo(
+                        city: city,
+                        title: title,
+                        filename: filename,
+                        bytes: bytes,
+                      );
+                      // Apply the creator's control settings right away.
+                      try {
+                        await MediaApi.updateConfig(video.id, config);
+                      } catch (_) {}
+                      if (!mounted) return;
+                      setState(() => uploading = false);
+                      if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      newSnackBar(context,
+                          title: 'Uploaded! Processing feel & sound for '
+                              '"$title"...');
+                      await _loadCities(); // refresh counts + list
+                    } on AuthException catch (e) {
+                      if (!mounted) return;
+                      setState(() => uploading = false);
+                      setSheet(() => busy = false);
+                      newSnackBar(context, title: e.message);
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Continue'),
-          ),
-        ],
       ),
     );
+    if (mounted && uploading) setState(() => uploading = false);
   }
 
   /// Creator: per-video experience configuration sheet.
@@ -225,89 +389,135 @@ class _DashboardPageState extends State<DashboardPage> {
     var saving = false;
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (context) => StatefulBuilder(
         builder: (context, setSheet) => Padding(
           padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Experience settings — ${video.title}',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 4),
-              const Text(
-                'Defaults viewers get for this video (their own settings '
-                'still override).',
-                style: TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-              SwitchListTile(
-                title: const Text('Haptics (real feel)'),
-                secondary: const Icon(Icons.vibration, color: Colors.purple),
-                value: config.haptics,
-                activeThumbColor: blue,
-                onChanged: (v) => setSheet(() => config = ExperienceConfig(
-                    haptics: v,
-                    sound: config.sound,
-                    intensity: config.intensity)),
-              ),
-              SwitchListTile(
-                title: const Text('Sound experience'),
-                secondary: const Icon(Icons.volume_up, color: blue),
-                value: config.sound,
-                activeThumbColor: blue,
-                onChanged: (v) => setSheet(() => config = ExperienceConfig(
-                    haptics: config.haptics,
-                    sound: v,
-                    intensity: config.intensity)),
-              ),
-              ListTile(
-                leading: const Icon(Icons.waves, color: Colors.purple),
-                title: const Text('Feel intensity'),
-                subtitle: Slider(
-                  value: config.intensity,
-                  divisions: 10,
-                  label: '${(config.intensity * 100).round()}%',
-                  activeColor: Colors.purpleAccent,
-                  onChanged: (v) {
-                    if ((v * 10).round() != (config.intensity * 10).round()) {
-                      Haptics.level(v);
-                    }
-                    setSheet(() => config = ExperienceConfig(
-                        haptics: config.haptics,
-                        sound: config.sound,
-                        intensity: v));
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Experience settings — ${video.title}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Defaults viewers get for this video (their own settings '
+                  'still override).',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                        value: 'normal',
+                        icon: Icon(Icons.smart_display, size: 16),
+                        label: Text('Normal')),
+                    ButtonSegment(
+                        value: 'vr',
+                        icon: Icon(Icons.vrpano, size: 16),
+                        label: Text('VR 360°')),
+                    ButtonSegment(
+                        value: 'mr',
+                        icon: Icon(Icons.view_in_ar, size: 16),
+                        label: Text('MR')),
+                  ],
+                  selected: {config.kind},
+                  onSelectionChanged: (s) {
+                    Haptics.tick();
+                    setSheet(() => config = config.copyWith(kind: s.first));
                   },
                 ),
-              ),
-              const SizedBox(height: 8),
-              LoadingButton(
-                busy: saving,
-                label: 'Save configuration',
-                icon: Icons.save,
-                onPressed: () async {
-                  setSheet(() => saving = true);
-                  try {
-                    final updated =
-                        await MediaApi.updateConfig(video.id, config);
-                    if (!context.mounted) return;
-                    Navigator.pop(context);
-                    final i = videos.indexWhere((v) => v.id == updated.id);
-                    if (i >= 0) setState(() => videos[i] = updated);
-                    newSnackBar(this.context,
-                        title: 'Saved experience settings.');
-                  } on AuthException catch (e) {
-                    setSheet(() => saving = false);
-                    if (context.mounted) {
-                      newSnackBar(context, title: e.message);
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ChoiceChip(
+                      avatar: const Icon(Icons.auto_awesome, size: 15),
+                      label: const Text('Auto feel'),
+                      selected: config.feelMode == 'auto',
+                      onSelected: (_) => setSheet(
+                          () => config = config.copyWith(feelMode: 'auto')),
+                    ),
+                    ChoiceChip(
+                      avatar: const Icon(Icons.tune, size: 15),
+                      label: const Text('Per-frame feel'),
+                      selected: config.feelMode == 'perframe',
+                      onSelected: (_) => setSheet(
+                          () => config = config.copyWith(feelMode: 'perframe')),
+                    ),
+                  ],
+                ),
+                SwitchListTile(
+                  title: const Text('Autoplay for viewers'),
+                  secondary: const Icon(Icons.play_circle, color: blue),
+                  value: config.autoplay,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(autoplay: v)),
+                ),
+                SwitchListTile(
+                  title: const Text('Haptics (real feel)'),
+                  secondary: const Icon(Icons.vibration, color: Colors.purple),
+                  value: config.haptics,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(haptics: v)),
+                ),
+                SwitchListTile(
+                  title: const Text('Sound experience'),
+                  secondary: const Icon(Icons.volume_up, color: blue),
+                  value: config.sound,
+                  activeThumbColor: blue,
+                  onChanged: (v) =>
+                      setSheet(() => config = config.copyWith(sound: v)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.waves, color: Colors.purple),
+                  title: const Text('Feel intensity'),
+                  subtitle: Slider(
+                    value: config.intensity,
+                    divisions: 10,
+                    label: '${(config.intensity * 100).round()}%',
+                    activeColor: Colors.purpleAccent,
+                    onChanged: (v) {
+                      if ((v * 10).round() != (config.intensity * 10).round()) {
+                        Haptics.level(v);
+                      }
+                      setSheet(() => config = config.copyWith(intensity: v));
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                LoadingButton(
+                  busy: saving,
+                  label: 'Save configuration',
+                  icon: Icons.save,
+                  onPressed: () async {
+                    setSheet(() => saving = true);
+                    try {
+                      final updated =
+                          await MediaApi.updateConfig(video.id, config);
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      final i = videos.indexWhere((v) => v.id == updated.id);
+                      if (i >= 0) setState(() => videos[i] = updated);
+                      newSnackBar(this.context,
+                          title: 'Saved experience settings.');
+                    } on AuthException catch (e) {
+                      setSheet(() => saving = false);
+                      if (context.mounted) {
+                        newSnackBar(context, title: e.message);
+                      }
                     }
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-            ],
+                  },
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
           ),
         ),
       ),

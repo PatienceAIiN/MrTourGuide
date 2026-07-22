@@ -1746,6 +1746,13 @@ Future<Response> _updateConfig(Request request, String id) async {
     'intensity': body['intensity'] is num
         ? (body['intensity'] as num).clamp(0, 1)
         : 0.7,
+    'kind': const ['normal', 'vr', 'mr'].contains(body['kind'])
+        ? body['kind']
+        : 'normal',
+    'autoplay': body['autoplay'] is bool ? body['autoplay'] : true,
+    'feelMode': const ['auto', 'perframe'].contains(body['feelMode'])
+        ? body['feelMode']
+        : 'auto',
   };
   final rows = await _db.execute(
     Sql.named('UPDATE videos SET config = @config WHERE id = @id '

@@ -56,21 +56,58 @@ class ExperienceConfig {
   final bool sound;
   final double intensity;
 
+  /// 'normal' | 'vr' (360°) | 'mr' — set by the creator at upload.
+  final String kind;
+  final bool autoplay;
+
+  /// 'auto' — ML builds the haptic track; 'perframe' — creator fine-tunes
+  /// the feel frame by frame after processing.
+  final String feelMode;
+
   const ExperienceConfig({
     this.haptics = true,
     this.sound = true,
     this.intensity = 0.7,
+    this.kind = 'normal',
+    this.autoplay = true,
+    this.feelMode = 'auto',
   });
+
+  ExperienceConfig copyWith({
+    bool? haptics,
+    bool? sound,
+    double? intensity,
+    String? kind,
+    bool? autoplay,
+    String? feelMode,
+  }) =>
+      ExperienceConfig(
+        haptics: haptics ?? this.haptics,
+        sound: sound ?? this.sound,
+        intensity: intensity ?? this.intensity,
+        kind: kind ?? this.kind,
+        autoplay: autoplay ?? this.autoplay,
+        feelMode: feelMode ?? this.feelMode,
+      );
 
   factory ExperienceConfig.fromJson(Map<String, dynamic>? json) =>
       ExperienceConfig(
         haptics: json?['haptics'] as bool? ?? true,
         sound: json?['sound'] as bool? ?? true,
         intensity: (json?['intensity'] as num?)?.toDouble() ?? 0.7,
+        kind: json?['kind'] as String? ?? 'normal',
+        autoplay: json?['autoplay'] as bool? ?? true,
+        feelMode: json?['feelMode'] as String? ?? 'auto',
       );
 
-  Map<String, dynamic> toJson() =>
-      {'haptics': haptics, 'sound': sound, 'intensity': intensity};
+  Map<String, dynamic> toJson() => {
+        'haptics': haptics,
+        'sound': sound,
+        'intensity': intensity,
+        'kind': kind,
+        'autoplay': autoplay,
+        'feelMode': feelMode,
+      };
 }
 
 class VideoItem {
