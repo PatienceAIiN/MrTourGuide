@@ -320,8 +320,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _upload() async {
-    final city = selectedCity;
-    if (city == null || uploading) return;
+    // Empty catalog is fine: the publish sheet enrolls the place from the
+    // City field, so the very first upload can create the first place.
+    final city = selectedCity ?? '';
+    if (uploading) return;
 
     // Mobile streams straight from disk (large videos never sit in RAM);
     // web needs the bytes.
@@ -554,6 +556,10 @@ class _DashboardPageState extends State<DashboardPage> {
     final countryCtl = TextEditingController();
     // Location defaults follow the chosen place's catalog line.
     void prefillLocation(String slug) {
+      if (slug.isEmpty) {
+        countryCtl.text = 'India';
+        return;
+      }
       final parts = cities
           .firstWhere((c) => c.slug == slug,
               orElse: () => City(slug: slug, name: slug, videoCount: 0))
@@ -1395,26 +1401,25 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
       // Creators publish; travelers just experience.
       // Lifted above the floating bottom navbar so it is never hidden.
-      floatingActionButton:
-          (selectedCity == null || AuthApi.currentUser == null)
-              ? null
-              : Padding(
-                  padding: const EdgeInsets.only(bottom: 86),
-                  child: FloatingActionButton.extended(
-                    onPressed: uploading ? null : _upload,
-                    backgroundColor: blue,
-                    foregroundColor: white,
-                    icon: uploading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                                color: white, strokeWidth: 2),
-                          )
-                        : const Icon(Icons.upload),
-                    label: Text(uploading ? 'Uploading...' : 'Upload video'),
-                  ),
-                ),
+      floatingActionButton: AuthApi.currentUser == null
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(bottom: 86),
+              child: FloatingActionButton.extended(
+                onPressed: uploading ? null : _upload,
+                backgroundColor: blue,
+                foregroundColor: white,
+                icon: uploading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            color: white, strokeWidth: 2),
+                      )
+                    : const Icon(Icons.upload),
+                label: Text(uploading ? 'Uploading...' : 'Upload video'),
+              ),
+            ),
       body: RefreshIndicator(
         onRefresh: _loadCities,
         child: loadingCities
