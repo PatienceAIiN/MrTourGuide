@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
 
 import 'settings_service.dart';
 
@@ -31,10 +33,30 @@ class Haptics {
     if (_enabled) HapticFeedback.heavyImpact();
   }
 
-  /// Feel the current intensity while scrubbing a slider: light → medium →
-  /// heavy as the value rises. Call on each step change, not every pixel.
+  static bool? _hasAmplitude;
+
+  /// Feel the current intensity: on phones with amplitude control this is a
+  /// continuous 1-255 strength (console-controller smooth); otherwise it
+  /// falls back to the three graded impacts.
   static void level(double v) {
     if (!_enabled) return;
+    _levelAsync(v.clamp(0.0, 1.0));
+  }
+
+  static Future<void> _levelAsync(double v) async {
+    if (!kIsWeb) {
+      try {
+        _hasAmplitude ??= await Vibration.hasAmplitudeControl();
+        if (_hasAmplitude == true) {
+          // Short pulse whose strength tracks the feel value exactly.
+          await Vibration.vibrate(
+            duration: (30 + 50 * v).round(),
+            amplitude: (1 + 254 * v).round(),
+          );
+          return;
+        }
+      } catch (_) {}
+    }
     if (v < 0.34) {
       HapticFeedback.lightImpact();
     } else if (v < 0.67) {

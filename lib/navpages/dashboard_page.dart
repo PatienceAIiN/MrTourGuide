@@ -44,12 +44,13 @@ class _DashboardPageState extends State<DashboardPage> {
   String? error;
   Timer? _pollTimer;
 
-  /// Creator studio: 'mine' shows own uploads (any status), 'catalog' the
-  /// public feed. Travelers always see the catalog.
-  String studioFeed = 'mine';
+  /// 'mine' shows own uploads (any status), 'catalog' the public feed.
+  /// Creators land on their studio; travelers land on the catalog but can
+  /// switch to manage their own uploads too.
+  String studioFeed =
+      (AuthApi.currentUser?.isCreator ?? false) ? 'mine' : 'catalog';
 
-  bool get _mineMode =>
-      (AuthApi.currentUser?.isCreator ?? false) && studioFeed == 'mine';
+  bool get _mineMode => AuthApi.currentUser != null && studioFeed == 'mine';
 
   @override
   void initState() {
@@ -1248,25 +1249,26 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
       // Creators publish; travelers just experience.
       // Lifted above the floating bottom navbar so it is never hidden.
-      floatingActionButton: (selectedCity == null || !isCreator)
-          ? null
-          : Padding(
-              padding: const EdgeInsets.only(bottom: 86),
-              child: FloatingActionButton.extended(
-                onPressed: uploading ? null : _upload,
-                backgroundColor: blue,
-                foregroundColor: white,
-                icon: uploading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            color: white, strokeWidth: 2),
-                      )
-                    : const Icon(Icons.upload),
-                label: Text(uploading ? 'Uploading...' : 'Upload video'),
-              ),
-            ),
+      floatingActionButton:
+          (selectedCity == null || AuthApi.currentUser == null)
+              ? null
+              : Padding(
+                  padding: const EdgeInsets.only(bottom: 86),
+                  child: FloatingActionButton.extended(
+                    onPressed: uploading ? null : _upload,
+                    backgroundColor: blue,
+                    foregroundColor: white,
+                    icon: uploading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                                color: white, strokeWidth: 2),
+                          )
+                        : const Icon(Icons.upload),
+                    label: Text(uploading ? 'Uploading...' : 'Upload video'),
+                  ),
+                ),
       body: RefreshIndicator(
         onRefresh: _loadCities,
         child: loadingCities
@@ -1283,7 +1285,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         child: Text(error!, style: const TextStyle(color: red)),
                       ),
                     ),
-                  if (isCreator) ...[
+                  if (AuthApi.currentUser != null) ...[
                     SegmentedButton<String>(
                       segments: const [
                         ButtonSegment(
@@ -1444,7 +1446,7 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
         ),
-        trailing: isCreator && _mineMode
+        trailing: _mineMode
             ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [

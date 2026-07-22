@@ -11,9 +11,11 @@ import 'package:mrtouride/navpages/my_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
 import 'package:mrtouride/services/api_base.dart';
 import 'package:mrtouride/services/auth_api.dart';
+import 'package:mrtouride/services/haptic_service.dart';
 import 'package:mrtouride/services/notification_service.dart';
 import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
+import 'package:mrtouride/services/tab_events.dart';
 import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
@@ -33,13 +35,16 @@ class _MainPageState extends State<MainPage> {
   bool hasNewContent = false;
   Timer? _newContentTimer;
 
+  // Ordered exactly like the navbar so swipes travel left→right in
+  // sequence: Home → Studio → Planner → Community → Profile. Search is
+  // last (hidden from the bar; opened from the home search field).
   late final List<Widget> pages = [
     HomeScreen(onSelectTab: onTap),
     DashboardPage(onSelectTab: onTap),
-    CommunityPage(onSelectTab: onTap),
-    SearchPage(onSelectTab: onTap),
-    MyPage(onSelectTab: onTap),
     ItineraryPage(onSelectTab: onTap),
+    CommunityPage(onSelectTab: onTap),
+    MyPage(onSelectTab: onTap),
+    SearchPage(onSelectTab: onTap),
   ];
 
   @override
@@ -96,6 +101,7 @@ class _MainPageState extends State<MainPage> {
         curve: Curves.easeOutCubic,
       );
     }
+    TabEvents.changed.value = index;
     setState(() => currentIndex = index);
   }
 
@@ -121,7 +127,15 @@ class _MainPageState extends State<MainPage> {
         extendBody: true, // content flows under the floating bar
         body: PageView(
           controller: _pageController,
-          onPageChanged: (i) => setState(() => currentIndex = i),
+          // Swipe between tabs — iOS-like, sequential, haptic ticks.
+          physics: const PageScrollPhysics(),
+          onPageChanged: (i) {
+            if (i != currentIndex) {
+              Haptics.tick();
+              TabEvents.changed.value = i;
+              setState(() => currentIndex = i);
+            }
+          },
           children: pages,
         ),
         bottomNavigationBar: AppBottomNav(
@@ -140,7 +154,7 @@ class _MainPageState extends State<MainPage> {
                 tabIndex: 1,
                 badge: hasNewContent),
             const NavEntry(
-                icon: Icons.route_rounded, label: 'Planner', tabIndex: 5),
+                icon: Icons.route_rounded, label: 'Planner', tabIndex: 2),
             NavEntry(
               icon: Icons.view_in_ar_rounded,
               label: 'MR/VR',
@@ -151,7 +165,7 @@ class _MainPageState extends State<MainPage> {
               ),
             ),
             const NavEntry(
-                icon: Icons.forum_rounded, label: 'Community', tabIndex: 2),
+                icon: Icons.forum_rounded, label: 'Community', tabIndex: 3),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',

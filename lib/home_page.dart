@@ -226,7 +226,7 @@ class _HomePageState extends State<HomeScreen> {
     switch (n.type) {
       case 'reaction':
       case 'reply':
-        widget.onSelectTab?.call(2); // Community
+        widget.onSelectTab?.call(3); // Community
       case 'update':
         UpdateService.check().then((info) {
           if (mounted && info != null && info.isNewer) {
@@ -348,7 +348,7 @@ class _HomePageState extends State<HomeScreen> {
                         index: 2,
                         child: Springy(
                           haptic: 'tick',
-                          onTap: () => widget.onSelectTab?.call(3),
+                          onTap: () => widget.onSelectTab?.call(5),
                           child: Container(
                             decoration: BoxDecoration(
                               color: pageBg(context),

@@ -487,6 +487,25 @@ void _scheduleMlProcessing(int videoId) {
 
 /// Per-second normalized audio energy (0..1) — the haptic track. Uses
 /// ffmpeg's astats RMS levels; silence → 0, the loudest second → 1.
+/// Community safety: blocks obviously abusive/unsafe text. Light-weight
+/// word screen — heavier moderation can bolt on later without API changes.
+const _blockedTerms = [
+  'fuck', 'bitch', 'bastard', 'asshole', 'chutiya', 'madarchod',
+  'bhenchod', 'randi', 'nude', 'porn', 'sex video', 'kill you',
+  'rape', 'terrorist attack plan',
+];
+
+String? _unsafeText(String text) {
+  final t = ' ${text.toLowerCase()} ';
+  for (final w in _blockedTerms) {
+    if (t.contains(w)) {
+      return 'That content violates community safety rules. '
+          'Keep Mr.TourGuide kind and travel-focused.';
+    }
+  }
+  return null;
+}
+
 /// Fire-and-forget audit log — powers the admin activity view.
 void _logActivity(String actor, String action, String details) {
   () async {
@@ -930,6 +949,30 @@ Future<bool> _sendEmail(String to, String subject, String html) async {
   }
 }
 
+/// Layman-friendly welcome mail: what the app does, with visuals.
+String _welcomeEmailHtml(String name) => '''
+<div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;background:#0e1116;color:#e8ecf2;border-radius:16px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#1E319D,#3CEBFF);padding:34px 28px;text-align:center">
+    <div style="font-size:26px;font-weight:800;color:#fff">Mr.Tour Guide</div>
+    <div style="font-size:13px;color:#e6faff;margin-top:4px">Travel with your senses. From home.</div>
+  </div>
+  <div style="padding:28px">
+    <p style="font-size:16px">Hi <b>$name</b>, welcome aboard! 🎉</p>
+    <p style="font-size:14px;line-height:1.6;color:#c7cfdb">Mr.Tour Guide lets you <b>feel</b> places — not just watch them. Here is what you can do right away:</p>
+    <table style="width:100%;border-collapse:collapse;margin-top:8px">
+      <tr><td style="font-size:26px;padding:10px 12px 10px 0">📳</td><td style="font-size:13.5px;line-height:1.55;color:#e8ecf2;padding:10px 0"><b>Feel every video.</b> Your phone vibrates with the sound of each place — waves, bells, crowds — light to heavy, like being there.</td></tr>
+      <tr><td style="font-size:26px;padding:10px 12px 10px 0">🥽</td><td style="font-size:13.5px;line-height:1.55;color:#e8ecf2;padding:10px 0"><b>Step inside with VR.</b> 360° experiences open in headset view — try the free <b>Feel Demo</b> place first.</td></tr>
+      <tr><td style="font-size:26px;padding:10px 12px 10px 0">🤖</td><td style="font-size:13.5px;line-height:1.55;color:#e8ecf2;padding:10px 0"><b>Plan trips by chatting.</b> Ask the AI planner anything — "3 days in the mountains" — then keep tweaking: add a day, make it cheaper.</td></tr>
+      <tr><td style="font-size:26px;padding:10px 12px 10px 0">📷</td><td style="font-size:13.5px;line-height:1.55;color:#e8ecf2;padding:10px 0"><b>Share your journeys.</b> Post photos and experiences, follow fellow travelers, and upload your own videos for others to feel.</td></tr>
+    </table>
+    <div style="text-align:center;margin:26px 0 10px">
+      <a href="https://mrtourguide.patienceai.in" style="background:#3CEBFF;color:#04222b;text-decoration:none;font-weight:700;padding:13px 30px;border-radius:12px;font-size:14px">Start exploring</a>
+    </div>
+    <p style="font-size:11px;color:#8b95a5;text-align:center;margin-top:22px">Mr.Tour Guide · A product of <a href="https://patienceai.in" style="color:#3CEBFF">PatienceAI</a></p>
+  </div>
+</div>
+''';
+
 String _verifyEmailHtml(String code) => '''
 <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
   <h2 style="color:#1E319D">Mr.Tour Guide</h2>
@@ -1017,6 +1060,10 @@ Future<Response> _verify(Request request) async {
     return _json(400, {'error': 'Invalid verification code.'});
   }
   final row = rows.first;
+  // First successful entry: greet them with the feature tour.
+  _sendEmail(row[2] as String, 'Welcome to Mr.Tour Guide! 🌏',
+          _welcomeEmailHtml(row[1] as String))
+      .then((_) {});
   return _json(
       200, {'id': row[0], 'name': row[1], 'email': row[2], 'role': row[3]});
 }
@@ -1112,6 +1159,9 @@ Future<Response> _googleAuth(Request request) async {
       },
     );
     final row = rows.first;
+    _sendEmail(row[2] as String, 'Welcome to Mr.Tour Guide! 🌏',
+            _welcomeEmailHtml(row[1] as String))
+        .then((_) {});
     return _json(201,
         {'id': row[0], 'name': row[1], 'email': row[2], 'role': row[3]});
   }
@@ -1217,6 +1267,65 @@ Future<Response> _cities(Request request) async {
   });
 }
 
+/// Reshare a post into the same community — original author is credited
+/// and notified; the resharer is tagged on the new post.
+Future<Response> _resharePost(Request request, String id) async {
+  final postId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (postId == null) return _json(400, {'error': 'Bad post id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in to reshare.'});
+  final orig = await _db.execute(
+    Sql.named('SELECT community, author_id, author_name, author_role, body, '
+        'image_url, city FROM posts WHERE id = @p'),
+    parameters: {'p': postId},
+  );
+  if (orig.isEmpty) return _json(404, {'error': 'Post not found.'});
+  final gate = await _gateCommunity(orig.first[0] as String, userId);
+  if (gate != null) return gate;
+  final me = await _db.execute(
+    Sql.named('SELECT name FROM users WHERE id = @u'),
+    parameters: {'u': userId},
+  );
+  if (me.isEmpty) return _json(401, {'error': 'Unknown user.'});
+  if (orig.first[1] == userId) {
+    return _json(400, {'error': 'That is already your post.'});
+  }
+  final dup = await _db.execute(
+    Sql.named('SELECT 1 FROM posts WHERE reshared_from = @p '
+        'AND reshared_by = @name'),
+    parameters: {'p': postId, 'name': me.first[0]},
+  );
+  if (dup.isNotEmpty) {
+    return _json(409, {'error': 'You already reshared this post.'});
+  }
+  await _db.execute(
+    Sql.named('INSERT INTO posts (community, author_id, author_name, '
+        'author_role, body, image_url, city, reshared_from, reshared_by) '
+        'VALUES (@c, @aid, @aname, @arole, @body, @img, @city, @from, @by)'),
+    parameters: {
+      'c': orig.first[0],
+      'aid': orig.first[1],
+      'aname': orig.first[2],
+      'arole': orig.first[3],
+      'body': orig.first[4],
+      'img': orig.first[5],
+      'city': orig.first[6],
+      'from': postId,
+      'by': me.first[0],
+    },
+  );
+  // Tell the original author their post is travelling.
+  _tokensFor(userId: orig.first[1] as int).then((tokens) => _sendPush(
+        tokens,
+        'Your post was reshared',
+        '${me.first[0]} reshared your post on Mr.TourGuide.',
+        data: {'type': 'reshare'},
+      ));
+  _logActivity('user:$userId', 'post-reshared', 'post #$postId');
+  return _json(201, {'ok': true});
+}
+
 /// A signed-in user rates a place 1-5 stars (one rating each, updatable).
 Future<Response> _ratePlace(Request request, String slug) async {
   final body = await _readJsonBody(request);
@@ -1269,8 +1378,12 @@ Future<Response> _travelNews(Request request) async {
   // Publisher feeds: direct article URLs + real cover images (enclosures).
   const feeds = [
     ('https://timesofindia.indiatimes.com/rssfeeds/2647163.cms',
-        'Times of India'),
+        'TOI Travel'),
+    ('https://www.hindustantimes.com/feeds/rss/lifestyle/travel/rssfeed.xml',
+        'HT Travel'),
     ('https://www.indiatoday.in/rss/1206577', 'India Today'),
+    ('https://www.thehindu.com/life-and-style/travel/feeder/default.rss',
+        'The Hindu Travel'),
   ];
   for (final (feedUrl, sourceName) in feeds) {
     if (items.length >= 10) break;
@@ -1553,7 +1666,8 @@ Future<Response> _communityPosts(Request request) async {
              COALESCE(json_object_agg(r.emoji, r.n) FILTER (WHERE r.emoji IS NOT NULL), '{}'::json),
              COALESCE(json_agg(DISTINCT mr.emoji) FILTER (WHERE mr.emoji IS NOT NULL), '[]'::json),
              p.image_url,
-             (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id)
+             (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id),
+             p.reshared_by
       FROM posts p
       LEFT JOIN (SELECT post_id, emoji, count(*) AS n FROM reactions
                  GROUP BY post_id, emoji) r ON r.post_id = p.id
@@ -1588,6 +1702,7 @@ Future<Response> _communityPosts(Request request) async {
           'myReactions': r[9],
           'imageUrl': r[10],
           'replyCount': r[11],
+          'resharedBy': r[12],
         }
     ],
     'hasMore': hasMore,
@@ -1610,7 +1725,8 @@ Future<Response> _replies(Request request, String id) async {
 
   final rows = await _db.execute(
     Sql.named('SELECT id, author_id, author_name, author_role, body, '
-        'created_at FROM replies WHERE post_id = @p ORDER BY created_at, id'),
+        'created_at, parent_reply_id FROM replies WHERE post_id = @p '
+        'ORDER BY created_at, id'),
     parameters: {'p': postId},
   );
   return _json(200, {
@@ -1623,6 +1739,7 @@ Future<Response> _replies(Request request, String id) async {
           'authorRole': r[3],
           'body': r[4],
           'createdAt': (r[5] as DateTime).toIso8601String(),
+          'parentReplyId': r[6],
         }
     ]
   });
@@ -1637,6 +1754,9 @@ Future<Response> _addReply(Request request, String id) async {
   if (userId == null) return _json(401, {'error': 'Sign in to reply.'});
   if (text.isEmpty) return _json(400, {'error': 'Say something first!'});
   if (text.length > 500) return _json(400, {'error': 'Keep replies under 500 characters.'});
+  final unsafeReply = _unsafeText(text);
+  if (unsafeReply != null) return _json(400, {'error': unsafeReply});
+  final parentReplyId = body?['parentReplyId'] as int?;
 
   final post = await _db.execute(
     Sql.named('SELECT community FROM posts WHERE id = @id'),
@@ -1651,10 +1771,41 @@ Future<Response> _addReply(Request request, String id) async {
     parameters: {'id': userId},
   );
   if (user.isEmpty) return _json(401, {'error': 'Unknown user.'});
+  // Thread notifications: the person being replied to + the post author.
+  final notifyIds = <int>{};
+  if (parentReplyId != null) {
+    final parent = await _db.execute(
+      Sql.named('SELECT author_id FROM replies WHERE id = @r AND post_id = @p'),
+      parameters: {'r': parentReplyId, 'p': postId},
+    );
+    if (parent.isNotEmpty && parent.first[0] != userId) {
+      notifyIds.add(parent.first[0] as int);
+    }
+  }
+  final postAuthorRow = await _db.execute(
+    Sql.named('SELECT author_id FROM posts WHERE id = @p'),
+    parameters: {'p': postId},
+  );
+  if (postAuthorRow.isNotEmpty && postAuthorRow.first[0] != userId) {
+    notifyIds.add(postAuthorRow.first[0] as int);
+  }
+  for (final target in notifyIds) {
+    _tokensFor(userId: target).then((tokens) => _sendPush(
+          tokens,
+          parentReplyId != null && notifyIds.length > 1
+              ? 'New reply in your thread'
+              : 'New reply on Mr.TourGuide',
+          '${user.first[0]} replied: '
+              '${text.length > 60 ? '${text.substring(0, 57)}...' : text}',
+          data: {'type': 'reply'},
+        ));
+  }
   await _db.execute(
     Sql.named('INSERT INTO replies (post_id, author_id, author_name, '
-        'author_role, body) VALUES (@p, @u, @name, @role, @body)'),
+        'author_role, body, parent_reply_id) '
+        'VALUES (@p, @u, @name, @role, @body, @parent)'),
     parameters: {
+      'parent': parentReplyId,
       'p': postId,
       'u': userId,
       'name': user.first[0],
@@ -1749,6 +1900,8 @@ Future<Response> _createPost(Request request) async {
   if (userId == null) return _json(401, {'error': 'Sign in to post.'});
   if (text.isEmpty) return _json(400, {'error': 'Say something first!'});
   if (text.length > 1000) return _json(400, {'error': 'Keep it under 1000 characters.'});
+  final unsafe = _unsafeText(text);
+  if (unsafe != null) return _json(400, {'error': unsafe});
 
   final gate = await _gateCommunity(community, userId);
   if (gate != null) return gate;
@@ -2417,11 +2570,30 @@ Future<Response> _search(Request request) async {
         'ORDER BY uploaded_at DESC, id DESC LIMIT 30'),
     parameters: {'p': pattern},
   );
+  // People: match by name, @username or email.
+  final users = await _db.execute(
+    Sql.named('SELECT u.id, u.name, u.username, u.role, u.avatar_url, '
+        '(SELECT count(*) FROM follows f WHERE f.followee_id = u.id) '
+        'FROM users u WHERE u.name ILIKE @p OR u.username ILIKE @p '
+        'OR u.email ILIKE @p ORDER BY 6 DESC LIMIT 8'),
+    parameters: {'p': pattern},
+  );
   return _json(200, {
     'cities': [
       for (final r in cities) {'slug': r[0], 'name': r[1], 'videoCount': r[2]}
     ],
     'videos': [for (final r in videos) _videoRowToJson(r)],
+    'users': [
+      for (final r in users)
+        {
+          'id': r[0],
+          'name': r[1],
+          'username': r[2],
+          'role': r[3],
+          'avatarUrl': r[4],
+          'followers': r[5],
+        }
+    ],
   });
 }
 
@@ -2435,9 +2607,10 @@ Future<Response> _upload(Request request) async {
   if (city.isEmpty || title.isEmpty) {
     return _json(400, {'error': 'city and title query params required'});
   }
-  // Only creator accounts publish experiences.
-  if (userId == null || await _roleOf(userId) != 'creator') {
-    return _json(403, {'error': 'Only creator accounts can upload.'});
+  // Everyone shares experiences now — creators and travelers alike
+  // (traveler uploads carry the traveler badge, not the creator one).
+  if (userId == null || await _roleOf(userId) == null) {
+    return _json(401, {'error': 'Sign in to upload.'});
   }
   final known = await _db.execute(
     Sql.named('SELECT 1 FROM cities WHERE slug = @city'),
@@ -2985,18 +3158,127 @@ Future<Response> _deleteAccount(Request request) async {
   }
 }
 
+/// Follow / unfollow another member (toggle). Notifies on new follow.
+Future<Response> _followToggle(Request request, String id) async {
+  final body = await _readJsonBody(request);
+  final me = body?['userId'] as int?;
+  final target = int.tryParse(id);
+  if (me == null) return _json(401, {'error': 'Sign in to follow.'});
+  if (target == null || target == me) {
+    return _json(400, {'error': 'Invalid user.'});
+  }
+  final exists = await _db.execute(
+    Sql.named('SELECT 1 FROM follows WHERE follower_id = @f '
+        'AND followee_id = @t'),
+    parameters: {'f': me, 't': target},
+  );
+  bool following;
+  if (exists.isNotEmpty) {
+    await _db.execute(
+      Sql.named('DELETE FROM follows WHERE follower_id = @f '
+          'AND followee_id = @t'),
+      parameters: {'f': me, 't': target},
+    );
+    following = false;
+  } else {
+    try {
+      await _db.execute(
+        Sql.named('INSERT INTO follows (follower_id, followee_id) '
+            'VALUES (@f, @t)'),
+        parameters: {'f': me, 't': target},
+      );
+    } catch (_) {
+      return _json(400, {'error': 'Could not follow that user.'});
+    }
+    following = true;
+    final who = await _db.execute(
+      Sql.named('SELECT name FROM users WHERE id = @u'),
+      parameters: {'u': me},
+    );
+    _tokensFor(userId: target).then((tokens) => _sendPush(
+          tokens,
+          'New follower!',
+          '${who.isEmpty ? 'A traveler' : who.first[0]} started following '
+              'you on Mr.TourGuide.',
+          data: {'type': 'follow'},
+        ));
+  }
+  final counts = await _db.execute(
+    Sql.named('SELECT (SELECT count(*) FROM follows WHERE followee_id = @t)'),
+    parameters: {'t': target},
+  );
+  return _json(200, {'following': following, 'followers': counts.first[0]});
+}
+
+/// Owner updates handle, socials, contact and per-field visibility.
+Future<Response> _updateProfile(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final username =
+      (body?['username'] as String?)?.trim().toLowerCase().replaceAll(' ', '');
+  if (username != null && username.isNotEmpty) {
+    if (!RegExp(r'^[a-z0-9_.]{3,24}$').hasMatch(username)) {
+      return _json(400, {
+        'error': 'Usernames are 3-24 chars: letters, numbers, _ and . only.'
+      });
+    }
+  }
+  final instagram = (body?['instagram'] as String?)?.trim();
+  final phone = (body?['phone'] as String?)?.trim();
+  final privacy = body?['privacy'];
+  try {
+    await _db.execute(
+      Sql.named('UPDATE users SET '
+          'username = COALESCE(@un, username), '
+          'instagram = COALESCE(@ig, instagram), '
+          'phone = COALESCE(@ph, phone), '
+          'privacy = COALESCE(@pr::jsonb, privacy) '
+          'WHERE id = @id'),
+      parameters: {
+        'un': (username?.isEmpty ?? true) ? null : username,
+        'ig': instagram,
+        'ph': phone,
+        'pr': privacy is Map ? jsonEncode(privacy) : null,
+        'id': userId,
+      },
+    );
+  } catch (_) {
+    return _json(409, {'error': 'That username is already taken.'});
+  }
+  return _json(200, {'ok': true});
+}
+
 /// Public profile card (community username taps).
 Future<Response> _publicProfile(Request request, String id) async {
   final userId = int.tryParse(id);
+  final viewer = int.tryParse(request.url.queryParameters['viewerId'] ?? '');
   if (userId == null) return _json(400, {'error': 'Bad user id.'});
   final rows = await _db.execute(
     Sql.named('SELECT u.name, u.role, u.avatar_url, u.about, u.created_at, '
-        '(SELECT count(*) FROM videos v WHERE v.owner_id = u.id) '
+        '(SELECT count(*) FROM videos v WHERE v.owner_id = u.id), '
+        'u.username, u.cover_url, u.instagram, u.phone, u.privacy, u.email, '
+        '(SELECT count(*) FROM follows f WHERE f.followee_id = u.id), '
+        '(SELECT count(*) FROM follows f WHERE f.follower_id = u.id) '
         'FROM users u WHERE u.id = @id'),
     parameters: {'id': userId},
   );
   if (rows.isEmpty) return _json(404, {'error': 'User not found.'});
   final r = rows.first;
+  final privacy = (r[10] is Map)
+      ? Map<String, dynamic>.from(r[10] as Map)
+      : <String, dynamic>{};
+  bool show(String field) =>
+      viewer == userId || (privacy[field] as bool? ?? false);
+  bool isFollowing = false;
+  if (viewer != null && viewer != userId) {
+    final f = await _db.execute(
+      Sql.named('SELECT 1 FROM follows WHERE follower_id = @v '
+          'AND followee_id = @t'),
+      parameters: {'v': viewer, 't': userId},
+    );
+    isFollowing = f.isNotEmpty;
+  }
   return _json(200, {
     'id': userId,
     'name': r[0],
@@ -3005,7 +3287,64 @@ Future<Response> _publicProfile(Request request, String id) async {
     'about': r[3],
     'joined': (r[4] as DateTime).toIso8601String(),
     'uploads': r[5],
+    'username': r[6],
+    'coverUrl': r[7],
+    // Contact + socials: shown only when their owner toggled them public.
+    if (show('instagram') && r[8] != null) 'instagram': r[8],
+    if (show('phone') && r[9] != null) 'phone': r[9],
+    if (show('email')) 'email': r[11],
+    'followers': r[12],
+    'following': r[13],
+    'isFollowing': isFollowing,
+    if (viewer == userId) 'privacy': privacy,
   });
+}
+
+/// Profile cover/banner upload (compressed to 1280px server-side).
+Future<Response> _uploadUserCover(Request request) async {
+  final params = request.url.queryParameters;
+  final userId = int.tryParse(params['userId'] ?? '');
+  if (userId == null || await _roleOf(userId) == null) {
+    return _json(401, {'error': 'Sign in first.'});
+  }
+  final original = _sanitizeFilename(params['filename'] ?? 'cover.jpg');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'jpg', 'jpeg', 'png', 'webp'}.contains(ext)) {
+    return _json(400, {'error': 'Only JPG, PNG or WebP images.'});
+  }
+  final bytes = <int>[];
+  await for (final chunk in request.read()) {
+    bytes.addAll(chunk);
+    if (bytes.length > _maxAvatarBytes) {
+      return _json(413, {'error': 'Covers are limited to 5 MB.'});
+    }
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_uc_$stamp.$ext');
+  await tmpIn.writeAsBytes(bytes);
+  final tmpOut = File('${Directory.systemTemp.path}/mrt_uc_$stamp.jpg');
+  final result = await Process.run('ffmpeg', [
+    '-y', '-loglevel', 'error',
+    '-i', tmpIn.path,
+    '-vf', "scale='min(1280,iw)':-2",
+    '-q:v', '5',
+    tmpOut.path,
+  ]);
+  await tmpIn.delete();
+  if (result.exitCode != 0 || !await tmpOut.exists()) {
+    return _json(400, {'error': 'That image could not be processed.'});
+  }
+  final name = 'usercover_${userId}_$stamp.jpg';
+  await _storage.save(
+      'avatars', name, Stream.value(await tmpOut.readAsBytes()));
+  await tmpOut.delete();
+  final url = '/files/avatars/$name';
+  await _db.execute(
+    Sql.named('UPDATE users SET cover_url = @c WHERE id = @id'),
+    parameters: {'c': url, 'id': userId},
+  );
+  return _json(200, {'coverUrl': url});
 }
 
 /// Password change (verifies the old password first).
@@ -3124,6 +3463,33 @@ Future<void> main() async {
       'user_id INTEGER, '
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT now())');
 
+  // Social layer: follows, profile extras, threaded replies, reshares.
+  await _db.execute('CREATE TABLE IF NOT EXISTS follows ('
+      'follower_id INTEGER NOT NULL, '
+      'followee_id INTEGER NOT NULL, '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
+      'PRIMARY KEY (follower_id, followee_id))');
+  for (final ddl in [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS cover_url TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy JSONB",
+    "ALTER TABLE replies ADD COLUMN IF NOT EXISTS parent_reply_id INTEGER",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_from INTEGER",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by TEXT",
+  ]) {
+    try {
+      await _db.execute(ddl);
+    } catch (e) {
+      print('migration note: $ddl ($e)');
+    }
+  }
+  try {
+    await _db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_key '
+        'ON users (lower(username)) WHERE username IS NOT NULL');
+  } catch (_) {}
+
   // Security / audit trail for the admin panel.
   await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
       'id SERIAL PRIMARY KEY, '
@@ -3199,6 +3565,7 @@ Future<void> main() async {
     ..get('/community/posts', _communityPosts)
     ..post('/community/posts', _createPost)
     ..post('/community/posts/<id>/react', _react)
+    ..post('/community/posts/<id>/reshare', _resharePost)
     ..post('/community/posts/<id>/delete', _deletePost)
     ..get('/community/posts/<id>/replies', _replies)
     ..post('/community/posts/<id>/replies', _addReply)
@@ -3213,6 +3580,9 @@ Future<void> main() async {
     ..post('/auth/change-password', _changePassword)
     ..post('/users/avatar', _uploadAvatar)
     ..post('/users/about', _updateAbout)
+    ..post('/users/profile', _updateProfile)
+    ..post('/users/cover', _uploadUserCover)
+    ..post('/users/<id>/follow', _followToggle)
     ..post('/users/delete-account', _deleteAccount)
     ..get('/users/<id>/profile', _publicProfile)
     ..post('/feedback', _feedback)

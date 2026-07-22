@@ -10,7 +10,10 @@ import '../experience_player.dart';
 import '../models/place.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
+import '../services/api_base.dart';
 import '../services/media_api.dart';
+import '../services/tab_events.dart';
+import 'community_page.dart' show showUserProfileDialog;
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
@@ -72,6 +75,14 @@ class _SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     _loadPrefs();
+    // Leaving the tab clears the field and results automatically.
+    TabEvents.changed.addListener(_onTabChanged);
+  }
+
+  void _onTabChanged() {
+    if (!mounted || query.text.isEmpty) return;
+    query.clear();
+    _search('');
   }
 
   Future<void> _loadPrefs() async {
@@ -118,6 +129,7 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   void dispose() {
+    TabEvents.changed.removeListener(_onTabChanged);
     _debounce?.cancel();
     query.dispose();
     super.dispose();
@@ -376,7 +388,7 @@ class _SearchPageState extends State<SearchPage> {
                         ),
                   hintText: aiEnabled
                       ? 'Ask anything — AI overview + results'
-                      : 'Search cities or experience videos',
+                      : 'Search places, experiences or people',
                   hintStyle: const TextStyle(color: Colors.grey, fontSize: 15),
                 ),
               ),
@@ -433,6 +445,48 @@ class _SearchPageState extends State<SearchPage> {
                   ),
               ],
             ),
+          ],
+          if (r.users.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('People',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            ),
+            for (final u in r.users)
+              Card(
+                color: cardBg(context),
+                margin: const EdgeInsets.only(bottom: 8),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  dense: true,
+                  leading: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: u.role == 'creator' ? Colors.purple : blue,
+                    backgroundImage: u.avatarUrl != null
+                        ? NetworkImage('$apiBase${u.avatarUrl}')
+                        : null,
+                    child: u.avatarUrl == null
+                        ? Text(
+                            u.name.isNotEmpty ? u.name[0].toUpperCase() : '?',
+                            style: const TextStyle(
+                                color: white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold))
+                        : null,
+                  ),
+                  title: Text(u.name,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    '${u.username != null ? '@${u.username} · ' : ''}'
+                    '${u.role} · ${u.followers} follower'
+                    '${u.followers == 1 ? '' : 's'}',
+                    style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                  ),
+                  trailing: const Icon(Icons.chevron_right, color: blue),
+                  onTap: () => showUserProfileDialog(context, u.id),
+                ),
+              ),
           ],
           if (r.videos.isNotEmpty) ...[
             const Padding(

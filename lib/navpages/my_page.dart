@@ -23,6 +23,9 @@ class MyPage extends StatefulWidget {
 class _MyPageState extends State<MyPage> {
   List<City>? cities;
   String? error;
+
+  /// Extended own-profile data (cover, handle, socials, privacy).
+  Map<String, dynamic> me = {};
   List<SavedItinerary> itineraries = [];
   int itinPage = 0;
   static const int _itinPageSize = 3;
@@ -38,6 +41,7 @@ class _MyPageState extends State<MyPage> {
 
   Future<void> _loadStats() async {
     _loadItineraries();
+    _loadMe();
     try {
       final result = await MediaApi.fetchCities();
       if (!mounted) return;
@@ -49,6 +53,15 @@ class _MyPageState extends State<MyPage> {
       if (!mounted) return;
       setState(() => error = e.message);
     }
+  }
+
+  Future<void> _loadMe() async {
+    final user = AuthApi.currentUser;
+    if (user == null) return;
+    try {
+      final p = await MediaApi.publicProfile(user.id);
+      if (mounted) setState(() => me = p);
+    } catch (_) {}
   }
 
   Future<void> _loadItineraries() async {
@@ -77,8 +90,6 @@ class _MyPageState extends State<MyPage> {
   @override
   Widget build(BuildContext context) {
     final user = AuthApi.currentUser;
-    final totalVideos =
-        cities?.fold<int>(0, (sum, c) => sum + c.videoCount) ?? 0;
 
     return Scaffold(
       backgroundColor: pageBg(context),
@@ -97,122 +108,160 @@ class _MyPageState extends State<MyPage> {
           children: [
             Card(
               color: cardBg(context),
+              clipBehavior: Clip.antiAlias,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16)),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    Stack(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Cover picture — creators and travelers alike.
+                  SizedBox(
+                    height: 110,
+                    child: Stack(
+                      fit: StackFit.expand,
                       children: [
-                        CircleAvatar(
-                          radius: 32,
-                          backgroundColor: blue,
-                          backgroundImage: user?.avatarUrl != null
-                              ? NetworkImage('$apiBase${user!.avatarUrl}')
-                              : null,
-                          child: user?.avatarUrl == null
-                              ? Text(
-                                  (user?.name.isNotEmpty ?? false)
-                                      ? user!.name[0].toUpperCase()
-                                      : '?',
-                                  style: const TextStyle(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.bold,
-                                      color: white),
-                                )
-                              : null,
-                        ),
+                        me['coverUrl'] != null
+                            ? Image.network('$apiBase${me['coverUrl']}',
+                                fit: BoxFit.cover,
+                                errorBuilder: (c, e, s) => _coverFallback())
+                            : _coverFallback(),
                         if (user != null)
                           Positioned(
-                            right: -2,
-                            bottom: -2,
+                            right: 8,
+                            top: 8,
                             child: InkWell(
-                              onTap: _changeAvatar,
+                              onTap: _changeCoverPic,
                               customBorder: const CircleBorder(),
                               child: Container(
-                                padding: const EdgeInsets.all(5),
+                                padding: const EdgeInsets.all(6),
                                 decoration: BoxDecoration(
-                                  color: cardBg(context),
+                                  color: Colors.black45,
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: blue, width: 1.5),
                                 ),
                                 child: const Icon(Icons.photo_camera,
-                                    size: 14, color: blue),
+                                    size: 15, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        if (user != null)
+                          Positioned(
+                            left: 8,
+                            top: 8,
+                            child: InkWell(
+                              onTap: _editSocialProfile,
+                              customBorder: const CircleBorder(),
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.black45,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.edit,
+                                    size: 15, color: Colors.white),
                               ),
                             ),
                           ),
                       ],
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            user?.name ?? 'Guest',
-                            style: const TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            user?.email ?? 'Not signed in',
-                            style: const TextStyle(
-                                color: Colors.grey, fontSize: 14),
-                          ),
-                          if (user != null) ...[
-                            const SizedBox(height: 6),
-                            InkWell(
-                              onTap: _editAbout,
-                              borderRadius: BorderRadius.circular(6),
-                              child: Row(
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      (user.about?.isNotEmpty ?? false)
-                                          ? user.about!
-                                          : 'Add a short bio\u2026',
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Row(
+                      children: [
+                        Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 32,
+                              backgroundColor: blue,
+                              backgroundImage: user?.avatarUrl != null
+                                  ? NetworkImage('$apiBase${user!.avatarUrl}')
+                                  : null,
+                              child: user?.avatarUrl == null
+                                  ? Text(
+                                      (user?.name.isNotEmpty ?? false)
+                                          ? user!.name[0].toUpperCase()
+                                          : '?',
                                       style: const TextStyle(
-                                          color: Colors.grey,
-                                          fontSize: 12.5,
-                                          height: 1.35),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  const Icon(Icons.edit,
-                                      size: 13, color: Colors.grey),
-                                ],
-                              ),
+                                          fontSize: 28,
+                                          fontWeight: FontWeight.bold,
+                                          color: white),
+                                    )
+                                  : null,
                             ),
+                            if (user != null)
+                              Positioned(
+                                right: -2,
+                                bottom: -2,
+                                child: InkWell(
+                                  onTap: _changeAvatar,
+                                  customBorder: const CircleBorder(),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: cardBg(context),
+                                      shape: BoxShape.circle,
+                                      border:
+                                          Border.all(color: blue, width: 1.5),
+                                    ),
+                                    child: const Icon(Icons.photo_camera,
+                                        size: 14, color: blue),
+                                  ),
+                                ),
+                              ),
                           ],
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                user?.name ?? 'Guest',
+                                style: const TextStyle(
+                                    fontSize: 20, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                user?.email ?? 'Not signed in',
+                                style: const TextStyle(
+                                    color: Colors.grey, fontSize: 14),
+                              ),
+                              if (user != null) ...[
+                                const SizedBox(height: 6),
+                                InkWell(
+                                  onTap: _editAbout,
+                                  borderRadius: BorderRadius.circular(6),
+                                  child: Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          (user.about?.isNotEmpty ?? false)
+                                              ? user.about!
+                                              : 'Add a short bio\u2026',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Colors.grey,
+                                              fontSize: 12.5,
+                                              height: 1.35),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      const Icon(Icons.edit,
+                                          size: 13, color: Colors.grey),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (error != null)
-              Card(
-                color: red.withValues(alpha: 0.1),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(error!, style: const TextStyle(color: red)),
-                ),
-              )
-            else
-              Row(
-                children: [
-                  _statCard('Cities', '${cities?.length ?? '—'}',
-                      Icons.location_city),
-                  const SizedBox(width: 12),
-                  _statCard(
-                      'Experience videos', '$totalVideos', Icons.video_library),
+                  ),
                 ],
               ),
+            ),
             if (itineraries.isNotEmpty) ...[
               const SizedBox(height: 16),
               _itinerariesCard(),
@@ -236,6 +285,149 @@ class _MyPageState extends State<MyPage> {
         ),
       ),
     );
+  }
+
+  Widget _coverFallback() => Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: [
+            blue.withValues(alpha: 0.5),
+            Colors.purple.withValues(alpha: 0.4),
+          ]),
+        ),
+      );
+
+  /// Cover picture upload — same pipeline as avatars, 1280px.
+  Future<void> _changeCoverPic() async {
+    final picked = await FilePicker.platform
+        .pickFiles(type: FileType.image, withData: true);
+    final file = picked?.files.single;
+    if (file == null || file.bytes == null || !mounted) return;
+    if (file.bytes!.length > 5 * 1024 * 1024) {
+      newSnackBar(context, title: 'Covers are limited to 5 MB.');
+      return;
+    }
+    try {
+      final url = await MediaApi.uploadUserCover(file.name, file.bytes!);
+      if (!mounted) return;
+      setState(() => me = {...me, 'coverUrl': url});
+      newSnackBar(context, title: 'Cover updated.');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  /// Handle, Instagram, phone — with show/hide toggles per field.
+  Future<void> _editSocialProfile() async {
+    final user = AuthApi.currentUser;
+    if (user == null) return;
+    final usernameCtl =
+        TextEditingController(text: me['username'] as String? ?? '');
+    final igCtl = TextEditingController(text: me['instagram'] as String? ?? '');
+    final phoneCtl = TextEditingController(text: me['phone'] as String? ?? '');
+    final privacy = <String, bool>{
+      'instagram': (me['privacy'] as Map?)?['instagram'] as bool? ?? false,
+      'phone': (me['privacy'] as Map?)?['phone'] as bool? ?? false,
+      'email': (me['privacy'] as Map?)?['email'] as bool? ?? false,
+    };
+    final save = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => Padding(
+          padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 16,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Edit profile',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 4),
+                const Text(
+                  'Anything hidden stays private — toggles control what '
+                  'others can see on your card.',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: usernameCtl,
+                  decoration: const InputDecoration(
+                      labelText: 'Username',
+                      prefixText: '@',
+                      helperText: '3-24 chars: letters, numbers, _ .',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: igCtl,
+                  decoration: const InputDecoration(
+                      labelText: 'Instagram',
+                      prefixText: '@',
+                      border: OutlineInputBorder()),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Show Instagram on my profile'),
+                  value: privacy['instagram']!,
+                  onChanged: (v) => setSheet(() => privacy['instagram'] = v),
+                ),
+                TextField(
+                  controller: phoneCtl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                      labelText: 'Contact number',
+                      border: OutlineInputBorder()),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Show contact number'),
+                  value: privacy['phone']!,
+                  onChanged: (v) => setSheet(() => privacy['phone'] = v),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Show email address'),
+                  value: privacy['email']!,
+                  onChanged: (v) => setSheet(() => privacy['email'] = v),
+                ),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: () => Navigator.pop(context, true),
+                  icon: const Icon(Icons.save, size: 17),
+                  label: const Text('Save profile'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (save != true || !mounted) return;
+    try {
+      await MediaApi.updateProfile(
+        username: usernameCtl.text.trim(),
+        instagram: igCtl.text.trim(),
+        phone: phoneCtl.text.trim(),
+        privacy: privacy,
+      );
+      Haptics.medium();
+      if (!mounted) return;
+      newSnackBar(context, title: 'Profile saved.');
+      _loadMe();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
   }
 
   Future<void> _changeAvatar() async {
@@ -761,29 +953,5 @@ class _MyPageState extends State<MyPage> {
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }
-  }
-
-  Widget _statCard(String label, String value, IconData icon) {
-    return Expanded(
-      child: Card(
-        color: cardBg(context),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Icon(icon, color: blue, size: 28),
-              const SizedBox(height: 8),
-              Text(value,
-                  style: const TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.bold)),
-              Text(label,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }

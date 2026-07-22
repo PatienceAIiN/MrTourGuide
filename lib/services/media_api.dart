@@ -308,12 +308,41 @@ class MediaSuggestions {
   bool get isEmpty => images.isEmpty && youtube.isEmpty;
 }
 
+/// A member matched by people-search.
+class UserHit {
+  final int id;
+  final String name;
+  final String? username;
+  final String role;
+  final String? avatarUrl;
+  final int followers;
+  const UserHit({
+    required this.id,
+    required this.name,
+    this.username,
+    required this.role,
+    this.avatarUrl,
+    required this.followers,
+  });
+
+  factory UserHit.fromJson(Map<String, dynamic> json) => UserHit(
+        id: json['id'] as int,
+        name: json['name'] as String,
+        username: json['username'] as String?,
+        role: json['role'] as String? ?? 'traveler',
+        avatarUrl: json['avatarUrl'] as String?,
+        followers: json['followers'] as int? ?? 0,
+      );
+}
+
 class SearchResult {
   final List<City> cities;
   final List<VideoItem> videos;
-  const SearchResult({required this.cities, required this.videos});
+  final List<UserHit> users;
+  const SearchResult(
+      {required this.cities, required this.videos, this.users = const []});
 
-  bool get isEmpty => cities.isEmpty && videos.isEmpty;
+  bool get isEmpty => cities.isEmpty && videos.isEmpty && users.isEmpty;
 }
 
 class MediaApi {
@@ -327,6 +356,10 @@ class MediaApi {
       videos: [
         for (final v in decoded['videos'] as List)
           VideoItem.fromJson(v as Map<String, dynamic>)
+      ],
+      users: [
+        for (final u in (decoded['users'] as List? ?? const []))
+          UserHit.fromJson(u as Map<String, dynamic>)
       ],
     );
   }
@@ -417,6 +450,53 @@ class MediaApi {
         if (title != null) 'title': title,
         if (plan != null) 'plan': plan,
       });
+
+  /// Follow / unfollow a member. Returns (nowFollowing, followerCount).
+  static Future<(bool, int)> followUser(int targetId) async {
+    final decoded = await _postJson(
+        '/users/$targetId/follow', {'userId': AuthApi.currentUser?.id});
+    return (decoded['following'] as bool, decoded['followers'] as int);
+  }
+
+  /// Update handle, socials, contact and their visibility toggles.
+  static Future<void> updateProfile({
+    String? username,
+    String? instagram,
+    String? phone,
+    Map<String, bool>? privacy,
+  }) =>
+      _postJson('/users/profile', {
+        'userId': AuthApi.currentUser?.id,
+        if (username != null) 'username': username,
+        if (instagram != null) 'instagram': instagram,
+        if (phone != null) 'phone': phone,
+        if (privacy != null) 'privacy': privacy,
+      });
+
+  /// Profile cover/banner upload (server-compressed to 1280px).
+  static Future<String> uploadUserCover(
+      String filename, Uint8List bytes) async {
+    final uri = Uri.parse('$apiBase/users/cover').replace(queryParameters: {
+      'filename': filename,
+      'userId': '${AuthApi.currentUser?.id ?? ''}',
+    });
+    late http.Response response;
+    try {
+      response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: bytes)
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const AuthException('Could not upload the cover.');
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw AuthException(
+          decoded['error'] as String? ?? 'Cover upload failed.');
+    }
+    return decoded['coverUrl'] as String;
+  }
 
   /// Permanently deletes the signed-in user's account and data.
   static Future<void> deleteAccount(int userId) =>
@@ -657,7 +737,7 @@ class MediaApi {
 
   /// Public profile card for community username taps.
   static Future<Map<String, dynamic>> publicProfile(int userId) =>
-      _get('/users/$userId/profile');
+      _get('/users/$userId/profile?viewerId=${AuthApi.currentUser?.id ?? ''}');
 
   /// Creator: replace a city's cover image from the app.
   static Future<void> uploadCityCover({

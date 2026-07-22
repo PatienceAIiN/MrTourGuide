@@ -8,6 +8,7 @@ import '../constant.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
+import '../services/tab_events.dart';
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 import 'search_page.dart' show feelPlace;
@@ -52,10 +53,18 @@ class _ItineraryPageState extends State<ItineraryPage> {
     super.initState();
     _loadSaved();
     _loadChatHistory();
+    TabEvents.changed.addListener(_onTabChanged);
+  }
+
+  void _onTabChanged() {
+    // Leaving the tab clears pending input (the conversation stays).
+    if (mounted && followUp.text.isNotEmpty) followUp.clear();
+    if (mounted && result == null && prompt.text.isNotEmpty) prompt.clear();
   }
 
   @override
   void dispose() {
+    TabEvents.changed.removeListener(_onTabChanged);
     prompt.dispose();
     followUp.dispose();
     super.dispose();

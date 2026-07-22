@@ -7,6 +7,7 @@ import 'services/api_base.dart';
 import 'services/app_info.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
+import 'services/local_notifs.dart';
 import 'services/media_api.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
@@ -118,7 +119,16 @@ class _SettingsPageState extends State<SettingsPage> {
               title: const Text('New content alerts'),
               value: s.notifications,
               activeThumbColor: blue,
-              onChanged: (v) => _update(() => s.notifications = v),
+              onChanged: (v) {
+                _update(() => s.notifications = v);
+                if (v) {
+                  // Prove it works the moment they switch it on.
+                  LocalNotifs.show(
+                      'Notifications active 🔔',
+                      'You will now hear about new experiences, replies '
+                          'and updates.');
+                }
+              },
             ),
           ]),
           _section('Accessibility', [

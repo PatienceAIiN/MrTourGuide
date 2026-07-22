@@ -25,6 +25,9 @@ class CommunityPost {
 
   /// Compressed image attached to the post (backend-relative), if any.
   final String? imageUrl;
+
+  /// Who reshared this post here (null for original posts).
+  final String? resharedBy;
   int replyCount;
 
   CommunityPost({
@@ -39,6 +42,7 @@ class CommunityPost {
     required this.reactions,
     required this.myReactions,
     this.imageUrl,
+    this.resharedBy,
     this.replyCount = 0,
   });
 
@@ -73,6 +77,9 @@ class CommunityReply {
   final String body;
   final DateTime createdAt;
 
+  /// Threading: the reply this one answers (null = top-level).
+  final int? parentReplyId;
+
   const CommunityReply({
     required this.id,
     required this.authorId,
@@ -80,6 +87,7 @@ class CommunityReply {
     required this.authorRole,
     required this.body,
     required this.createdAt,
+    this.parentReplyId,
   });
 
   bool get byCreator => authorRole == 'creator';
@@ -91,6 +99,7 @@ class CommunityReply {
         authorRole: json['authorRole'] as String,
         body: json['body'] as String,
         createdAt: DateTime.parse(json['createdAt'] as String),
+        parentReplyId: json['parentReplyId'] as int?,
       );
 }
 
@@ -142,9 +151,18 @@ class CommunityApi {
     ];
   }
 
-  static Future<void> addReply(int postId, String body) async {
-    await _send('POST', '/community/posts/$postId/replies',
-        {'userId': _me, 'body': body});
+  /// Reshare a post (original author credited + notified).
+  static Future<void> reshare(int postId) async {
+    await _send('POST', '/community/posts/$postId/reshare', {'userId': _me});
+  }
+
+  static Future<void> addReply(int postId, String body,
+      {int? parentReplyId}) async {
+    await _send('POST', '/community/posts/$postId/replies', {
+      'userId': _me,
+      'body': body,
+      if (parentReplyId != null) 'parentReplyId': parentReplyId,
+    });
   }
 
   static Future<void> deleteReply(int replyId) async {

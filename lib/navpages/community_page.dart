@@ -2,6 +2,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import '../constant.dart';
 import '../services/api_base.dart';
 import '../services/auth_api.dart';
@@ -17,8 +19,8 @@ import '../widgets/ux.dart';
 /// visible only to creator accounts (creators see both — enforced by the
 /// backend, mirrored here). Posts support emoji reactions and city tags;
 /// authors can delete their own posts.
-/// Public profile card for any community member — opened by tapping a
-/// username or avatar anywhere in the community.
+/// Public profile card for any community member — cover photo, follow
+/// button, socials (owner-controlled visibility) and stats.
 Future<void> showUserProfileDialog(BuildContext context, int userId) async {
   Haptics.tick();
   Map<String, dynamic>? profile;
@@ -28,68 +30,218 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
   if (!context.mounted || profile == null) return;
   final p = profile;
   final isCreatorUser = p['role'] == 'creator';
+  final accent = isCreatorUser ? Colors.purple : blue;
+  var following = p['isFollowing'] == true;
+  var followers = p['followers'] as int? ?? 0;
+  final isMe = AuthApi.currentUser?.id == userId;
   await showDialog<void>(
     context: context,
-    builder: (context) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircleAvatar(
-            radius: 34,
-            backgroundColor: isCreatorUser ? Colors.purple : blue,
-            backgroundImage: p['avatarUrl'] != null
-                ? NetworkImage('$apiBase${p['avatarUrl']}')
-                : null,
-            child: p['avatarUrl'] == null
-                ? Text(
-                    (p['name'] as String).isNotEmpty
-                        ? (p['name'] as String)[0].toUpperCase()
-                        : '?',
-                    style: const TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: white),
-                  )
-                : null,
-          ),
-          const SizedBox(height: 10),
-          Text(p['name'] as String,
-              style:
-                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-          const SizedBox(height: 4),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-            decoration: BoxDecoration(
-              color: (isCreatorUser ? Colors.purple : blue)
-                  .withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
+    builder: (context) => StatefulBuilder(
+      builder: (context, setCard) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Cover banner with the avatar overlapping.
+            SizedBox(
+              height: 120,
+              child: Stack(
+                clipBehavior: Clip.none,
+                fit: StackFit.expand,
+                children: [
+                  p['coverUrl'] != null
+                      ? Image.network('$apiBase${p['coverUrl']}',
+                          fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) =>
+                              _profileCoverFallback(accent))
+                      : _profileCoverFallback(accent),
+                  Positioned(
+                    bottom: -34,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: CircleAvatar(
+                        radius: 37,
+                        backgroundColor: Colors.white,
+                        child: CircleAvatar(
+                          radius: 34,
+                          backgroundColor: accent,
+                          backgroundImage: p['avatarUrl'] != null
+                              ? NetworkImage('$apiBase${p['avatarUrl']}')
+                              : null,
+                          child: p['avatarUrl'] == null
+                              ? Text(
+                                  (p['name'] as String).isNotEmpty
+                                      ? (p['name'] as String)[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(
+                                      fontSize: 26,
+                                      fontWeight: FontWeight.bold,
+                                      color: white),
+                                )
+                              : null,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            child: Text(
-              isCreatorUser ? '\u2726 Creator' : 'Traveler',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: isCreatorUser ? Colors.purple : blue),
+            const SizedBox(height: 40),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Column(
+                children: [
+                  Text(p['name'] as String,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 17)),
+                  if (p['username'] != null)
+                    Text('@${p['username']}',
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Colors.grey)),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(isCreatorUser ? Icons.auto_awesome : Icons.luggage,
+                            size: 12, color: accent),
+                        const SizedBox(width: 4),
+                        Text(isCreatorUser ? 'Creator' : 'Traveler',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: accent)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _profStat('$followers', 'followers'),
+                      _profStat('${p['following'] ?? 0}', 'following'),
+                      _profStat('${p['uploads'] ?? 0}', 'experiences'),
+                    ],
+                  ),
+                  if ((p['about'] as String?)?.isNotEmpty ?? false) ...[
+                    const SizedBox(height: 10),
+                    Text(p['about'] as String,
+                        textAlign: TextAlign.center,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, height: 1.45)),
+                  ],
+                  // Socials & contact — only fields their owner made public.
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      if (p['instagram'] != null)
+                        ActionChip(
+                          visualDensity: VisualDensity.compact,
+                          avatar: const Icon(Icons.camera_alt,
+                              size: 14, color: Colors.pink),
+                          label: Text('@${p['instagram']}',
+                              style: const TextStyle(fontSize: 11.5)),
+                          onPressed: () => launchUrl(Uri.parse(
+                              'https://instagram.com/${p['instagram']}')),
+                        ),
+                      if (p['phone'] != null)
+                        ActionChip(
+                          visualDensity: VisualDensity.compact,
+                          avatar: const Icon(Icons.call,
+                              size: 14, color: Colors.green),
+                          label: Text('${p['phone']}',
+                              style: const TextStyle(fontSize: 11.5)),
+                          onPressed: () =>
+                              launchUrl(Uri.parse('tel:${p['phone']}')),
+                        ),
+                      if (p['email'] != null)
+                        ActionChip(
+                          visualDensity: VisualDensity.compact,
+                          avatar: const Icon(Icons.mail,
+                              size: 14, color: Colors.orange),
+                          label: Text('${p['email']}',
+                              style: const TextStyle(fontSize: 11.5)),
+                          onPressed: () =>
+                              launchUrl(Uri.parse('mailto:${p['email']}')),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  if (!isMe)
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor:
+                              following ? Colors.grey.shade300 : accent,
+                          foregroundColor:
+                              following ? Colors.black87 : Colors.white,
+                        ),
+                        onPressed: () async {
+                          if (AuthApi.currentUser == null) return;
+                          Haptics.medium();
+                          try {
+                            final (now, count) =
+                                await MediaApi.followUser(userId);
+                            setCard(() {
+                              following = now;
+                              followers = count;
+                            });
+                          } catch (_) {}
+                        },
+                        icon: Icon(
+                            following ? Icons.check : Icons.person_add_alt_1,
+                            size: 18),
+                        label: Text(following ? 'Following' : 'Follow'),
+                      ),
+                    ),
+                  Text(
+                    'joined ${DateTime.parse(p['joined'] as String).toLocal().toString().substring(0, 10)}',
+                    style: const TextStyle(color: Colors.grey, fontSize: 10.5),
+                  ),
+                ],
+              ),
             ),
-          ),
-          if ((p['about'] as String?)?.isNotEmpty ?? false) ...[
-            const SizedBox(height: 10),
-            Text(p['about'] as String,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, height: 1.45)),
           ],
-          const SizedBox(height: 12),
-          Text(
-            "${p['uploads']} experiences \u00b7 joined "
-            "${DateTime.parse(p['joined'] as String).toLocal().toString().substring(0, 10)}",
-            style: const TextStyle(color: Colors.grey, fontSize: 11.5),
-          ),
-        ],
+        ),
       ),
     ),
   );
 }
+
+Widget _profStat(String value, String label) => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Column(
+        children: [
+          Text(value,
+              style:
+                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          Text(label,
+              style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
+        ],
+      ),
+    );
+
+Widget _profileCoverFallback(Color accent) => Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [
+          accent.withValues(alpha: 0.5),
+          const Color(0xFF3CEBFF).withValues(alpha: 0.4),
+        ]),
+      ),
+    );
 
 class CommunityPage extends StatefulWidget {
   final void Function(int index)? onSelectTab;
@@ -236,6 +388,23 @@ class _CommunityPageState extends State<CommunityPage> {
         newSnackBar(context, title: e.message);
         _reload();
       }
+    }
+  }
+
+  Future<void> _reshare(CommunityPost post) async {
+    if (AuthApi.currentUser == null) {
+      newSnackBar(context, title: 'Sign in to reshare.');
+      return;
+    }
+    Haptics.medium();
+    try {
+      await CommunityApi.reshare(post.id);
+      if (!mounted) return;
+      newSnackBar(context,
+          title: 'Reshared — ${post.authorName} gets the credit.');
+      _reload();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
     }
   }
 
@@ -494,6 +663,14 @@ class _CommunityPageState extends State<CommunityPage> {
                           style: const TextStyle(
                               fontSize: 10.5, color: Color(0xFF1E319D))),
                     ),
+                  if (!mine)
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Reshare',
+                      icon: const Icon(Icons.repeat,
+                          size: 18, color: Colors.teal),
+                      onPressed: () => _reshare(post),
+                    ),
                   if (mine)
                     IconButton(
                       visualDensity: VisualDensity.compact,
@@ -504,6 +681,21 @@ class _CommunityPageState extends State<CommunityPage> {
                     ),
                 ],
               ),
+              if (post.resharedBy != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.repeat, size: 13, color: Colors.teal),
+                      const SizedBox(width: 4),
+                      Text('Reshared by ${post.resharedBy}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.teal,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 8),
               Text(post.body,
                   style: const TextStyle(fontSize: 14, height: 1.45)),
@@ -647,6 +839,9 @@ class _PostModal extends StatefulWidget {
 
 class _PostModalState extends State<_PostModal> {
   List<CommunityReply> replies = [];
+
+  /// Reply being answered (threading); null = replying to the post.
+  CommunityReply? replyingTo;
   bool loading = true;
   bool sending = false;
   final replyCtl = TextEditingController();
@@ -689,8 +884,9 @@ class _PostModalState extends State<_PostModal> {
     }
     setState(() => sending = true);
     try {
-      await CommunityApi.addReply(post.id, text);
+      await CommunityApi.addReply(post.id, text, parentReplyId: replyingTo?.id);
       replyCtl.clear();
+      replyingTo = null;
       Haptics.medium();
       await _load();
     } on AuthException catch (e) {
@@ -863,7 +1059,17 @@ class _PostModalState extends State<_PostModal> {
                           style: TextStyle(color: Colors.grey)),
                     )
                   else
-                    for (final reply in replies) _replyTile(reply),
+                    // Threads: top-level replies with their answers nested.
+                    for (final reply in replies)
+                      if (reply.parentReplyId == null) ...[
+                        _replyTile(reply),
+                        for (final child in replies)
+                          if (child.parentReplyId == reply.id)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 34),
+                              child: _replyTile(child, inThread: true),
+                            ),
+                      ],
                   const SizedBox(height: 12),
                 ],
               ),
@@ -873,38 +1079,71 @@ class _PostModalState extends State<_PostModal> {
               top: false,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
-                child: Row(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: TextField(
-                        controller: replyCtl,
-                        scrollPadding: const EdgeInsets.only(bottom: 180),
-                        maxLength: 500,
-                        onSubmitted: (_) => _send(),
-                        decoration: InputDecoration(
-                          counterText: '',
-                          hintText: 'Write a reply...',
-                          isDense: true,
-                          filled: true,
-                          fillColor: pageBg(context),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide.none,
-                          ),
+                    if (replyingTo != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.subdirectory_arrow_right,
+                                size: 14, color: Colors.teal),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                  'Replying to ${replyingTo!.authorName}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: Colors.teal,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                            InkWell(
+                              onTap: () => setState(() => replyingTo = null),
+                              child: const Icon(Icons.close,
+                                  size: 15, color: Colors.grey),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    sending
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: blue))
-                        : IconButton(
-                            icon: const Icon(Icons.send_rounded, color: blue),
-                            onPressed: _send,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const ValueKey('replyField'),
+                            controller: replyCtl,
+                            scrollPadding: const EdgeInsets.only(bottom: 180),
+                            maxLength: 500,
+                            onSubmitted: (_) => _send(),
+                            decoration: InputDecoration(
+                              counterText: '',
+                              hintText: 'Write a reply...',
+                              isDense: true,
+                              filled: true,
+                              fillColor: pageBg(context),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
                           ),
+                        ),
+                        const SizedBox(width: 8),
+                        sending
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: blue))
+                            : IconButton(
+                                icon:
+                                    const Icon(Icons.send_rounded, color: blue),
+                                onPressed: _send,
+                              ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -915,7 +1154,7 @@ class _PostModalState extends State<_PostModal> {
     );
   }
 
-  Widget _replyTile(CommunityReply reply) {
+  Widget _replyTile(CommunityReply reply, {bool inThread = false}) {
     final mine = reply.authorId == AuthApi.currentUser?.id;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -965,6 +1204,18 @@ class _PostModalState extends State<_PostModal> {
                 ),
                 Text(reply.body,
                     style: const TextStyle(fontSize: 13.5, height: 1.4)),
+                if (!inThread)
+                  InkWell(
+                    onTap: () => setState(() => replyingTo = reply),
+                    child: const Padding(
+                      padding: EdgeInsets.only(top: 3),
+                      child: Text('Reply',
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.teal,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                  ),
               ],
             ),
           ),

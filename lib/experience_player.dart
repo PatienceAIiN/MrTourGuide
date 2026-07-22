@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 import 'constant.dart';
 import 'services/haptic_service.dart';
 import 'services/media_api.dart';
+import 'services/vr_capability.dart';
 import 'vr_player_page.dart';
 import 'services/settings_service.dart';
 
@@ -79,22 +80,21 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
     if (!haptics) return;
     final track = widget.video.hapticTrack;
     if (track.isNotEmpty) {
-      // One feel step per second of video, graded by the track's energy.
-      _hapticTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // Four interpolated feel steps per second: the vibration strength
+      // glides between the track's values like a console controller.
+      _hapticTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
         final c = controller;
         if (c == null || !c.value.isPlaying) return;
-        final sec = c.value.position.inSeconds;
-        final energy = track[sec.clamp(0, track.length - 1)];
+        final ms = c.value.position.inMilliseconds;
+        final sec = ms ~/ 1000;
+        final frac = (ms % 1000) / 1000.0;
+        final a = track[sec.clamp(0, track.length - 1)];
+        final b = track[(sec + 1).clamp(0, track.length - 1)];
+        final energy = a + (b - a) * frac; // linear glide between seconds
         final feel = (energy * intensity).clamp(0.0, 1.0);
-        if (feel < 0.08) return; // near-silence: no feel
-        if (feel < 0.3) {
-          HapticFeedback.lightImpact();
-        } else if (feel < 0.6) {
-          HapticFeedback.mediumImpact();
-        } else {
-          HapticFeedback.heavyImpact();
-        }
-        if (mounted) {
+        if (feel < 0.06) return; // near-silence: no feel
+        Haptics.level(feel);
+        if (mounted && frac < 0.3) {
           setState(() => _pulse = true);
           Timer(const Duration(milliseconds: 180), () {
             if (mounted) setState(() => _pulse = false);
