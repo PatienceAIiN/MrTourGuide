@@ -1187,8 +1187,21 @@ Future<Response> _travelNews(Request request) async {
         'published': m.group(3) ?? '',
         'source': m.group(4) ?? 'Google News',
       });
-      if (items.length >= 12) break;
+      if (items.length >= 10) break;
     }
+    // Cover images: each article's og:image, resolved once per cache hour.
+    await Future.wait(items.map((item) async {
+      try {
+        final html = await _httpGetText(item['url']!,
+                userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
+            .timeout(const Duration(seconds: 6));
+        final og = RegExp(
+                r'property="og:image"\s+content="([^"]+)"|content="([^"]+)"\s+property="og:image"')
+            .firstMatch(html);
+        final img = og?.group(1) ?? og?.group(2);
+        if (img != null && img.startsWith('http')) item['image'] = img;
+      } catch (_) {}
+    }));
   } catch (_) {}
   final payload = <String, Object?>{'items': items};
   if (items.isNotEmpty) _newsCache[key] = (DateTime.now(), payload);
@@ -2472,6 +2485,36 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
+/// Creator fine-tunes the per-second feel track (values 0..1). The player
+/// picks the new track up on next play.
+Future<Response> _updateHaptics(Request request, String id) async {
+  final videoId = int.tryParse(id);
+  if (videoId == null) return _json(400, {'error': 'Bad video id.'});
+  final body = await _readJsonBody(request);
+  final gate = await _requireOwner(videoId, body?['userId'] as int?);
+  if (gate != null) return gate;
+  final raw = body?['track'] as List?;
+  if (raw == null || raw.isEmpty || raw.length > 900) {
+    return _json(400, {'error': 'track (1-900 per-second values) required'});
+  }
+  final track = <double>[];
+  for (final v in raw) {
+    if (v is! num) return _json(400, {'error': 'track values must be 0-1'});
+    track.add(double.parse(v.clamp(0, 1).toStringAsFixed(3)));
+  }
+  final rows = await _db.execute(
+    Sql.named("UPDATE videos SET haptics = jsonb_set("
+        "COALESCE(haptics, '{}'::jsonb), '{track}', @track::jsonb) "
+        "|| '{\"source\": \"creator-tuned\"}'::jsonb "
+        'WHERE id = @id RETURNING $_videoColumns'),
+    parameters: {'id': videoId, 'track': jsonEncode(track)},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
+  _logActivity('user:${body?['userId']}', 'haptics-tuned',
+      'video #$videoId (${track.length}s track)');
+  return _json(200, {'video': _videoRowToJson(rows.first)});
+}
+
 Future<Response> _feedback(Request request) async {
   final body = await _readJsonBody(request);
   final message = (body?['message'] as String?)?.trim() ?? '';
@@ -3042,6 +3085,7 @@ Future<void> main() async {
     ..post('/upload', _upload)
     ..post('/videos/<id>/config', _updateConfig)
     ..post('/videos/<id>/thumbnail', _uploadThumbnail)
+    ..post('/videos/<id>/haptics', _updateHaptics)
     ..post('/videos/<id>/delete', _deleteVideo)
     ..post('/videos/<id>/rename', _renameVideo)
     ..post('/auth/change-password', _changePassword)

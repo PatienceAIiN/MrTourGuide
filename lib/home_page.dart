@@ -12,6 +12,7 @@ import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/update_service.dart';
+import 'package:mrtouride/widgets/news_section.dart';
 import 'package:mrtouride/widgets/update_flow.dart';
 import 'package:mrtouride/widgets/ux.dart';
 
@@ -30,6 +31,7 @@ class _HomePageState extends State<HomeScreen> {
   bool loading = true;
   String? error;
   bool hasUnseen = false;
+  List<NewsItem> news = [];
 
   // Rotating headline below the greeting.
   static const _phrases = [
@@ -45,6 +47,9 @@ class _HomePageState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _load();
+    MediaApi.fetchNews().then((items) {
+      if (mounted) setState(() => news = items);
+    }).catchError((_) {});
     _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
       if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
     });
@@ -424,6 +429,8 @@ class _HomePageState extends State<HomeScreen> {
                                     ),
                                   ),
                       ),
+                      // Travel news at the bottom of the main feed.
+                      ...newsSection(context, news),
                       // Keep last row clear of the floating navbar.
                       const SizedBox(height: 110),
                     ],

@@ -10,7 +10,8 @@ import 'package:video_player/video_player.dart';
 
 import '../constant.dart';
 import '../experience_player.dart';
-import '../news_webview.dart';
+import '../fine_tune_page.dart';
+import '../widgets/news_section.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
@@ -155,6 +156,137 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  /// The creator handbook: how Normal / VR / MR uploads are processed.
+  Future<void> _creatorGuide() {
+    Haptics.tick();
+    Widget row(IconData icon, Color color, String title, String body) =>
+        Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10)),
+                child: Icon(icon, size: 18, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13.5)),
+                    const SizedBox(height: 2),
+                    Text(body,
+                        style: const TextStyle(
+                            fontSize: 12, height: 1.45, color: Colors.grey)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.75,
+        maxChildSize: 0.93,
+        builder: (context, scroll) => ListView(
+          controller: scroll,
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 30),
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Creator guide',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+            const SizedBox(height: 4),
+            const Text(
+              'How your uploads become experiences people can feel.',
+              style: TextStyle(fontSize: 12.5, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            row(
+                Icons.smart_display,
+                blue,
+                'Normal video',
+                'Any standard capture (MP4, MOV, MKV... up to 95 MB). It is '
+                    'trimmed, enhanced and published with a feel track built '
+                    'from its sound.'),
+            row(
+                Icons.vrpano,
+                Colors.purple,
+                'VR 360\u00b0',
+                'Record or export in equirectangular 360\u00b0 \u2014 the '
+                    'frame must be about twice as wide as tall (2:1). Flat '
+                    'videos are rejected at upload so viewers never get a '
+                    'broken VR experience.'),
+            row(
+                Icons.view_in_ar,
+                Colors.deepPurple,
+                'MR',
+                'Mixed-reality captures follow the same 360\u00b0 rule. '
+                    'Pair the place with a 3D model (via the web studio) for '
+                    'the full MR/VR page experience.'),
+            row(
+                Icons.waves,
+                Colors.purpleAccent,
+                'Feel (haptics)',
+                'During processing we analyse the audio \u2014 music, wind, '
+                    'crowd, ambience \u2014 and turn its energy into a '
+                    'second-by-second vibration track. Quiet moments feel '
+                    'light, loud ones heavy.'),
+            row(
+                Icons.equalizer,
+                Colors.purple,
+                'Per-frame fine-tuning',
+                'After processing, tap the equalizer icon on your video to '
+                    'open the feel studio: drag each second\u2019s bar to '
+                    'sculpt exactly how it vibrates. Preview live while '
+                    'playing, then save.'),
+            row(
+                Icons.image_outlined,
+                Colors.teal,
+                'Thumbnails & covers',
+                'A poster frame is auto-picked; set your own (like YouTube '
+                    'Studio) from the publish window or the image icon on '
+                    'the card. Place covers power the home carousel.'),
+            row(
+                Icons.add_location_alt,
+                Colors.orange,
+                'Places & location',
+                'Enroll new places with the "Add place" chip. Tag each '
+                    'upload with country/state/city \u2014 location '
+                    'searches then surface your experience.'),
+            row(
+                Icons.lock_clock,
+                Colors.grey,
+                'Limits',
+                'Uploads are video-only, max 95 MB for now, and process in '
+                    'under a minute. Your uploads stay yours \u2014 only '
+                    'you can rename, configure, fine-tune or delete them.'),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _upload() async {
     final city = selectedCity;
     if (city == null || uploading) return;
@@ -297,18 +429,23 @@ class _DashboardPageState extends State<DashboardPage> {
     var probing = false;
     Uint8List? thumbBytes;
     String thumbName = '';
-    // Location defaults from the city's catalog line ("Jaipur, Rajasthan").
-    final cityLoc = cities
-        .firstWhere((c) => c.slug == city,
-            orElse: () => City(slug: city, name: city, videoCount: 0))
-        .location
-        .split(',');
-    final cityCtl = TextEditingController(
-        text: cityLoc.isNotEmpty ? cityLoc.first.trim() : '');
-    final stateCtl = TextEditingController(
-        text: cityLoc.length > 1 ? cityLoc[1].trim() : '');
-    final countryCtl = TextEditingController(
-        text: cityLoc.length > 2 ? cityLoc[2].trim() : 'India');
+    var targetCity = city; // creator picks the destination in the sheet
+    final cityCtl = TextEditingController();
+    final stateCtl = TextEditingController();
+    final countryCtl = TextEditingController();
+    // Location defaults follow the chosen place's catalog line.
+    void prefillLocation(String slug) {
+      final parts = cities
+          .firstWhere((c) => c.slug == slug,
+              orElse: () => City(slug: slug, name: slug, videoCount: 0))
+          .location
+          .split(',');
+      cityCtl.text = parts.isNotEmpty ? parts.first.trim() : '';
+      stateCtl.text = parts.length > 1 ? parts[1].trim() : '';
+      countryCtl.text = parts.length > 2 ? parts[2].trim() : 'India';
+    }
+
+    prefillLocation(targetCity);
     final sizeMb = (sizeBytes / (1024 * 1024)).toStringAsFixed(1);
     var locating = false;
     await showModalBottomSheet<void>(
@@ -343,10 +480,37 @@ class _DashboardPageState extends State<DashboardPage> {
                   children: [
                     const Icon(Icons.cloud_upload, color: blue, size: 20),
                     const SizedBox(width: 8),
+                    const Text('Publish to',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(width: 10),
+                    // Pick the destination right here — no more defaults.
                     Expanded(
-                      child: Text('Publish to ${_cityName(city)}',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 16)),
+                      child: DropdownButtonFormField<String>(
+                        initialValue: targetCity,
+                        isDense: true,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final c in cities)
+                            DropdownMenuItem(
+                                value: c.slug,
+                                child: Text(c.name,
+                                    overflow: TextOverflow.ellipsis)),
+                        ],
+                        onChanged: (slug) {
+                          if (slug == null) return;
+                          Haptics.tick();
+                          setSheet(() {
+                            targetCity = slug;
+                            prefillLocation(slug);
+                          });
+                        },
+                      ),
                     ),
                   ],
                 ),
@@ -670,7 +834,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     );
                     try {
                       final video = await MediaApi.uploadVideo(
-                        city: city,
+                        city: targetCity,
                         title: title,
                         filename: filename,
                         bytes: bytes,
@@ -1007,60 +1171,6 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  Widget _newsCard(NewsItem item) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () {
-        Haptics.light();
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) =>
-                NewsWebViewPage(title: item.source, url: item.url),
-          ),
-        );
-      },
-      child: Container(
-        width: 230,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: cardBg(context),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.teal.withValues(alpha: 0.25)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Text(item.title,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 12.5,
-                      height: 1.35)),
-            ),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                const Icon(Icons.public, size: 11, color: Colors.grey),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(item.source,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style:
-                          const TextStyle(fontSize: 10.5, color: Colors.grey)),
-                ),
-                const Icon(Icons.chevron_right, size: 14, color: Colors.teal),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   String _cityName(String slug) => cities
       .firstWhere((c) => c.slug == slug,
           orElse: () => City(slug: slug, name: slug, videoCount: 0))
@@ -1087,6 +1197,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 ? 'Creator Studio'
                 : 'Explore Experiences',
             style: TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
+        actions: [
+          if (AuthApi.currentUser?.isCreator ?? false)
+            IconButton(
+              tooltip: 'Creator guide',
+              icon: Icon(Icons.info_outline, color: ink(context)),
+              onPressed: _creatorGuide,
+            ),
+        ],
       ),
       // Creators publish; travelers just experience.
       // Lifted above the floating bottom navbar so it is never hidden.
@@ -1189,43 +1307,6 @@ class _DashboardPageState extends State<DashboardPage> {
                       ],
                     ),
                   ),
-                  if (news.isNotEmpty) ...[
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.newspaper,
-                              size: 17, color: Colors.teal),
-                          const SizedBox(width: 6),
-                          Text('Travel news & precautions',
-                              style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14.5,
-                                  color: ink(context))),
-                          const Spacer(),
-                          const Row(
-                            children: [
-                              Icon(Icons.shield, size: 12, color: Colors.green),
-                              SizedBox(width: 3),
-                              Text('Ad-free reader',
-                                  style: TextStyle(
-                                      fontSize: 10.5, color: Colors.green)),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    SizedBox(
-                      height: 116,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: news.length,
-                        separatorBuilder: (c, i) => const SizedBox(width: 10),
-                        itemBuilder: (context, i) => _newsCard(news[i]),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
                   const SizedBox(height: 16),
                   // Video list
                   if (videos.isEmpty && !loadingVideos)
@@ -1258,6 +1339,9 @@ class _DashboardPageState extends State<DashboardPage> {
                         label: const Text('Load more'),
                       ),
                     ),
+                  // Creators get the travel-news rail at the very bottom.
+                  if (AuthApi.currentUser?.isCreator ?? false)
+                    ...newsSection(context, news),
                   const SizedBox(height: 72), // keep FAB clear of last card
                 ],
               ),
@@ -1344,6 +1428,22 @@ class _DashboardPageState extends State<DashboardPage> {
                     tooltip: 'Change thumbnail',
                     icon: const Icon(Icons.image_outlined, color: blue),
                     onPressed: () => _changeThumbnail(video),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Fine-tune feel',
+                    icon: const Icon(Icons.equalizer, color: Colors.purple),
+                    onPressed: video.isProcessing
+                        ? null
+                        : () {
+                            Haptics.light();
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      FineTunePage(video: video)),
+                            );
+                          },
                   ),
                   IconButton(
                     visualDensity: VisualDensity.compact,

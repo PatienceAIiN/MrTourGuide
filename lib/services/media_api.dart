@@ -268,11 +268,15 @@ class NewsItem {
   final String url;
   final String source;
   final String published;
+
+  /// Article cover (og:image), when the source provides one.
+  final String? image;
   const NewsItem({
     required this.title,
     required this.url,
     required this.source,
     required this.published,
+    this.image,
   });
 
   factory NewsItem.fromJson(Map<String, dynamic> json) => NewsItem(
@@ -280,8 +284,12 @@ class NewsItem {
         url: json['url'] as String? ?? '',
         source: json['source'] as String? ?? '',
         published: json['published'] as String? ?? '',
+        image: json['image'] as String?,
       );
 }
+
+/// Shared travel-news card: cover image + headline, opens the ad-blocked
+/// in-app reader.
 
 class YtSuggestion {
   final String title;
@@ -591,6 +599,14 @@ class MediaApi {
       throw AuthException(
           decoded['error'] as String? ?? 'Thumbnail upload failed.');
     }
+    return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+  }
+
+  /// Creator fine-tunes the per-second feel track (0..1 values).
+  static Future<VideoItem> updateHaptics(
+      int videoId, List<double> track) async {
+    final decoded = await _postJson('/videos/$videoId/haptics',
+        {'userId': AuthApi.currentUser?.id, 'track': track});
     return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
   }
 

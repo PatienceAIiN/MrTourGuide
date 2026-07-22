@@ -40,7 +40,11 @@ class _NewsWebViewPageState extends State<NewsWebViewPage> {
         '[id*="google_ads"]','[class*="advert"]','[class*="ad-slot"]',
         '[class*="ad-banner"]','[class*="sticky-ad"]','[id*="taboola"]',
         '[id*="outbrain"]','[class*="taboola"]','[class*="outbrain"]',
-        'ins.adsbygoogle','[class*="paywall-banner"]'
+        'ins.adsbygoogle','[class*="paywall-banner"]',
+        '[id*="div-gpt-ad"]','[class*="gpt-ad"]','[data-ad-slot]',
+        '[class*="sponsored"]','[id*="sponsored"]','aside[class*="ad"]',
+        'iframe[src*="doubleclick"]','iframe[src*="adsystem"]',
+        '[class*="interstitial"]','[class*="popup-overlay"]'
       ];
       const sweep = () => kill.forEach(sel =>
         document.querySelectorAll(sel).forEach(el => el.remove()));
@@ -84,21 +88,6 @@ class _NewsWebViewPageState extends State<NewsWebViewPage> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(color: ink(context), fontSize: 15)),
-        actions: const [
-          Padding(
-            padding: EdgeInsets.only(right: 14),
-            child: Center(
-              child: Row(
-                children: [
-                  Icon(Icons.shield, size: 14, color: Colors.green),
-                  SizedBox(width: 4),
-                  Text('Ad-free',
-                      style: TextStyle(fontSize: 11.5, color: Colors.green)),
-                ],
-              ),
-            ),
-          ),
-        ],
         bottom: progress < 100
             ? PreferredSize(
                 preferredSize: const Size.fromHeight(2),
