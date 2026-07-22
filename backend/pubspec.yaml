@@ -11,3 +11,5 @@ dependencies:
   shelf_router: ^1.1.4
   postgres: ^3.0.0
   crypto: ^3.0.3
+  googleapis_auth: ^1.6.0
+  http: ^1.2.0

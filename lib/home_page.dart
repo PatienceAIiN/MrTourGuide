@@ -36,7 +36,7 @@ class _HomePageState extends State<HomeScreen> {
   // Rotating headline below the greeting.
   static const _phrases = [
     'Where do you want\nto feel today?',
-    'The Taj at sunrise —\nfrom your couch.',
+    'Sunrise at the monuments —\nfrom your couch.',
     'Wind, waves, footsteps.\nIn your hands.',
     'Travel with your senses.\nFrom home.',
   ];

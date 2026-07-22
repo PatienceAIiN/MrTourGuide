@@ -48,3 +48,4 @@ app.*.map.json
 backend/.env
 backend/uploads/
 backend/apk/
+android/app/google-services.json

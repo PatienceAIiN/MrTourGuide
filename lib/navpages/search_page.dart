@@ -616,11 +616,11 @@ class _SearchPageState extends State<SearchPage> {
           runSpacing: 8,
           children: [
             for (final term in const [
-              'Taj Mahal',
-              'Jaipur',
-              'Golden Temple',
               'sunrise',
-              'temple'
+              'temple',
+              'heritage',
+              'mountains',
+              'beach'
             ])
               ActionChip(
                 avatar: const Icon(Icons.search, size: 16, color: blue),

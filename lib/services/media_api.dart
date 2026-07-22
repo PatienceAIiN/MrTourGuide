@@ -700,6 +700,11 @@ class MediaApi {
     return decoded['thanks'] as String? ?? 'Thanks!';
   }
 
+  /// Public JSON POST for auxiliary services (push registration).
+  static Future<Map<String, dynamic>> getJsonPost(
+          String path, Map<String, dynamic> body) =>
+      _postJson(path, body);
+
   static Future<Map<String, dynamic>> _postJson(
       String path, Map<String, dynamic> body) async {
     late http.Response response;

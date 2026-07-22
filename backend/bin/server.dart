@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:googleapis_auth/auth_io.dart' as gauth;
 import 'package:postgres/postgres.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -465,6 +466,19 @@ void _scheduleMlProcessing(int videoId) {
       );
       print('ML: video $videoId processed '
           '(thumb + ${track.length}s haptic track).');
+      // Push: tell travelers a new experience just landed.
+      final meta = await _db.execute(
+        Sql.named('SELECT title, city, owner_id FROM videos WHERE id = @id'),
+        parameters: {'id': videoId},
+      );
+      if (meta.isNotEmpty) {
+        _sendPush(
+          await _tokensFor(excludeUserId: meta.first[2] as int?),
+          'New experience on Mr.TourGuide',
+          '"${meta.first[0]}" is live \u2014 feel it now.',
+          data: {'type': 'video', 'city': '${meta.first[1]}'},
+        );
+      }
     } catch (e) {
       print('ML-sim: failed for video $videoId: $e');
     }
@@ -519,6 +533,94 @@ Future<List<double>> _audioEnergyTrack(String path) async {
   }
 }
 
+
+
+// ---------------------------------------------------------------------------
+// FCM push notifications (service-account file via FCM_SERVICE_ACCOUNT env).
+// ---------------------------------------------------------------------------
+
+gauth.AutoRefreshingAuthClient? _fcmClient;
+String? _fcmProject;
+
+Future<gauth.AutoRefreshingAuthClient?> _fcm() async {
+  if (_fcmClient != null) return _fcmClient;
+  final path = Platform.environment['FCM_SERVICE_ACCOUNT'];
+  if (path == null || !File(path).existsSync()) return null;
+  try {
+    final json = jsonDecode(await File(path).readAsString())
+        as Map<String, dynamic>;
+    _fcmProject = json['project_id'] as String?;
+    final creds = gauth.ServiceAccountCredentials.fromJson(json);
+    _fcmClient = await gauth.clientViaServiceAccount(
+        creds, ['https://www.googleapis.com/auth/firebase.messaging']);
+    return _fcmClient;
+  } catch (e) {
+    print('FCM init failed: $e');
+    return null;
+  }
+}
+
+/// Sends a push to a set of device tokens; dead tokens are pruned.
+Future<void> _sendPush(List<String> tokens, String title, String body,
+    {Map<String, String>? data}) async {
+  final client = await _fcm();
+  if (client == null || tokens.isEmpty) return;
+  for (final token in tokens) {
+    try {
+      final res = await client.post(
+        Uri.parse('https://fcm.googleapis.com/v1/projects/'
+            '$_fcmProject/messages:send'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({
+          'message': {
+            'token': token,
+            'notification': {'title': title, 'body': body},
+            if (data != null) 'data': data,
+            'android': {
+              'priority': 'high',
+              'notification': {'channel_id': 'mrtouride_default'},
+            },
+          }
+        }),
+      );
+      if (res.statusCode == 404 || res.statusCode == 400) {
+        await _db.execute(
+          Sql.named('DELETE FROM push_tokens WHERE token = @t'),
+          parameters: {'t': token},
+        );
+      }
+    } catch (_) {}
+  }
+}
+
+Future<List<String>> _tokensFor({int? userId, int? excludeUserId}) async {
+  final rows = await _db.execute(
+    Sql.named('SELECT token FROM push_tokens '
+        '${userId != null ? 'WHERE user_id = @u' : excludeUserId != null ? 'WHERE user_id IS DISTINCT FROM @x' : ''} '
+        'LIMIT 500'),
+    parameters: {
+      if (userId != null) 'u': userId,
+      if (excludeUserId != null) 'x': excludeUserId,
+    },
+  );
+  return [for (final r in rows) r[0] as String];
+}
+
+/// Device registers (or refreshes) its FCM token.
+Future<Response> _pushRegister(Request request) async {
+  final body = await _readJsonBody(request);
+  final token = (body?['token'] as String?)?.trim() ?? '';
+  final userId = body?['userId'] as int?;
+  if (token.isEmpty || token.length > 512) {
+    return _json(400, {'error': 'token required'});
+  }
+  await _db.execute(
+    Sql.named('INSERT INTO push_tokens (token, user_id) VALUES (@t, @u) '
+        'ON CONFLICT (token) DO UPDATE SET user_id = @u, updated_at = now()'),
+    parameters: {'t': token, 'u': userId},
+  );
+  return _json(200, {'ok': true});
+}
 
 // ---------------------------------------------------------------------------
 // Admin panel (/admin) — Basic-auth gated user CRUD + activity/audit logs.
@@ -1164,45 +1266,58 @@ Future<Response> _travelNews(Request request) async {
     return _json(200, cached.$2);
   }
   final items = <Map<String, String>>[];
-  try {
-    final xml = await _httpGetText(
-        'https://news.google.com/rss/search?q=india%20travel%20advisory%20'
-        'OR%20tourism%20safety%20OR%20new%20destination&hl=en-IN&gl=IN'
-        '&ceid=IN:en');
-    for (final m in RegExp(
-            r'<item><title>(.*?)</title><link>(.*?)</link>.*?'
-            r'<pubDate>(.*?)</pubDate>(?:.*?<source[^>]*>(.*?)</source>)?',
-            dotAll: true)
-        .allMatches(xml)) {
-      var title = m.group(1)!;
-      title = title
+  // Publisher feeds: direct article URLs + real cover images (enclosures).
+  const feeds = [
+    ('https://timesofindia.indiatimes.com/rssfeeds/2647163.cms',
+        'Times of India'),
+    ('https://www.indiatoday.in/rss/1206577', 'India Today'),
+  ];
+  for (final (feedUrl, sourceName) in feeds) {
+    if (items.length >= 10) break;
+    try {
+      final xml = await _httpGetText(feedUrl,
+              userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
+          .timeout(const Duration(seconds: 10));
+      String clean(String t) => t
           .replaceAll('<![CDATA[', '')
           .replaceAll(']]>', '')
           .replaceAll('&amp;', '&')
           .replaceAll('&#39;', "'")
-          .replaceAll('&quot;', '"');
-      items.add({
-        'title': title,
-        'url': m.group(2)!,
-        'published': m.group(3) ?? '',
-        'source': m.group(4) ?? 'Google News',
-      });
-      if (items.length >= 10) break;
-    }
-    // Cover images: each article's og:image, resolved once per cache hour.
-    await Future.wait(items.map((item) async {
-      try {
-        final html = await _httpGetText(item['url']!,
-                userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
-            .timeout(const Duration(seconds: 6));
-        final og = RegExp(
-                r'property="og:image"\s+content="([^"]+)"|content="([^"]+)"\s+property="og:image"')
-            .firstMatch(html);
-        final img = og?.group(1) ?? og?.group(2);
-        if (img != null && img.startsWith('http')) item['image'] = img;
-      } catch (_) {}
-    }));
-  } catch (_) {}
+          .replaceAll('&quot;', '"')
+          .trim();
+      for (final m
+          in RegExp(r'<item>(.*?)</item>', dotAll: true).allMatches(xml)) {
+        final item = m.group(1)!;
+        final title = clean(RegExp(r'<title>(.*?)</title>', dotAll: true)
+                .firstMatch(item)
+                ?.group(1) ??
+            '');
+        final link = clean(RegExp(r'<link>(.*?)</link>', dotAll: true)
+                .firstMatch(item)
+                ?.group(1) ??
+            '');
+        if (title.isEmpty || !link.startsWith('http')) continue;
+        final image = RegExp(r'<enclosure[^>]*url="([^"]+)"')
+                .firstMatch(item)
+                ?.group(1) ??
+            RegExp(r'<media:content[^>]*url="([^"]+)"')
+                .firstMatch(item)
+                ?.group(1);
+        final pub = RegExp(r'<pubDate>(.*?)</pubDate>', dotAll: true)
+                .firstMatch(item)
+                ?.group(1) ??
+            '';
+        items.add({
+          'title': title,
+          'url': link,
+          'published': pub.trim(),
+          'source': sourceName,
+          if (image != null && image.startsWith('http')) 'image': image,
+        });
+        if (items.length >= 10) break;
+      }
+    } catch (_) {}
+  }
   final payload = <String, Object?>{'items': items};
   if (items.isNotEmpty) _newsCache[key] = (DateTime.now(), payload);
   return _json(200, payload);
@@ -3003,6 +3118,12 @@ Future<void> main() async {
       'created_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
       'UNIQUE (city_slug, user_id))');
 
+  // Push notification device tokens (FCM).
+  await _db.execute('CREATE TABLE IF NOT EXISTS push_tokens ('
+      'token TEXT PRIMARY KEY, '
+      'user_id INTEGER, '
+      'updated_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+
   // Security / audit trail for the admin panel.
   await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
       'id SERIAL PRIMARY KEY, '
@@ -3064,6 +3185,7 @@ Future<void> main() async {
     ..get('/videos/trending', _trending)
     ..get('/whats-new', _whatsNew)
     ..get('/notifications', _notifications)
+    ..post('/push/register', _pushRegister)
     ..get('/videos/suggest', _suggest)
     ..get('/cities/<slug>/weather', _weather)
     ..get('/search', _search)

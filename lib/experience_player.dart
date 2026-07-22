@@ -8,6 +8,7 @@ import 'package:video_player/video_player.dart';
 import 'constant.dart';
 import 'services/haptic_service.dart';
 import 'services/media_api.dart';
+import 'vr_player_page.dart';
 import 'services/settings_service.dart';
 
 /// Immersive experience player.
@@ -115,6 +116,23 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
         });
       }
     });
+  }
+
+  /// This capture was published as VR/MR — the button opens the real
+  /// headset view instead of the coming-soon note.
+  bool get _isImmersive =>
+      widget.video.config.kind == 'vr' || widget.video.config.kind == 'mr';
+
+  void _enterVr() {
+    final c = controller;
+    if (c == null || !c.value.isInitialized) return;
+    Haptics.string();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VrPlayerPage(video: widget.video, controller: c),
+      ),
+    );
   }
 
   Future<void> _vrNotAvailable() async {
@@ -280,7 +298,7 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                 ),
                 // VR mode hand-off
                 TextButton.icon(
-                  onPressed: _vrNotAvailable,
+                  onPressed: _isImmersive ? _enterVr : _vrNotAvailable,
                   icon: const Icon(Icons.view_in_ar, color: lightBlue),
                   label:
                       const Text('VR mode', style: TextStyle(color: lightBlue)),

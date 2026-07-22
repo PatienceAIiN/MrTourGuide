@@ -1,36 +1,26 @@
 {
   "project_info": {
-    "project_number": "717760620776",
-    "project_id": "mrtouride",
-    "storage_bucket": "mrtouride.appspot.com"
+    "project_number": "230337888812",
+    "project_id": "mrtourguide-d466f",
+    "storage_bucket": "mrtourguide-d466f.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:717760620776:android:c3b0ae90bb3acc9fda415d",
+        "mobilesdk_app_id": "1:230337888812:android:5046c6685a2dc1343c0789",
         "android_client_info": {
           "package_name": "com.example.mrtouride"
         }
       },
-      "oauth_client": [
-        {
-          "client_id": "717760620776-pi88ulmkpat0tif1f7t6oncdgbip9vrb.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
+      "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyC3sb16eZYsEbnROBMWkJmTUxEOSr-XZ98"
+          "current_key": "AIzaSyBxUfmRe_iYwaNUnW8taSXkmQb1gbTnlcg"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "717760620776-pi88ulmkpat0tif1f7t6oncdgbip9vrb.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
+          "other_platform_oauth_client": []
         }
       }
     }

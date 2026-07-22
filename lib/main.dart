@@ -8,12 +8,15 @@ import 'package:mrtouride/login.dart';
 import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/media_api.dart';
+import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/signup.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-void main() {
-  SettingsService.instance.load();
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SettingsService.instance.load();
+  PushService.init(); // fire-and-forget: push must never block startup
   runApp(ListenableBuilder(
     listenable: SettingsService.instance,
     builder: (context, _) => MaterialApp(

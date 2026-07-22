@@ -12,6 +12,7 @@ import 'package:mrtouride/navpages/search_page.dart';
 import 'package:mrtouride/services/api_base.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
+import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
@@ -47,6 +48,8 @@ class _MainPageState extends State<MainPage> {
     _pageController = PageController();
     SettingsService.instance.load();
     _checkForUpdate();
+    // Re-register the push token under the signed-in account.
+    PushService.init();
     // New-content notifications: on entry + a gentle 90s cadence.
     _checkNewContent();
     // 5-minute cadence — friendly to the free-tier VM.

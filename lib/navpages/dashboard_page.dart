@@ -11,7 +11,6 @@ import 'package:video_player/video_player.dart';
 import '../constant.dart';
 import '../experience_player.dart';
 import '../fine_tune_page.dart';
-import '../widgets/news_section.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
@@ -36,7 +35,6 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   List<City> cities = [];
-  List<NewsItem> news = [];
   String? selectedCity;
   final List<VideoItem> videos = [];
   bool hasMore = false;
@@ -57,10 +55,6 @@ class _DashboardPageState extends State<DashboardPage> {
   void initState() {
     super.initState();
     _loadCities();
-    // Travel news: precautions, advisories, fresh ideas (server-cached 1h).
-    MediaApi.fetchNews().then((items) {
-      if (mounted) setState(() => news = items);
-    }).catchError((_) {});
   }
 
   @override
@@ -329,6 +323,18 @@ class _DashboardPageState extends State<DashboardPage> {
 
     await _uploadControlSheet(city, file.name,
         bytes: file.bytes, path: file.path, sizeBytes: file.size);
+  }
+
+  /// A platform place whose name matches the typed city (case-insensitive).
+  City? _knownPlace(String name) {
+    final n = name.trim().toLowerCase();
+    if (n.isEmpty) return null;
+    for (final c in cities) {
+      if (c.name.toLowerCase() == n || c.slug == n.replaceAll(' ', '-')) {
+        return c;
+      }
+    }
+    return null;
   }
 
   /// GPS → (country, state, city) via the backend's reverse geocoder.
@@ -695,6 +701,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       child: TextField(
                         controller: cityCtl,
                         scrollPadding: const EdgeInsets.only(bottom: 200),
+                        onChanged: (_) => setSheet(() {}),
                         decoration: const InputDecoration(
                             labelText: 'City',
                             isDense: true,
@@ -825,13 +832,46 @@ class _DashboardPageState extends State<DashboardPage> {
                       newSnackBar(context, title: 'Give the video a title.');
                       return;
                     }
+                    final placeName = cityCtl.text.trim();
+                    if (placeName.isEmpty) {
+                      newSnackBar(context,
+                          title: 'Set the city — it decides where this '
+                              'experience lives.');
+                      return;
+                    }
                     setSheet(() => busy = true);
                     setState(() => uploading = true);
                     config = config.copyWith(
                       country: countryCtl.text.trim(),
                       state: stateCtl.text.trim(),
-                      cityName: cityCtl.text.trim(),
+                      cityName: placeName,
                     );
+                    // Resolve the destination in realtime: an existing
+                    // place matches by name; a new one enrolls now.
+                    final known = _knownPlace(placeName);
+                    if (known != null) {
+                      targetCity = known.slug;
+                    } else {
+                      try {
+                        await MediaApi.addCity(
+                          name: placeName,
+                          location: [
+                            placeName,
+                            if (stateCtl.text.trim().isNotEmpty)
+                              stateCtl.text.trim(),
+                            if (countryCtl.text.trim().isNotEmpty)
+                              countryCtl.text.trim(),
+                          ].join(', '),
+                        );
+                        await _loadCities();
+                        targetCity = _knownPlace(placeName)?.slug ?? targetCity;
+                      } on AuthException catch (e) {
+                        setSheet(() => busy = false);
+                        setState(() => uploading = false);
+                        newSnackBar(context, title: e.message);
+                        return;
+                      }
+                    }
                     try {
                       final video = await MediaApi.uploadVideo(
                         city: targetCity,
@@ -1339,9 +1379,6 @@ class _DashboardPageState extends State<DashboardPage> {
                         label: const Text('Load more'),
                       ),
                     ),
-                  // Creators get the travel-news rail at the very bottom.
-                  if (AuthApi.currentUser?.isCreator ?? false)
-                    ...newsSection(context, news),
                   const SizedBox(height: 72), // keep FAB clear of last card
                 ],
               ),
