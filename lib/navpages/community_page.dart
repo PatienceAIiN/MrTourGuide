@@ -34,6 +34,10 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
   var following = p['isFollowing'] == true;
   var followers = p['followers'] as int? ?? 0;
   final isMe = AuthApi.currentUser?.id == userId;
+  // Owners get all fields back plus their privacy map — the card mirrors
+  // exactly what OTHERS see, so a hidden field is hidden here too.
+  final privacy = (p['privacy'] as Map?) ?? const {};
+  bool visible(String field) => !isMe || privacy[field] == true;
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -146,7 +150,7 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
                     runSpacing: 6,
                     alignment: WrapAlignment.center,
                     children: [
-                      if (p['instagram'] != null)
+                      if (p['instagram'] != null && visible('instagram'))
                         ActionChip(
                           visualDensity: VisualDensity.compact,
                           avatar: const Icon(Icons.camera_alt,
@@ -156,7 +160,7 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
                           onPressed: () => launchUrl(Uri.parse(
                               'https://instagram.com/${p['instagram']}')),
                         ),
-                      if (p['phone'] != null)
+                      if (p['phone'] != null && visible('phone'))
                         ActionChip(
                           visualDensity: VisualDensity.compact,
                           avatar: const Icon(Icons.call,
@@ -166,7 +170,7 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
                           onPressed: () =>
                               launchUrl(Uri.parse('tel:${p['phone']}')),
                         ),
-                      if (p['email'] != null)
+                      if (p['email'] != null && visible('email'))
                         ActionChip(
                           visualDensity: VisualDensity.compact,
                           avatar: const Icon(Icons.mail,
@@ -402,7 +406,7 @@ class _CommunityPageState extends State<CommunityPage> {
       if (!mounted) return;
       newSnackBar(context,
           title: 'Reshared — ${post.authorName} gets the credit.');
-      _reload();
+      await _reload();
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }

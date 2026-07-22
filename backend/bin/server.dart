@@ -775,17 +775,23 @@ Future<Response> _adminDeleteUser(Request request, String id) async {
     for (final sql in [
       'DELETE FROM place_ratings WHERE user_id = @id',
       'DELETE FROM reactions WHERE user_id = @id',
-      'DELETE FROM replies WHERE author_id = @id',
-      'DELETE FROM reactions WHERE post_id IN '
-          '(SELECT id FROM posts WHERE author_id = @id)',
-      'DELETE FROM replies WHERE post_id IN '
-          '(SELECT id FROM posts WHERE author_id = @id)',
-      'DELETE FROM posts WHERE author_id = @id',
+      // Community history stays — marked so readers know.
+      "UPDATE posts SET author_name = author_name || ' (account deleted)' "
+          "WHERE author_id = @id AND author_name NOT LIKE '%(account deleted)'",
+      "UPDATE replies SET author_name = author_name || ' (account deleted)' "
+          "WHERE author_id = @id AND author_name NOT LIKE '%(account deleted)'",
+      'DELETE FROM follows WHERE follower_id = @id OR followee_id = @id',
+      'DELETE FROM push_tokens WHERE user_id = @id',
       'DELETE FROM videos WHERE owner_id = @id',
       'DELETE FROM users WHERE id = @id',
     ]) {
       await _db.execute(Sql.named(sql), parameters: {'id': userId});
     }
+    _sendEmail(
+            u[1] as String,
+            'Your Mr.Tour Guide account was removed',
+            _accountDeletedHtml(u[0] as String, byAdmin: true))
+        .then((_) {});
     _logActivity(
         'admin',
         'user-deleted',
@@ -796,6 +802,16 @@ Future<Response> _adminDeleteUser(Request request, String id) async {
   } catch (_) {
     return _json(500, {'error': 'Could not delete the user.'});
   }
+}
+
+/// Admin: fire a live welcome mail and report Brevo's verdict.
+Future<Response> _adminTestMail(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final to = request.url.queryParameters['to'] ?? '';
+  if (!to.contains('@')) return _json(400, {'error': 'to=<email> required'});
+  final ok = await _sendEmail(
+      to, 'Welcome to Mr.Tour Guide! 🌏', _welcomeEmailHtml('Test Traveler'));
+  return _json(200, {'sent': ok});
 }
 
 Future<Response> _adminLogs(Request request) async {
@@ -941,10 +957,15 @@ Future<bool> _sendEmail(String to, String subject, String html) async {
       'htmlContent': html,
     }));
     final res = await req.close();
-    await res.drain<void>();
+    final bodyText = await res.transform(utf8.decoder).join();
     client.close();
-    return res.statusCode == 201;
-  } catch (_) {
+    final ok = res.statusCode == 201;
+    _logActivity('system', ok ? 'mail-sent' : 'mail-failed',
+        '"$subject" → $to (HTTP ${res.statusCode}'
+        '${ok ? '' : ': ${bodyText.length > 120 ? bodyText.substring(0, 120) : bodyText}'})');
+    return ok;
+  } catch (e) {
+    _logActivity('system', 'mail-failed', '"$subject" → $to ($e)');
     return false;
   }
 }
@@ -970,6 +991,17 @@ String _welcomeEmailHtml(String name) => '''
     </div>
     <p style="font-size:11px;color:#8b95a5;text-align:center;margin-top:22px">Mr.Tour Guide · A product of <a href="https://patienceai.in" style="color:#3CEBFF">PatienceAI</a></p>
   </div>
+</div>
+''';
+
+/// Sent when an account is removed (self-service or by moderation).
+String _accountDeletedHtml(String name, {required bool byAdmin}) => '''
+<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;background:#0e1116;color:#e8ecf2;border-radius:16px;padding:30px">
+  <div style="font-size:20px;font-weight:800;color:#3CEBFF;margin-bottom:14px">Mr.Tour Guide</div>
+  <p style="font-size:14px;line-height:1.6">Hi <b>$name</b>,</p>
+  <p style="font-size:14px;line-height:1.6;color:#c7cfdb">${byAdmin ? 'Your Mr.Tour Guide account has been removed by our moderation team.' : 'Your Mr.Tour Guide account has been deleted, as you requested.'} Your uploads, saved itineraries and personal details are gone; any community posts you wrote remain visible, marked as from a deleted account.</p>
+  <p style="font-size:14px;line-height:1.6;color:#c7cfdb">You are welcome back any time — creating a new account takes a minute.</p>
+  <p style="font-size:11px;color:#8b95a5;margin-top:20px">Mr.Tour Guide · A product of <a href="https://patienceai.in" style="color:#3CEBFF">PatienceAI</a></p>
 </div>
 ''';
 
@@ -1871,7 +1903,7 @@ Future<Response> _uploadCommunityImage(Request request) async {
   final result = await Process.run('ffmpeg', [
     '-y', '-loglevel', 'error',
     '-i', tmpIn.path,
-    '-vf', "scale='min(1280,iw)':-2",
+    '-vf', "scale='trunc(min(1280,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
   ]);
@@ -2752,7 +2784,7 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
   final result = await Process.run('ffmpeg', [
     '-y', '-loglevel', 'error',
     '-i', tmpIn.path,
-    '-vf', "scale='min(640,iw)':-2",
+    '-vf', "scale='trunc(min(640,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
   ]);
@@ -3085,7 +3117,7 @@ Future<Response> _uploadAvatar(Request request) async {
   final result = await Process.run('ffmpeg', [
     '-y', '-loglevel', 'error',
     '-i', tmpIn.path,
-    '-vf', "scale='min(512,iw)':-2",
+    '-vf', "scale='trunc(min(512,iw)/2)*2':-2",
     '-q:v', '6',
     tmpOut.path,
   ]);
@@ -3141,17 +3173,22 @@ Future<Response> _deleteAccount(Request request) async {
     for (final sql in [
       'DELETE FROM place_ratings WHERE user_id = @id',
       'DELETE FROM reactions WHERE user_id = @id',
-      'DELETE FROM replies WHERE author_id = @id',
-      'DELETE FROM reactions WHERE post_id IN '
-          '(SELECT id FROM posts WHERE author_id = @id)',
-      'DELETE FROM replies WHERE post_id IN '
-          '(SELECT id FROM posts WHERE author_id = @id)',
-      'DELETE FROM posts WHERE author_id = @id',
+      // Community history stays — marked so readers know.
+      "UPDATE posts SET author_name = author_name || ' (account deleted)' "
+          "WHERE author_id = @id AND author_name NOT LIKE '%(account deleted)'",
+      "UPDATE replies SET author_name = author_name || ' (account deleted)' "
+          "WHERE author_id = @id AND author_name NOT LIKE '%(account deleted)'",
+      'DELETE FROM follows WHERE follower_id = @id OR followee_id = @id',
+      'DELETE FROM push_tokens WHERE user_id = @id',
       'DELETE FROM videos WHERE owner_id = @id',
       'DELETE FROM users WHERE id = @id', // itineraries cascade
     ]) {
       await _db.execute(Sql.named(sql), parameters: {'id': userId});
     }
+    _sendEmail(
+        u[1] as String,
+        'Your Mr.Tour Guide account was deleted',
+        _accountDeletedHtml(u[0] as String, byAdmin: false)).then((_) {});
     return _json(200, {'ok': true});
   } catch (_) {
     return _json(500, {'error': 'Could not delete the account. Try again.'});
@@ -3327,7 +3364,7 @@ Future<Response> _uploadUserCover(Request request) async {
   final result = await Process.run('ffmpeg', [
     '-y', '-loglevel', 'error',
     '-i', tmpIn.path,
-    '-vf', "scale='min(1280,iw)':-2",
+    '-vf', "scale='trunc(min(1280,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
   ]);
@@ -3592,6 +3629,7 @@ Future<void> main() async {
     ..post('/admin/api/users/<id>/update', _adminUpdateUser)
     ..post('/admin/api/users/<id>/delete', _adminDeleteUser)
     ..get('/admin/api/logs', _adminLogs)
+    ..get('/admin/api/test-mail', _adminTestMail)
     ..get('/app/version', _appVersion)
     ..get('/apk', _apk)
     ..get('/files/<city>/<name>', _serveFile);
