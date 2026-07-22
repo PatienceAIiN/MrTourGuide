@@ -1556,9 +1556,21 @@ Future<Response> _geoReverse(Request request) async {
     final decoded = jsonDecode(raw) as Map<String, dynamic>;
     final addr = (decoded['address'] as Map<String, dynamic>?) ?? {};
     final payload = <String, Object?>{
-      'city': addr['city'] ?? addr['town'] ?? addr['village'] ??
-          addr['county'] ?? '',
-      'state': addr['state'] ?? '',
+      'city': addr['city'] ??
+          addr['town'] ??
+          addr['village'] ??
+          addr['suburb'] ??
+          addr['county'] ??
+          addr['state_district'] ??
+          '',
+      // Nominatim names the state differently by zoom/region — fall back
+      // through every variant so it always auto-fills.
+      'state': addr['state'] ??
+          addr['state_district'] ??
+          addr['region'] ??
+          addr['province'] ??
+          addr['county'] ??
+          '',
       'country': addr['country'] ?? '',
     };
     _geoCache[key] = (DateTime.now(), payload);

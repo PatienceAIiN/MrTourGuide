@@ -367,7 +367,7 @@ class _HomePageState extends State<HomeScreen> {
                         index: 2,
                         child: Springy(
                           haptic: 'tick',
-                          onTap: () => widget.onSelectTab?.call(5),
+                          onTap: () => widget.onSelectTab?.call(4),
                           child: Container(
                             decoration: BoxDecoration(
                               color: pageBg(context),

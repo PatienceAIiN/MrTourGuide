@@ -453,6 +453,81 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
       );
 
+  /// Per-frame controls popup shown at publish time: the creator shapes
+  /// the starting feel here; the frame-by-frame studio (equalizer icon)
+  /// unlocks the full timeline once processing finishes.
+  Future<ExperienceConfig?> _perFrameControlsDialog(ExperienceConfig config) {
+    var working = config;
+    return showDialog<ExperienceConfig>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDlg) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Row(
+            children: [
+              Icon(Icons.tune, color: Colors.purple, size: 20),
+              SizedBox(width: 8),
+              Text('Per-frame controls', style: TextStyle(fontSize: 16)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Set the base feel now; after processing, tap the equalizer '
+                'icon on the video to sculpt every second on the timeline.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.waves, color: Colors.purple),
+                title: const Text('Base feel intensity'),
+                subtitle: Slider(
+                  value: working.intensity,
+                  divisions: 10,
+                  label: '${(working.intensity * 100).round()}%',
+                  activeColor: Colors.purpleAccent,
+                  onChanged: (v) {
+                    if ((v * 10).round() != (working.intensity * 10).round()) {
+                      Haptics.level(v);
+                    }
+                    setDlg(() => working = working.copyWith(intensity: v));
+                  },
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('Haptics'),
+                value: working.haptics,
+                onChanged: (v) =>
+                    setDlg(() => working = working.copyWith(haptics: v)),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('Sound'),
+                value: working.sound,
+                onChanged: (v) =>
+                    setDlg(() => working = working.copyWith(sound: v)),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, working),
+                child: const Text('Apply')),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// The publish control window: everything about the experience is set
   /// here before upload — title, video type (Normal / VR 360° / MR), feel
   /// mapping (auto ML track or per-frame fine-tuning), feel intensity and
@@ -499,454 +574,463 @@ class _DashboardPageState extends State<DashboardPage> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (sheetContext) => StatefulBuilder(
-        builder: (sheetContext, setSheet) => Padding(
-          padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 14,
-              bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                        color: Colors.grey.withValues(alpha: 0.4),
-                        borderRadius: BorderRadius.circular(2)),
+        builder: (sheetContext, setSheet) => ConstrainedBox(
+          // Never taller than the screen — the content scrolls instead of
+          // pushing the sheet out of view.
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.88),
+          child: Padding(
+            padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 14,
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                          color: Colors.grey.withValues(alpha: 0.4),
+                          borderRadius: BorderRadius.circular(2)),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    const Icon(Icons.cloud_upload, color: blue, size: 20),
-                    const SizedBox(width: 8),
-                    const Text('Publish to',
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16)),
-                    const SizedBox(width: 10),
-                    // Pick the destination right here — no more defaults.
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: targetCity,
-                        isDense: true,
-                        decoration: const InputDecoration(
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Icon(Icons.cloud_upload, color: blue, size: 20),
+                      const SizedBox(width: 8),
+                      const Text('Publish to',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16)),
+                      const SizedBox(width: 10),
+                      // Pick the destination right here — no more defaults.
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          initialValue: targetCity,
                           isDense: true,
-                          contentPadding:
-                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          border: OutlineInputBorder(),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 8),
+                            border: OutlineInputBorder(),
+                          ),
+                          items: [
+                            for (final c in cities)
+                              DropdownMenuItem(
+                                  value: c.slug,
+                                  child: Text(c.name,
+                                      overflow: TextOverflow.ellipsis)),
+                          ],
+                          onChanged: (slug) {
+                            if (slug == null) return;
+                            Haptics.tick();
+                            setSheet(() {
+                              targetCity = slug;
+                              prefillLocation(slug);
+                            });
+                          },
                         ),
-                        items: [
-                          for (final c in cities)
-                            DropdownMenuItem(
-                                value: c.slug,
-                                child: Text(c.name,
-                                    overflow: TextOverflow.ellipsis)),
-                        ],
-                        onChanged: (slug) {
-                          if (slug == null) return;
-                          Haptics.tick();
-                          setSheet(() {
-                            targetCity = slug;
-                            prefillLocation(slug);
-                          });
-                        },
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text('$filename · $sizeMb MB',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: titleCtl,
-                  scrollPadding: const EdgeInsets.only(bottom: 200),
-                  decoration: const InputDecoration(
-                    labelText: 'Experience title',
-                    hintText: 'e.g. Taj Mahal Sunrise',
-                    border: OutlineInputBorder(),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 16),
-                const Text('Video type',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                const SizedBox(height: 8),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                        value: 'normal',
-                        icon: Icon(Icons.smart_display, size: 16),
-                        label: Text('Normal')),
-                    ButtonSegment(
-                        value: 'vr',
-                        icon: Icon(Icons.vrpano, size: 16),
-                        label: Text('VR 360°')),
-                    ButtonSegment(
-                        value: 'mr',
-                        icon: Icon(Icons.view_in_ar, size: 16),
-                        label: Text('MR')),
-                  ],
-                  selected: {config.kind},
-                  onSelectionChanged: (s) async {
-                    final kind = s.first;
-                    if (kind != 'normal') {
-                      // Gate VR/MR behind a real 360° compatibility check.
-                      if (immersiveOk == null) {
-                        setSheet(() => probing = true);
-                        immersiveOk =
-                            await _probeImmersive(bytes: bytes, path: path);
-                        setSheet(() => probing = false);
-                      }
-                      if (immersiveOk != true) {
-                        Haptics.heavy();
-                        await _notImmersiveDialog();
-                        return; // stays on the current type
-                      }
-                    }
-                    Haptics.tick();
-                    setSheet(() => config = config.copyWith(kind: kind));
-                  },
-                ),
-                if (probing)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 6),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(strokeWidth: 2)),
-                        SizedBox(width: 8),
-                        Text('Checking 360° compatibility…',
-                            style:
-                                TextStyle(fontSize: 11.5, color: Colors.grey)),
-                      ],
+                  const SizedBox(height: 4),
+                  Text('$filename · $sizeMb MB',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: titleCtl,
+                    scrollPadding: const EdgeInsets.only(bottom: 200),
+                    decoration: const InputDecoration(
+                      labelText: 'Experience title',
+                      hintText: 'e.g. Taj Mahal Sunrise',
+                      border: OutlineInputBorder(),
                     ),
                   ),
-                const SizedBox(height: 16),
-                const Text('Feel mapping',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    ChoiceChip(
-                      avatar: const Icon(Icons.auto_awesome, size: 15),
-                      label: const Text('Auto (ML haptic track)'),
-                      selected: config.feelMode == 'auto',
-                      onSelected: (_) {
-                        Haptics.tick();
-                        setSheet(
-                            () => config = config.copyWith(feelMode: 'auto'));
-                      },
-                    ),
-                    ChoiceChip(
-                      avatar: const Icon(Icons.tune, size: 15),
-                      label: const Text('Per-frame (fine control)'),
-                      selected: config.feelMode == 'perframe',
-                      onSelected: (_) {
-                        Haptics.tick();
-                        setSheet(() =>
-                            config = config.copyWith(feelMode: 'perframe'));
-                      },
-                    ),
-                  ],
-                ),
-                if (config.feelMode == 'perframe')
-                  const Padding(
-                    padding: EdgeInsets.only(top: 6),
-                    child: Text(
-                      'After processing, open Experience settings on the video '
-                      'to fine-tune the feel frame by frame.',
-                      style: TextStyle(color: Colors.grey, fontSize: 11.5),
-                    ),
-                  ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Text('Location',
-                        style: TextStyle(
-                            fontWeight: FontWeight.w700, fontSize: 13)),
-                    const Spacer(),
-                    locating
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : TextButton.icon(
-                            style: TextButton.styleFrom(
-                                visualDensity: VisualDensity.compact),
-                            icon: const Icon(Icons.my_location, size: 14),
-                            label: const Text('Use my location',
-                                style: TextStyle(fontSize: 11.5)),
-                            onPressed: () async {
-                              setSheet(() => locating = true);
-                              final loc = await _fetchDeviceLocation();
-                              setSheet(() => locating = false);
-                              if (loc == null) {
-                                if (context.mounted) {
-                                  newSnackBar(context,
-                                      title: 'Could not get your location — '
-                                          'fill it in manually.');
-                                }
-                                return;
-                              }
-                              setSheet(() {
-                                if (loc.$1.isNotEmpty) {
-                                  countryCtl.text = loc.$1;
-                                }
-                                if (loc.$2.isNotEmpty) stateCtl.text = loc.$2;
-                                if (loc.$3.isNotEmpty) cityCtl.text = loc.$3;
-                              });
-                            },
-                          ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: countryCtl,
-                        scrollPadding: const EdgeInsets.only(bottom: 200),
-                        decoration: const InputDecoration(
-                            labelText: 'Country',
-                            isDense: true,
-                            border: OutlineInputBorder()),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: stateCtl,
-                        scrollPadding: const EdgeInsets.only(bottom: 200),
-                        decoration: const InputDecoration(
-                            labelText: 'State',
-                            isDense: true,
-                            border: OutlineInputBorder()),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: cityCtl,
-                        scrollPadding: const EdgeInsets.only(bottom: 200),
-                        onChanged: (_) => setSheet(() {}),
-                        decoration: const InputDecoration(
-                            labelText: 'City',
-                            isDense: true,
-                            border: OutlineInputBorder()),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                const Text(
-                  'Searches for this state or country will surface the '
-                  'experience.',
-                  style: TextStyle(color: Colors.grey, fontSize: 11),
-                ),
-                const SizedBox(height: 16),
-                const Text('Thumbnail',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: thumbBytes != null
-                          ? Image.memory(thumbBytes!,
-                              width: 96, height: 56, fit: BoxFit.cover)
-                          : Container(
-                              width: 96,
-                              height: 56,
-                              color: Colors.grey.withValues(alpha: 0.18),
-                              child: const Icon(Icons.image_outlined,
-                                  color: Colors.grey),
-                            ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          OutlinedButton.icon(
-                            icon:
-                                const Icon(Icons.add_photo_alternate, size: 16),
-                            label: Text(thumbBytes == null
-                                ? 'Custom thumbnail'
-                                : 'Change'),
-                            onPressed: () async {
-                              final img = await FilePicker.platform.pickFiles(
-                                  type: FileType.image, withData: true);
-                              final f = img?.files.single;
-                              if (f == null || f.bytes == null) return;
-                              if (f.bytes!.length > 5 * 1024 * 1024) {
-                                newSnackBar(context,
-                                    title: 'Thumbnails are limited to 5 MB.');
-                                return;
-                              }
-                              final clean = await normalizeImage(f.bytes!);
-                              setSheet(() {
-                                thumbBytes = clean;
-                                thumbName = 'thumb.png';
-                              });
-                            },
-                          ),
-                          Text(
-                            thumbBytes == null
-                                ? 'Auto: a frame is picked from the video.'
-                                : thumbName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.waves, color: Colors.purple),
-                  title: const Text('Feel intensity'),
-                  subtitle: Slider(
-                    value: config.intensity,
-                    divisions: 10,
-                    label: '${(config.intensity * 100).round()}%',
-                    activeColor: Colors.purpleAccent,
-                    onChanged: (v) {
-                      if ((v * 10).round() != (config.intensity * 10).round()) {
-                        Haptics.level(v);
+                  const SizedBox(height: 16),
+                  const Text('Video type',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(
+                          value: 'normal',
+                          icon: Icon(Icons.smart_display, size: 16),
+                          label: Text('Normal')),
+                      ButtonSegment(
+                          value: 'vr',
+                          icon: Icon(Icons.vrpano, size: 16),
+                          label: Text('VR 360°')),
+                      ButtonSegment(
+                          value: 'mr',
+                          icon: Icon(Icons.view_in_ar, size: 16),
+                          label: Text('MR')),
+                    ],
+                    selected: {config.kind},
+                    onSelectionChanged: (s) async {
+                      final kind = s.first;
+                      if (kind != 'normal') {
+                        // Gate VR/MR behind a real 360° compatibility check.
+                        if (immersiveOk == null) {
+                          setSheet(() => probing = true);
+                          immersiveOk =
+                              await _probeImmersive(bytes: bytes, path: path);
+                          setSheet(() => probing = false);
+                        }
+                        if (immersiveOk != true) {
+                          Haptics.heavy();
+                          await _notImmersiveDialog();
+                          return; // stays on the current type
+                        }
                       }
-                      setSheet(() => config = config.copyWith(intensity: v));
+                      Haptics.tick();
+                      setSheet(() => config = config.copyWith(kind: kind));
                     },
                   ),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Haptics (real feel)'),
-                  secondary: const Icon(Icons.vibration, color: Colors.purple),
-                  value: config.haptics,
-                  activeThumbColor: blue,
-                  onChanged: (v) =>
-                      setSheet(() => config = config.copyWith(haptics: v)),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Sound experience'),
-                  secondary: const Icon(Icons.volume_up, color: blue),
-                  value: config.sound,
-                  activeThumbColor: blue,
-                  onChanged: (v) =>
-                      setSheet(() => config = config.copyWith(sound: v)),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Autoplay for viewers'),
-                  secondary: const Icon(Icons.play_circle, color: blue),
-                  value: config.autoplay,
-                  activeThumbColor: blue,
-                  onChanged: (v) =>
-                      setSheet(() => config = config.copyWith(autoplay: v)),
-                ),
-                const SizedBox(height: 10),
-                LoadingButton(
-                  busy: busy,
-                  label: 'Upload & publish',
-                  icon: Icons.cloud_upload,
-                  onPressed: () async {
-                    final title = titleCtl.text.trim();
-                    if (title.isEmpty) {
-                      newSnackBar(context, title: 'Give the video a title.');
-                      return;
-                    }
-                    final placeName = cityCtl.text.trim();
-                    if (placeName.isEmpty) {
-                      newSnackBar(context,
-                          title: 'Set the city — it decides where this '
-                              'experience lives.');
-                      return;
-                    }
-                    setSheet(() => busy = true);
-                    setState(() => uploading = true);
-                    config = config.copyWith(
-                      country: countryCtl.text.trim(),
-                      state: stateCtl.text.trim(),
-                      cityName: placeName,
-                    );
-                    // Resolve the destination in realtime: an existing
-                    // place matches by name; a new one enrolls now.
-                    final known = _knownPlace(placeName);
-                    if (known != null) {
-                      targetCity = known.slug;
-                    } else {
-                      try {
-                        await MediaApi.addCity(
-                          name: placeName,
-                          location: [
-                            placeName,
-                            if (stateCtl.text.trim().isNotEmpty)
-                              stateCtl.text.trim(),
-                            if (countryCtl.text.trim().isNotEmpty)
-                              countryCtl.text.trim(),
-                          ].join(', '),
-                        );
-                        await _loadCities();
-                        targetCity = _knownPlace(placeName)?.slug ?? targetCity;
-                      } on AuthException catch (e) {
-                        setSheet(() => busy = false);
-                        setState(() => uploading = false);
-                        newSnackBar(context, title: e.message);
+                  if (probing)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(strokeWidth: 2)),
+                          SizedBox(width: 8),
+                          Text('Checking 360° compatibility…',
+                              style: TextStyle(
+                                  fontSize: 11.5, color: Colors.grey)),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  const Text('Feel mapping',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ChoiceChip(
+                        avatar: const Icon(Icons.auto_awesome, size: 15),
+                        label: const Text('Auto (ML haptic track)'),
+                        selected: config.feelMode == 'auto',
+                        onSelected: (_) {
+                          Haptics.tick();
+                          setSheet(
+                              () => config = config.copyWith(feelMode: 'auto'));
+                        },
+                      ),
+                      ChoiceChip(
+                        avatar: const Icon(Icons.tune, size: 15),
+                        label: const Text('Per-frame (fine control)'),
+                        selected: config.feelMode == 'perframe',
+                        onSelected: (_) {
+                          Haptics.tick();
+                          setSheet(() =>
+                              config = config.copyWith(feelMode: 'perframe'));
+                        },
+                      ),
+                    ],
+                  ),
+                  if (config.feelMode == 'perframe')
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'After processing, open Experience settings on the video '
+                        'to fine-tune the feel frame by frame.',
+                        style: TextStyle(color: Colors.grey, fontSize: 11.5),
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Text('Location',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w700, fontSize: 13)),
+                      const Spacer(),
+                      locating
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : TextButton.icon(
+                              style: TextButton.styleFrom(
+                                  visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.my_location, size: 14),
+                              label: const Text('Use my location',
+                                  style: TextStyle(fontSize: 11.5)),
+                              onPressed: () async {
+                                setSheet(() => locating = true);
+                                final loc = await _fetchDeviceLocation();
+                                setSheet(() => locating = false);
+                                if (loc == null) {
+                                  if (context.mounted) {
+                                    newSnackBar(context,
+                                        title: 'Could not get your location — '
+                                            'fill it in manually.');
+                                  }
+                                  return;
+                                }
+                                setSheet(() {
+                                  if (loc.$1.isNotEmpty) {
+                                    countryCtl.text = loc.$1;
+                                  }
+                                  if (loc.$2.isNotEmpty) stateCtl.text = loc.$2;
+                                  if (loc.$3.isNotEmpty) cityCtl.text = loc.$3;
+                                });
+                              },
+                            ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: countryCtl,
+                          scrollPadding: const EdgeInsets.only(bottom: 200),
+                          decoration: const InputDecoration(
+                              labelText: 'Country',
+                              isDense: true,
+                              border: OutlineInputBorder()),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: stateCtl,
+                          scrollPadding: const EdgeInsets.only(bottom: 200),
+                          decoration: const InputDecoration(
+                              labelText: 'State',
+                              isDense: true,
+                              border: OutlineInputBorder()),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: cityCtl,
+                          scrollPadding: const EdgeInsets.only(bottom: 200),
+                          onChanged: (_) => setSheet(() {}),
+                          decoration: const InputDecoration(
+                              labelText: 'City',
+                              isDense: true,
+                              border: OutlineInputBorder()),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  const Text(
+                    'Searches for this state or country will surface the '
+                    'experience.',
+                    style: TextStyle(color: Colors.grey, fontSize: 11),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Thumbnail',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: thumbBytes != null
+                            ? Image.memory(thumbBytes!,
+                                width: 96, height: 56, fit: BoxFit.cover)
+                            : Container(
+                                width: 96,
+                                height: 56,
+                                color: Colors.grey.withValues(alpha: 0.18),
+                                child: const Icon(Icons.image_outlined,
+                                    color: Colors.grey),
+                              ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.add_photo_alternate,
+                                  size: 16),
+                              label: Text(thumbBytes == null
+                                  ? 'Custom thumbnail'
+                                  : 'Change'),
+                              onPressed: () async {
+                                final img = await FilePicker.platform.pickFiles(
+                                    type: FileType.image, withData: true);
+                                final f = img?.files.single;
+                                if (f == null || f.bytes == null) return;
+                                if (f.bytes!.length > 5 * 1024 * 1024) {
+                                  newSnackBar(context,
+                                      title: 'Thumbnails are limited to 5 MB.');
+                                  return;
+                                }
+                                final clean = await normalizeImage(f.bytes!);
+                                setSheet(() {
+                                  thumbBytes = clean;
+                                  thumbName = 'thumb.png';
+                                });
+                              },
+                            ),
+                            Text(
+                              thumbBytes == null
+                                  ? 'Auto: a frame is picked from the video.'
+                                  : thumbName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.waves, color: Colors.purple),
+                    title: const Text('Feel intensity'),
+                    subtitle: Slider(
+                      value: config.intensity,
+                      divisions: 10,
+                      label: '${(config.intensity * 100).round()}%',
+                      activeColor: Colors.purpleAccent,
+                      onChanged: (v) {
+                        if ((v * 10).round() !=
+                            (config.intensity * 10).round()) {
+                          Haptics.level(v);
+                        }
+                        setSheet(() => config = config.copyWith(intensity: v));
+                      },
+                    ),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Haptics (real feel)'),
+                    secondary:
+                        const Icon(Icons.vibration, color: Colors.purple),
+                    value: config.haptics,
+                    activeThumbColor: blue,
+                    onChanged: (v) =>
+                        setSheet(() => config = config.copyWith(haptics: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Sound experience'),
+                    secondary: const Icon(Icons.volume_up, color: blue),
+                    value: config.sound,
+                    activeThumbColor: blue,
+                    onChanged: (v) =>
+                        setSheet(() => config = config.copyWith(sound: v)),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Autoplay for viewers'),
+                    secondary: const Icon(Icons.play_circle, color: blue),
+                    value: config.autoplay,
+                    activeThumbColor: blue,
+                    onChanged: (v) =>
+                        setSheet(() => config = config.copyWith(autoplay: v)),
+                  ),
+                  const SizedBox(height: 10),
+                  LoadingButton(
+                    busy: busy,
+                    label: 'Upload & publish',
+                    icon: Icons.cloud_upload,
+                    onPressed: () async {
+                      final title = titleCtl.text.trim();
+                      if (title.isEmpty) {
+                        newSnackBar(context, title: 'Give the video a title.');
                         return;
                       }
-                    }
-                    try {
-                      final video = await MediaApi.uploadVideo(
-                        city: targetCity,
-                        title: title,
-                        filename: filename,
-                        bytes: bytes,
-                        filePath: path,
-                      );
-                      // Apply the creator's control settings right away.
-                      try {
-                        await MediaApi.updateConfig(video.id, config);
-                      } catch (_) {}
-                      if (thumbBytes != null) {
-                        try {
-                          await MediaApi.uploadThumbnail(
-                              videoId: video.id,
-                              filename: thumbName,
-                              bytes: thumbBytes!);
-                        } catch (_) {}
+                      final placeName = cityCtl.text.trim();
+                      if (placeName.isEmpty) {
+                        newSnackBar(context,
+                            title: 'Set the city — it decides where this '
+                                'experience lives.');
+                        return;
                       }
-                      if (!mounted) return;
-                      setState(() => uploading = false);
-                      if (sheetContext.mounted) Navigator.pop(sheetContext);
-                      newSnackBar(context,
-                          title: 'Uploaded! Processing feel & sound for '
-                              '"$title"...');
-                      await _loadCities(); // refresh counts + list
-                    } on AuthException catch (e) {
-                      if (!mounted) return;
-                      setState(() => uploading = false);
-                      setSheet(() => busy = false);
-                      newSnackBar(context, title: e.message);
-                    }
-                  },
-                ),
-              ],
+                      setSheet(() => busy = true);
+                      setState(() => uploading = true);
+                      config = config.copyWith(
+                        country: countryCtl.text.trim(),
+                        state: stateCtl.text.trim(),
+                        cityName: placeName,
+                      );
+                      // Resolve the destination in realtime: an existing
+                      // place matches by name; a new one enrolls now.
+                      final known = _knownPlace(placeName);
+                      if (known != null) {
+                        targetCity = known.slug;
+                      } else {
+                        try {
+                          await MediaApi.addCity(
+                            name: placeName,
+                            location: [
+                              placeName,
+                              if (stateCtl.text.trim().isNotEmpty)
+                                stateCtl.text.trim(),
+                              if (countryCtl.text.trim().isNotEmpty)
+                                countryCtl.text.trim(),
+                            ].join(', '),
+                          );
+                          await _loadCities();
+                          targetCity =
+                              _knownPlace(placeName)?.slug ?? targetCity;
+                        } on AuthException catch (e) {
+                          setSheet(() => busy = false);
+                          setState(() => uploading = false);
+                          newSnackBar(context, title: e.message);
+                          return;
+                        }
+                      }
+                      try {
+                        final video = await MediaApi.uploadVideo(
+                          city: targetCity,
+                          title: title,
+                          filename: filename,
+                          bytes: bytes,
+                          filePath: path,
+                        );
+                        // Apply the creator's control settings right away.
+                        try {
+                          await MediaApi.updateConfig(video.id, config);
+                        } catch (_) {}
+                        if (thumbBytes != null) {
+                          try {
+                            await MediaApi.uploadThumbnail(
+                                videoId: video.id,
+                                filename: thumbName,
+                                bytes: thumbBytes!);
+                          } catch (_) {}
+                        }
+                        if (!mounted) return;
+                        setState(() => uploading = false);
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                        newSnackBar(context,
+                            title: 'Uploaded! Processing feel & sound for '
+                                '"$title"...');
+                        await _loadCities(); // refresh counts + list
+                      } on AuthException catch (e) {
+                        if (!mounted) return;
+                        setState(() => uploading = false);
+                        setSheet(() => busy = false);
+                        newSnackBar(context, title: e.message);
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1252,6 +1336,28 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  Widget _videoIconBox(bool processing) => Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: processing
+                ? [Colors.grey, Colors.blueGrey]
+                : [const Color(0xFF1E319D), const Color(0xFF3CEBFF)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: processing
+            ? const Padding(
+                padding: EdgeInsets.all(13),
+                child:
+                    CircularProgressIndicator(color: white, strokeWidth: 2.5),
+              )
+            : const Icon(Icons.play_arrow, color: white, size: 30),
+      );
+
   String _cityName(String slug) => cities
       .firstWhere((c) => c.slug == slug,
           orElse: () => City(slug: slug, name: slug, videoCount: 0))
@@ -1436,27 +1542,18 @@ class _DashboardPageState extends State<DashboardPage> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: processing
-                  ? [Colors.grey, Colors.blueGrey]
-                  : [const Color(0xFF1E319D), const Color(0xFF3CEBFF)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: processing
-              ? const Padding(
-                  padding: EdgeInsets.all(13),
-                  child:
-                      CircularProgressIndicator(color: white, strokeWidth: 2.5),
-                )
-              : const Icon(Icons.play_arrow, color: white, size: 30),
-        ),
+        leading: video.absoluteThumbUrl != null
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.network(
+                  video.absoluteThumbUrl!,
+                  width: 56,
+                  height: 48,
+                  fit: BoxFit.cover,
+                  errorBuilder: (c, e, s) => _videoIconBox(processing),
+                ),
+              )
+            : _videoIconBox(processing),
         title: Text(
           video.title,
           style: const TextStyle(fontWeight: FontWeight.w600),

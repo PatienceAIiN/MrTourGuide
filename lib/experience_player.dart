@@ -301,30 +301,59 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                     ],
                   ),
                 ),
-                // VR mode hand-off
-                TextButton.icon(
+                // VR mode hand-off — icon only.
+                IconButton(
+                  tooltip: 'VR mode',
                   onPressed: _isImmersive ? _enterVr : _vrNotAvailable,
-                  icon: const Icon(Icons.view_in_ar, color: lightBlue),
-                  label:
-                      const Text('VR mode', style: TextStyle(color: lightBlue)),
+                  icon:
+                      const Icon(Icons.view_in_ar, color: lightBlue, size: 26),
                 ),
               ],
             ),
             const Spacer(),
-            // Center play/pause
+            // Center transport: back 10 · play/pause · forward 10.
             if (c != null)
-              IconButton(
-                iconSize: 72,
-                color: Colors.white,
-                icon: Icon(c.value.isPlaying
-                    ? Icons.pause_circle_filled
-                    : Icons.play_circle_filled),
-                onPressed: () {
-                  setState(() {
-                    c.value.isPlaying ? c.pause() : c.play();
-                  });
-                  _scheduleHide();
-                },
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    iconSize: 40,
+                    color: Colors.white,
+                    tooltip: 'Back 10 seconds',
+                    icon: const Icon(Icons.replay_10),
+                    onPressed: () {
+                      Haptics.tick();
+                      c.seekTo(c.value.position - const Duration(seconds: 10));
+                      _scheduleHide();
+                    },
+                  ),
+                  const SizedBox(width: 18),
+                  IconButton(
+                    iconSize: 72,
+                    color: Colors.white,
+                    icon: Icon(c.value.isPlaying
+                        ? Icons.pause_circle_filled
+                        : Icons.play_circle_filled),
+                    onPressed: () {
+                      setState(() {
+                        c.value.isPlaying ? c.pause() : c.play();
+                      });
+                      _scheduleHide();
+                    },
+                  ),
+                  const SizedBox(width: 18),
+                  IconButton(
+                    iconSize: 40,
+                    color: Colors.white,
+                    tooltip: 'Forward 10 seconds',
+                    icon: const Icon(Icons.forward_10),
+                    onPressed: () {
+                      Haptics.tick();
+                      c.seekTo(c.value.position + const Duration(seconds: 10));
+                      _scheduleHide();
+                    },
+                  ),
+                ],
               ),
             const Spacer(),
             // Bottom controls

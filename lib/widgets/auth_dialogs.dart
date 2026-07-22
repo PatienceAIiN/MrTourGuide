@@ -280,8 +280,12 @@ class GoogleButton extends StatelessWidget {
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(double.infinity, 50),
-        side: const BorderSide(color: Colors.black26),
-        foregroundColor: black,
+        // Theme-aware: black-on-dark was invisible in dark mode.
+        side: BorderSide(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.white24
+                : Colors.black26),
+        foregroundColor: ink(context),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       onPressed: onPressed,

@@ -7,7 +7,6 @@ import 'package:mrtouride/home_page.dart';
 import 'package:mrtouride/navpages/community_page.dart';
 import 'package:mrtouride/navpages/itinerary_page.dart';
 import 'package:mrtouride/navpages/dashboard_page.dart';
-import 'package:mrtouride/navpages/my_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
 import 'package:mrtouride/services/api_base.dart';
 import 'package:mrtouride/services/auth_api.dart';
@@ -43,7 +42,6 @@ class _MainPageState extends State<MainPage> {
     DashboardPage(onSelectTab: onTap),
     ItineraryPage(onSelectTab: onTap),
     CommunityPage(onSelectTab: onTap),
-    MyPage(onSelectTab: onTap),
     SearchPage(onSelectTab: onTap),
   ];
 
@@ -174,8 +172,6 @@ class _MainPageState extends State<MainPage> {
                 MaterialPageRoute(builder: (context) => const SettingsPage()),
               ),
             ),
-            const NavEntry(
-                icon: Icons.person_rounded, label: 'Profile', tabIndex: 4),
           ],
         ),
       ),
