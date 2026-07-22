@@ -11,8 +11,12 @@ newSnackBar(BuildContext context, {title}) {
   return ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       backgroundColor: blue,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      // Explicit white — theme defaults made this unreadable in dark mode.
       content: Text(
-        title,
+        '$title',
+        style: const TextStyle(color: Colors.white, fontSize: 13.5),
       ),
     ),
   );

@@ -1192,7 +1192,8 @@ Future<Response> _googleAuth(Request request) async {
 
   final existing = await _db.execute(
     Sql.named(
-        'SELECT id, name, email, role, provider FROM users WHERE email = @email'),
+        'SELECT id, name, email, role, provider, avatar_url, about '
+        'FROM users WHERE email = @email'),
     parameters: {'email': email},
   );
 
@@ -1235,8 +1236,14 @@ Future<Response> _googleAuth(Request request) async {
           'This email signed up with a password. Sign in with your password instead.'
     });
   }
-  return _json(
-      200, {'id': row[0], 'name': row[1], 'email': row[2], 'role': row[3]});
+  return _json(200, {
+    'id': row[0],
+    'name': row[1],
+    'email': row[2],
+    'role': row[3],
+    'avatarUrl': row[5],
+    'about': row[6],
+  });
 }
 
 Future<Response> _login(Request request) async {
@@ -1350,8 +1357,8 @@ Future<Response> _resharePost(Request request, String id) async {
   }
   final dup = await _db.execute(
     Sql.named('SELECT 1 FROM posts WHERE reshared_from = @p '
-        'AND reshared_by = @name'),
-    parameters: {'p': postId, 'name': me.first[0]},
+        'AND reshared_by_id = @u'),
+    parameters: {'p': postId, 'u': userId},
   );
   if (dup.isNotEmpty) {
     return _json(409, {'error': 'You already reshared this post.'});

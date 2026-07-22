@@ -904,33 +904,37 @@ class _CommunityPageState extends State<CommunityPage> {
                 ],
               ],
               const SizedBox(height: 10),
-              // Reactions + replies
-              Wrap(
-                spacing: 6,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  for (final emoji in CommunityApi.emojis)
-                    _reactionChip(post, emoji),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(14),
-                    onTap: () => _openPost(post),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.mode_comment_outlined,
-                              size: 15, color: Colors.grey),
-                          const SizedBox(width: 4),
-                          Text('${post.replyCount}',
-                              style: const TextStyle(
-                                  fontSize: 12.5, color: Colors.grey)),
-                        ],
+              // Reactions + replies — long-press for the animated picker,
+              // tap chips directly as before.
+              GestureDetector(
+                onLongPress: () => _showReactionPicker(post),
+                child: Wrap(
+                  spacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final emoji in CommunityApi.emojis)
+                      _reactionChip(post, emoji),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => _openPost(post),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.mode_comment_outlined,
+                                size: 15, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Text('${post.replyCount}',
+                                style: const TextStyle(
+                                    fontSize: 12.5, color: Colors.grey)),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
@@ -963,6 +967,70 @@ class _CommunityPageState extends State<CommunityPage> {
         ),
       ),
     );
+  }
+
+  /// Facebook-style reaction picker: long-press summons a floating bar of
+  /// emojis that pop in one by one; tapping sets the reaction.
+  Future<void> _showReactionPicker(CommunityPost post) async {
+    Haptics.medium();
+    final picked = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black26,
+      builder: (context) => Center(
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: cardBg(context),
+              borderRadius: BorderRadius.circular(30),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < CommunityApi.emojis.length; i++)
+                  TweenAnimationBuilder<double>(
+                    tween: Tween(begin: 0, end: 1),
+                    duration: Duration(milliseconds: 220 + i * 70),
+                    curve: Curves.easeOutBack,
+                    builder: (context, v, child) => Transform.scale(
+                      scale: v.clamp(0.0, 1.2),
+                      child: child,
+                    ),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: () {
+                        Haptics.level(0.6);
+                        Navigator.pop(context, CommunityApi.emojis[i]);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 7),
+                        child: Text(
+                          CommunityApi.emojis[i],
+                          style: TextStyle(
+                            fontSize: post.myReactions
+                                    .contains(CommunityApi.emojis[i])
+                                ? 34
+                                : 28,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (picked != null && mounted) _toggleReaction(post, picked);
   }
 
   Widget _reactionChip(CommunityPost post, String emoji) {
