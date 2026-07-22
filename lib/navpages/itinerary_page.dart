@@ -212,6 +212,14 @@ class _ItineraryPageState extends State<ItineraryPage> {
         result = r;
         planning = false;
       });
+      // Visuals re-target the actual matched place — never random images.
+      if (r.places.isNotEmpty) {
+        MediaApi.searchMedia(
+                '${r.places.first.name} ${r.places.first.location}')
+            .then((m) {
+          if (mounted && lastQuery == q) setState(() => media = m);
+        }).catchError((_) {});
+      }
       Haptics.string();
       _saveChat();
     } on AuthException catch (e) {

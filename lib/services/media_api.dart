@@ -162,6 +162,13 @@ class VideoItem {
   /// background sound, music and ambience drive light→heavy haptics.
   final List<double> hapticTrack;
 
+  /// 250ms-resolution feel curve (console-smooth playback).
+  final List<double> hapticFine;
+
+  /// Sharp onsets — gunshots, slams, drum hits — as {t: ms, power: 0..1};
+  /// the player answers them with recoil-style pulses.
+  final List<Map<String, num>> hapticEvents;
+
   const VideoItem({
     required this.id,
     required this.city,
@@ -176,6 +183,8 @@ class VideoItem {
     required this.uploadedAt,
     required this.url,
     this.hapticTrack = const [],
+    this.hapticFine = const [],
+    this.hapticEvents = const [],
   });
 
   bool get isProcessing => status == 'processing';

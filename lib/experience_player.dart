@@ -37,6 +37,11 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
   bool controlsVisible = true;
   Timer? _hideTimer;
   Timer? _hapticTimer;
+  int _nextEvent = 0;
+
+  /// Traveler-tunable feel style: 'adaptive' answers impacts with recoil
+  /// pulses on top of the smooth curve; 'smooth' is the curve only.
+  String feelStyle = 'adaptive';
   bool _pulse = false;
 
   late bool haptics;
@@ -385,6 +390,38 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                                   },
                                 ),
                               ),
+                              // Feel style: adaptive answers impacts with
+                              // recoil pulses; smooth is the curve only.
+                              if (widget.video.hapticEvents.isNotEmpty)
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    for (final (label, value) in const [
+                                      ('Adaptive', 'adaptive'),
+                                      ('Smooth', 'smooth'),
+                                    ])
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 6),
+                                        child: ChoiceChip(
+                                          visualDensity: VisualDensity.compact,
+                                          labelStyle: TextStyle(
+                                              fontSize: 10.5,
+                                              color: feelStyle == value
+                                                  ? Colors.white
+                                                  : Colors.white70),
+                                          selectedColor: Colors.purple,
+                                          backgroundColor: Colors.white12,
+                                          label: Text(label),
+                                          selected: feelStyle == value,
+                                          onSelected: (_) {
+                                            Haptics.tick();
+                                            setState(() => feelStyle = value);
+                                            _startHaptics();
+                                          },
+                                        ),
+                                      ),
+                                  ],
+                                ),
                             ],
                           ),
                         )

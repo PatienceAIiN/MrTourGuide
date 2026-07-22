@@ -32,25 +32,32 @@ class _NewsWebViewPageState extends State<NewsWebViewPage> {
     'scorecardresearch.com',
   ];
 
-  /// Removes ad slots, sticky banners and consent walls after each load.
+  /// Neutralizes ad slots without ever deleting page containers: elements
+  /// are hidden (not removed), and anything carrying real text content is
+  /// left alone — so article layouts never collapse to a blank page.
   static const _cleanupJs = '''
     (function(){
-      const kill = [
-        'iframe[src*="ads"]','iframe[id*="google_ads"]',
-        '[id*="google_ads"]','[class*="advert"]','[class*="ad-slot"]',
-        '[class*="ad-banner"]','[class*="sticky-ad"]','[id*="taboola"]',
-        '[id*="outbrain"]','[class*="taboola"]','[class*="outbrain"]',
-        'ins.adsbygoogle','[class*="paywall-banner"]',
-        '[id*="div-gpt-ad"]','[class*="gpt-ad"]','[data-ad-slot]',
-        '[class*="sponsored"]','[id*="sponsored"]','aside[class*="ad"]',
+      const sel = [
         'iframe[src*="doubleclick"]','iframe[src*="adsystem"]',
-        '[class*="interstitial"]','[class*="popup-overlay"]'
+        'iframe[src*="googlesyndication"]','ins.adsbygoogle',
+        '[id^="div-gpt-ad"]','[id^="google_ads"]','[data-ad-slot]',
+        '[id^="taboola-"]','[class^="taboola"]','[id^="outbrain"]'
       ];
-      const sweep = () => kill.forEach(sel =>
-        document.querySelectorAll(sel).forEach(el => el.remove()));
+      const sweep = () => sel.forEach(q =>
+        document.querySelectorAll(q).forEach(el => {
+          // Never touch anything that carries real content.
+          if ((el.innerText || '').length > 200) return;
+          if (el === document.body || el === document.documentElement) return;
+          el.style.setProperty('display', 'none', 'important');
+        }));
       sweep();
-      new MutationObserver(sweep)
-        .observe(document.documentElement, {childList: true, subtree: true});
+      let pending = false;
+      new MutationObserver(() => {
+        if (pending) return;
+        pending = true;
+        setTimeout(() => { pending = false; sweep(); }, 500);
+      }).observe(document.body || document.documentElement,
+          {childList: true, subtree: true});
     })();
   ''';
 

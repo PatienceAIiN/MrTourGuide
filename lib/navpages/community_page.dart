@@ -10,6 +10,7 @@ import '../services/auth_api.dart';
 import '../services/media_api.dart';
 import '../services/community_api.dart';
 import '../services/haptic_service.dart';
+import '../services/image_tools.dart';
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
@@ -361,9 +362,10 @@ class _CommunityPageState extends State<CommunityPage> {
       if (mounted) newSnackBar(context, title: 'Images are limited to 5 MB.');
       return;
     }
+    final clean = await normalizeImage(file.bytes!, maxWidth: 1280);
     setState(() {
-      attachedBytes = file.bytes;
-      attachedName = file.name;
+      attachedBytes = clean;
+      attachedName = 'photo.png';
     });
   }
 
@@ -597,7 +599,14 @@ class _CommunityPageState extends State<CommunityPage> {
   }
 
   Widget _postCard(CommunityPost post) {
-    final mine = post.authorId == AuthApi.currentUser?.id;
+    final isReshare = post.resharedBy != null;
+    // A reshare belongs to the resharer's card; the original is embedded.
+    final headName = isReshare ? post.resharedBy! : post.authorName;
+    final headId = isReshare ? (post.resharedById ?? -1) : post.authorId;
+    final headCreator =
+        isReshare ? post.resharedByRole == 'creator' : post.byCreator;
+    final mine = headId == AuthApi.currentUser?.id ||
+        (!isReshare && post.authorId == AuthApi.currentUser?.id);
     return Springy(
       haptic: 'light',
       onTap: () => _openPost(post),
@@ -613,14 +622,14 @@ class _CommunityPageState extends State<CommunityPage> {
               Row(
                 children: [
                   GestureDetector(
-                    onTap: () => showUserProfileDialog(context, post.authorId),
+                    onTap: () => headId > 0
+                        ? showUserProfileDialog(context, headId)
+                        : null,
                     child: CircleAvatar(
                       radius: 16,
-                      backgroundColor: post.byCreator ? Colors.purple : blue,
+                      backgroundColor: headCreator ? Colors.purple : blue,
                       child: Text(
-                        post.authorName.isNotEmpty
-                            ? post.authorName[0].toUpperCase()
-                            : '?',
+                        headName.isNotEmpty ? headName[0].toUpperCase() : '?',
                         style: const TextStyle(
                             color: white,
                             fontSize: 14,
@@ -634,9 +643,10 @@ class _CommunityPageState extends State<CommunityPage> {
                       children: [
                         Flexible(
                           child: GestureDetector(
-                            onTap: () =>
-                                showUserProfileDialog(context, post.authorId),
-                            child: Text(post.authorName,
+                            onTap: () => headId > 0
+                                ? showUserProfileDialog(context, headId)
+                                : null,
+                            child: Text(headName,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w700, fontSize: 14)),
@@ -685,15 +695,15 @@ class _CommunityPageState extends State<CommunityPage> {
                     ),
                 ],
               ),
-              if (post.resharedBy != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
+              if (isReshare)
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
                   child: Row(
                     children: [
-                      const Icon(Icons.repeat, size: 13, color: Colors.teal),
-                      const SizedBox(width: 4),
-                      Text('Reshared by ${post.resharedBy}',
-                          style: const TextStyle(
+                      Icon(Icons.repeat, size: 13, color: Colors.teal),
+                      SizedBox(width: 4),
+                      Text('reshared this',
+                          style: TextStyle(
                               fontSize: 11,
                               color: Colors.teal,
                               fontWeight: FontWeight.w600)),
@@ -701,24 +711,95 @@ class _CommunityPageState extends State<CommunityPage> {
                   ),
                 ),
               const SizedBox(height: 8),
-              Text(post.body,
-                  style: const TextStyle(fontSize: 14, height: 1.45)),
-              if (post.absoluteImageUrl != null) ...[
-                const SizedBox(height: 10),
-                GestureDetector(
-                  onTap: () => showImageViewer(context, post.absoluteImageUrl!,
-                      caption: post.authorName),
-                  child: ClipRRect(
+              if (isReshare)
+                // The original post, embedded — tap opens it like any post.
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: pageBg(context),
                     borderRadius: BorderRadius.circular(12),
-                    child: Image.network(
-                      post.absoluteImageUrl!,
-                      height: 180,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                    border:
+                        Border.all(color: Colors.teal.withValues(alpha: 0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      GestureDetector(
+                        onTap: () =>
+                            showUserProfileDialog(context, post.authorId),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 10,
+                              backgroundColor:
+                                  post.byCreator ? Colors.purple : blue,
+                              child: Text(
+                                post.authorName.isNotEmpty
+                                    ? post.authorName[0].toUpperCase()
+                                    : '?',
+                                style: const TextStyle(
+                                    color: white,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(post.authorName,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 12.5)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(post.body,
+                          style: const TextStyle(fontSize: 13, height: 1.4)),
+                      if (post.absoluteImageUrl != null) ...[
+                        const SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: () => showImageViewer(
+                              context, post.absoluteImageUrl!,
+                              caption: post.authorName),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.network(
+                              post.absoluteImageUrl!,
+                              height: 140,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (c, e, s) =>
+                                  const SizedBox.shrink(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                )
+              else ...[
+                Text(post.body,
+                    style: const TextStyle(fontSize: 14, height: 1.45)),
+                if (post.absoluteImageUrl != null) ...[
+                  const SizedBox(height: 10),
+                  GestureDetector(
+                    onTap: () => showImageViewer(
+                        context, post.absoluteImageUrl!,
+                        caption: post.authorName),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        post.absoluteImageUrl!,
+                        height: 180,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                      ),
                     ),
                   ),
-                ),
+                ],
               ],
               const SizedBox(height: 10),
               // Reactions + replies

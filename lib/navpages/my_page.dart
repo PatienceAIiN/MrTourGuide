@@ -7,6 +7,7 @@ import '../services/api_base.dart';
 import '../main.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
+import '../services/image_tools.dart';
 import '../services/media_api.dart';
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
@@ -139,24 +140,6 @@ class _MyPageState extends State<MyPage> {
                                   shape: BoxShape.circle,
                                 ),
                                 child: const Icon(Icons.photo_camera,
-                                    size: 15, color: Colors.white),
-                              ),
-                            ),
-                          ),
-                        if (user != null)
-                          Positioned(
-                            left: 8,
-                            top: 8,
-                            child: InkWell(
-                              onTap: _editSocialProfile,
-                              customBorder: const CircleBorder(),
-                              child: Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: BoxDecoration(
-                                  color: Colors.black45,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(Icons.edit,
                                     size: 15, color: Colors.white),
                               ),
                             ),
@@ -307,7 +290,9 @@ class _MyPageState extends State<MyPage> {
       return;
     }
     try {
-      final url = await MediaApi.uploadUserCover(file.name, file.bytes!);
+      // Phone-side re-encode: HEIC and friends become clean PNG.
+      final clean = await normalizeImage(file.bytes!);
+      final url = await MediaApi.uploadUserCover('cover.png', clean);
       if (!mounted) return;
       setState(() => me = {...me, 'coverUrl': url});
       newSnackBar(context, title: 'Cover updated.');
@@ -440,7 +425,8 @@ class _MyPageState extends State<MyPage> {
       return;
     }
     try {
-      final url = await MediaApi.uploadAvatar(file.name, file.bytes!);
+      final clean = await normalizeImage(file.bytes!, maxWidth: 800);
+      final url = await MediaApi.uploadAvatar('avatar.png', clean);
       if (!mounted) return;
       setState(() => AuthApi.currentUser?.avatarUrl = url);
       newSnackBar(context, title: 'Profile picture updated.');

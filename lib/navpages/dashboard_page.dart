@@ -13,6 +13,7 @@ import '../experience_player.dart';
 import '../fine_tune_page.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
+import '../services/image_tools.dart';
 import '../services/media_api.dart';
 import '../widgets/ux.dart';
 
@@ -758,9 +759,10 @@ class _DashboardPageState extends State<DashboardPage> {
                                     title: 'Thumbnails are limited to 5 MB.');
                                 return;
                               }
+                              final clean = await normalizeImage(f.bytes!);
                               setSheet(() {
-                                thumbBytes = f.bytes;
-                                thumbName = f.name;
+                                thumbBytes = clean;
+                                thumbName = 'thumb.png';
                               });
                             },
                           ),
@@ -1134,8 +1136,9 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
     try {
+      final clean = await normalizeImage(file.bytes!);
       final updated = await MediaApi.uploadThumbnail(
-          videoId: video.id, filename: file.name, bytes: file.bytes!);
+          videoId: video.id, filename: 'thumb.png', bytes: clean);
       if (!mounted) return;
       final i = videos.indexWhere((v) => v.id == updated.id);
       if (i >= 0) setState(() => videos[i] = updated);
@@ -1153,8 +1156,9 @@ class _DashboardPageState extends State<DashboardPage> {
     final file = picked?.files.single;
     if (file == null || file.bytes == null || !mounted) return;
     try {
+      final clean = await normalizeImage(file.bytes!);
       await MediaApi.uploadCityCover(
-          city: city, filename: file.name, bytes: file.bytes!);
+          city: city, filename: 'cover.png', bytes: clean);
       if (!mounted) return;
       newSnackBar(context, title: 'New cover live for ${_cityName(city)}.');
       await _loadCities();

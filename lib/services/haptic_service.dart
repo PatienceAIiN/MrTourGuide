@@ -66,6 +66,30 @@ class Haptics {
     }
   }
 
+  /// Recoil: one hard hit then a soft settle — the gunshot/impact feel.
+  /// [punch] 0..1 scales the strength.
+  static Future<void> recoil(double punch) async {
+    if (!_enabled) return;
+    final p = punch.clamp(0.0, 1.0);
+    if (!kIsWeb) {
+      try {
+        _hasAmplitude ??= await Vibration.hasAmplitudeControl();
+        if (_hasAmplitude == true) {
+          await Vibration.vibrate(
+              duration: (35 + 45 * p).round(),
+              amplitude: (140 + 115 * p).round());
+          await Future.delayed(const Duration(milliseconds: 70));
+          await Vibration.vibrate(
+              duration: 30, amplitude: (40 + 60 * p).round());
+          return;
+        }
+      } catch (_) {}
+    }
+    HapticFeedback.heavyImpact();
+    await Future.delayed(const Duration(milliseconds: 80));
+    HapticFeedback.lightImpact();
+  }
+
   /// Decaying pluck — like a struck guitar string settling.
   static Future<void> string() async {
     if (!_enabled) return;

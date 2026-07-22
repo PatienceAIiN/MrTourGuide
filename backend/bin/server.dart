@@ -439,7 +439,8 @@ void _scheduleMlProcessing(int videoId) {
       // Real audio-energy analysis: background sound, music, wind and
       // ambience all raise the per-second energy, which becomes the haptic
       // track — light feel in quiet moments, heavy in loud ones.
-      List<double> track = const [];
+      List<double> fine = const [];
+      List<Map<String, num>> events = const [];
       final trackRows = await _db.execute(
         Sql.named('SELECT city, filename FROM videos WHERE id = @id'),
         parameters: {'id': videoId},
@@ -447,7 +448,14 @@ void _scheduleMlProcessing(int videoId) {
       if (trackRows.isNotEmpty) {
         final file = await _storage.open(
             trackRows.first[0] as String, trackRows.first[1] as String);
-        if (file != null) track = await _audioEnergyTrack(file.path);
+        if (file != null) (fine, events) = await _audioEnergyAnalysis(file.path);
+      }
+      // Per-second averages keep older app builds working.
+      final track = <double>[];
+      for (var i = 0; i + 3 < fine.length; i += 4) {
+        track.add(double.parse(
+            ((fine[i] + fine[i + 1] + fine[i + 2] + fine[i + 3]) / 4)
+                .toStringAsFixed(3)));
       }
 
       await _db.execute(
@@ -458,9 +466,11 @@ void _scheduleMlProcessing(int videoId) {
           'thumb': thumbUrl,
           'haptics': jsonEncode({
             'profile': 'auto',
-            'source': track.isEmpty ? 'ml-sim' : 'audio-energy',
+            'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v2',
             'generatedAt': DateTime.now().toIso8601String(),
             'track': track,
+            'fine': fine,
+            'events': events,
           }),
         },
       );
@@ -519,36 +529,51 @@ void _logActivity(String actor, String action, String details) {
   }();
 }
 
-Future<List<double>> _audioEnergyTrack(String path) async {
+/// 250ms-resolution audio analysis: [fine] is the smoothed energy curve,
+/// [events] are sharp onsets (gunshots, slams, drum hits → recoil pulses)
+/// with their millisecond timestamps and punch strength.
+Future<(List<double> fine, List<Map<String, num>> events)>
+    _audioEnergyAnalysis(String path) async {
   try {
     final result = await Process.run('ffmpeg', [
       '-i', path, '-map', '0:a:0?', '-af',
-      'asetnsamples=44100,astats=metadata=1:reset=1,'
+      // 11025 samples ≈ 250 ms windows at 44.1 kHz.
+      'asetnsamples=11025,astats=metadata=1:reset=1,'
           'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
       '-f', 'null', '-',
-    ]).timeout(const Duration(minutes: 2));
+    ]).timeout(const Duration(minutes: 3));
     final db = <double>[];
     for (final m in RegExp(r'RMS_level=(-?[\d.]+|-inf)')
         .allMatches(result.stdout as String)) {
       final raw = m.group(1)!;
       db.add(raw == '-inf' ? -90.0 : (double.tryParse(raw) ?? -90.0));
-      if (db.length >= 600) break; // cap at 10 minutes
+      if (db.length >= 2400) break; // cap at 10 minutes
     }
-    if (db.isEmpty) return const [];
-    // Map dB (-60 quiet .. -5 loud) to 0..1 with gentle smoothing.
-    final raw = [
-      for (final v in db) ((v + 60) / 55).clamp(0.0, 1.0)
-    ];
-    final track = <double>[];
+    if (db.isEmpty) return (const <double>[], const <Map<String, num>>[]);
+    final raw = [for (final v in db) ((v + 60) / 55).clamp(0.0, 1.0)];
+    // Transient detection BEFORE smoothing: a big jump over the previous
+    // window is an impact (recoil-style feedback); smoothing would hide it.
+    final events = <Map<String, num>>[];
+    for (var i = 1; i < raw.length; i++) {
+      final jump = raw[i] - raw[i - 1];
+      if (jump > 0.28 && raw[i] > 0.45) {
+        events.add({
+          't': i * 250, // ms into the video
+          'power': double.parse(jump.clamp(0.0, 1.0).toStringAsFixed(2)),
+        });
+        if (events.length >= 120) break;
+      }
+    }
+    final fine = <double>[];
     for (var i = 0; i < raw.length; i++) {
       final prev = i > 0 ? raw[i - 1] : raw[i];
       final next = i < raw.length - 1 ? raw[i + 1] : raw[i];
-      track.add(double.parse(
+      fine.add(double.parse(
           ((prev + raw[i] * 2 + next) / 4).toStringAsFixed(3)));
     }
-    return track;
+    return (fine, events);
   } catch (_) {
-    return const [];
+    return (const <double>[], const <Map<String, num>>[]);
   }
 }
 
@@ -1316,7 +1341,7 @@ Future<Response> _resharePost(Request request, String id) async {
   final gate = await _gateCommunity(orig.first[0] as String, userId);
   if (gate != null) return gate;
   final me = await _db.execute(
-    Sql.named('SELECT name FROM users WHERE id = @u'),
+    Sql.named('SELECT name, role FROM users WHERE id = @u'),
     parameters: {'u': userId},
   );
   if (me.isEmpty) return _json(401, {'error': 'Unknown user.'});
@@ -1333,8 +1358,10 @@ Future<Response> _resharePost(Request request, String id) async {
   }
   await _db.execute(
     Sql.named('INSERT INTO posts (community, author_id, author_name, '
-        'author_role, body, image_url, city, reshared_from, reshared_by) '
-        'VALUES (@c, @aid, @aname, @arole, @body, @img, @city, @from, @by)'),
+        'author_role, body, image_url, city, reshared_from, reshared_by, '
+        'reshared_by_id, reshared_by_role) '
+        'VALUES (@c, @aid, @aname, @arole, @body, @img, @city, @from, @by, '
+        '@byId, @byRole)'),
     parameters: {
       'c': orig.first[0],
       'aid': orig.first[1],
@@ -1345,6 +1372,8 @@ Future<Response> _resharePost(Request request, String id) async {
       'city': orig.first[6],
       'from': postId,
       'by': me.first[0],
+      'byId': userId,
+      'byRole': me.first[1],
     },
   );
   // Tell the original author their post is travelling.
@@ -1699,7 +1728,7 @@ Future<Response> _communityPosts(Request request) async {
              COALESCE(json_agg(DISTINCT mr.emoji) FILTER (WHERE mr.emoji IS NOT NULL), '[]'::json),
              p.image_url,
              (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id),
-             p.reshared_by
+             p.reshared_by, p.reshared_by_id, p.reshared_by_role
       FROM posts p
       LEFT JOIN (SELECT post_id, emoji, count(*) AS n FROM reactions
                  GROUP BY post_id, emoji) r ON r.post_id = p.id
@@ -1735,6 +1764,8 @@ Future<Response> _communityPosts(Request request) async {
           'imageUrl': r[10],
           'replyCount': r[11],
           'resharedBy': r[12],
+          'resharedById': r[13],
+          'resharedByRole': r[14],
         }
     ],
     'hasMore': hasMore,
@@ -2282,8 +2313,30 @@ Future<String> _httpGetText(String url, {String? userAgent}) async {
   }
 }
 
+const _mediaStopwords = {
+  'plan', 'trip', 'trips', 'itinerary', 'days', 'day', 'week', 'weekend',
+  'budget', 'cheap', 'friendly', 'wheelchair', 'accessible', 'with', 'for',
+  'and', 'the', 'a', 'an', 'in', 'of', 'to', 'my', 'me', 'add', 'more',
+  'make', 'best', 'around', 'near', 'visit', 'travel', 'tour', 'ideas',
+  'food', 'stops', 'one', 'two', 'three', 'four', 'five', 'monsoon',
+  'summer', 'winter', 'getaway', 'kids', 'family', 'solo',
+};
+
+/// Keeps only the meaningful terms (place names, subjects) so visuals
+/// match what was actually asked — not the filler words around it.
+String _focusMediaQuery(String q) {
+  final words = q
+      .split(RegExp(r'[^A-Za-z]+'))
+      .where((w) =>
+          w.length > 2 && !_mediaStopwords.contains(w.toLowerCase()))
+      .toList();
+  final focused = words.take(4).join(' ');
+  return focused.isEmpty ? q : focused;
+}
+
 Future<Response> _searchMedia(Request request) async {
-  final q = (request.url.queryParameters['q'] ?? '').trim();
+  final raw = (request.url.queryParameters['q'] ?? '').trim();
+  final q = _focusMediaQuery(raw);
   if (q.isEmpty) return _json(200, {'images': [], 'youtube': []});
   final key = q.toLowerCase();
   final cached = _mediaCache[key];
@@ -3515,6 +3568,8 @@ Future<void> main() async {
     "ALTER TABLE replies ADD COLUMN IF NOT EXISTS parent_reply_id INTEGER",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_from INTEGER",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by TEXT",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_id INTEGER",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_role TEXT",
   ]) {
     try {
       await _db.execute(ddl);

@@ -28,6 +28,8 @@ class CommunityPost {
 
   /// Who reshared this post here (null for original posts).
   final String? resharedBy;
+  final int? resharedById;
+  final String? resharedByRole;
   int replyCount;
 
   CommunityPost({
@@ -43,6 +45,8 @@ class CommunityPost {
     required this.myReactions,
     this.imageUrl,
     this.resharedBy,
+    this.resharedById,
+    this.resharedByRole,
     this.replyCount = 0,
   });
 
