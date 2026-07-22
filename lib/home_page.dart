@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter/material.dart';
 
@@ -8,6 +11,7 @@ import 'package:mrtouride/experience_player.dart';
 import 'package:mrtouride/models/place.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/haptic_service.dart';
+import 'package:mrtouride/news_webview.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
@@ -33,6 +37,10 @@ class _HomePageState extends State<HomeScreen> {
   bool hasUnseen = false;
   List<NewsItem> news = [];
 
+  /// Personal video picks: real, playable YouTube suggestions seeded by
+  /// what this user searched and planned recently.
+  List<YtSuggestion> forYou = [];
+
   // Rotating headline below the greeting.
   static const _phrases = [
     'Where do you want\nto feel today?',
@@ -51,6 +59,7 @@ class _HomePageState extends State<HomeScreen> {
     MediaApi.fetchNews().then((items) {
       if (mounted) setState(() => news = items);
     }).catchError((_) {});
+    _loadForYou();
     _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
       if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
     });
@@ -93,6 +102,30 @@ class _HomePageState extends State<HomeScreen> {
         error = 'Could not load the catalog. Is the backend running?';
       });
     }
+  }
+
+  /// Activity-based seed: last search > last AI chat > general discovery.
+  Future<void> _loadForYou() async {
+    var seed = 'incredible india travel experience';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final recents = prefs.getStringList('search.recent') ?? const [];
+      if (recents.isNotEmpty) {
+        seed = recents.first;
+      } else {
+        final chats = prefs.getString('ai.chats');
+        if (chats != null) {
+          final list = jsonDecode(chats) as List;
+          if (list.isNotEmpty) {
+            seed = (list.first as Map)['title'] as String? ?? seed;
+          }
+        }
+      }
+    } catch (_) {}
+    try {
+      final m = await MediaApi.searchMedia(seed);
+      if (mounted) setState(() => forYou = m.youtube);
+    } catch (_) {}
   }
 
   String _timeAgo(DateTime t) {
@@ -448,6 +481,95 @@ class _HomePageState extends State<HomeScreen> {
                                     ),
                                   ),
                       ),
+                      // Picked for you: real, playable travel videos —
+                      // seeded by this user's own searches and plans.
+                      if (forYou.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.play_circle_fill,
+                                  size: 17, color: Colors.redAccent),
+                              const SizedBox(width: 6),
+                              Text('Picked for you',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14.5,
+                                      color: ink(context))),
+                            ],
+                          ),
+                        ),
+                        SizedBox(
+                          height: 150,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: forYou.length,
+                            separatorBuilder: (c, i) =>
+                                const SizedBox(width: 10),
+                            itemBuilder: (context, i) => InkWell(
+                              borderRadius: BorderRadius.circular(14),
+                              onTap: () {
+                                Haptics.light();
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => NewsWebViewPage(
+                                        title: forYou[i].title,
+                                        url: forYou[i].url),
+                                  ),
+                                );
+                              },
+                              child: SizedBox(
+                                width: 210,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        ClipRRect(
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          child: Image.network(
+                                            forYou[i].thumbnail,
+                                            width: 210,
+                                            height: 110,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (c, e, s) =>
+                                                Container(
+                                              width: 210,
+                                              height: 110,
+                                              color: Colors.black12,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: const BoxDecoration(
+                                            color: Colors.black45,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(Icons.play_arrow,
+                                              color: Colors.white, size: 22),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Text(forYou[i].title,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 12,
+                                            height: 1.3)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                       // Travel news at the bottom of the main feed.
                       ...newsSection(context, news),
                       // Keep last row clear of the floating navbar.

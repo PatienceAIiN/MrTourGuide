@@ -136,6 +136,7 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _onChanged(String text) {
+    setState(() {}); // clear icon tracks typing instantly
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(text));
   }

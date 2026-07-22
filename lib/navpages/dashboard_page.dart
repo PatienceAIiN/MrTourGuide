@@ -78,7 +78,10 @@ class _DashboardPageState extends State<DashboardPage> {
       final result = await MediaApi.fetchCities(
           mine: AuthApi.currentUser?.isCreator ?? false);
       if (!mounted) return;
-      setState(() => cities = result);
+      setState(() {
+        cities = result;
+        error = null; // fresh data — retire any stale failure banner
+      });
       final city = selectedCity;
       if (city == null) return;
       final page = await MediaApi.fetchVideos(city,
@@ -606,42 +609,13 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  Row(
+                  const Row(
                     children: [
-                      const Icon(Icons.cloud_upload, color: blue, size: 20),
-                      const SizedBox(width: 8),
-                      const Text('Publish to',
+                      Icon(Icons.cloud_upload, color: blue, size: 20),
+                      SizedBox(width: 8),
+                      Text('Publish experience',
                           style: TextStyle(
                               fontWeight: FontWeight.bold, fontSize: 16)),
-                      const SizedBox(width: 10),
-                      // Pick the destination right here — no more defaults.
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          initialValue: targetCity,
-                          isDense: true,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 8),
-                            border: OutlineInputBorder(),
-                          ),
-                          items: [
-                            for (final c in cities)
-                              DropdownMenuItem(
-                                  value: c.slug,
-                                  child: Text(c.name,
-                                      overflow: TextOverflow.ellipsis)),
-                          ],
-                          onChanged: (slug) {
-                            if (slug == null) return;
-                            Haptics.tick();
-                            setSheet(() {
-                              targetCity = slug;
-                              prefillLocation(slug);
-                            });
-                          },
-                        ),
-                      ),
                     ],
                   ),
                   const SizedBox(height: 4),
@@ -738,10 +712,15 @@ class _DashboardPageState extends State<DashboardPage> {
                         avatar: const Icon(Icons.tune, size: 15),
                         label: const Text('Per-frame (fine control)'),
                         selected: config.feelMode == 'perframe',
-                        onSelected: (_) {
+                        onSelected: (_) async {
                           Haptics.tick();
                           setSheet(() =>
                               config = config.copyWith(feelMode: 'perframe'));
+                          // The controls, right here in a popup.
+                          final updated = await _perFrameControlsDialog(config);
+                          if (updated != null) {
+                            setSheet(() => config = updated);
+                          }
                         },
                       ),
                     ],
@@ -812,20 +791,20 @@ class _DashboardPageState extends State<DashboardPage> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: TextField(
-                          controller: stateCtl,
-                          scrollPadding: const EdgeInsets.only(bottom: 200),
-                          decoration: const InputDecoration(
-                              labelText: 'State',
-                              isDense: true,
-                              border: OutlineInputBorder()),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
                           controller: cityCtl,
                           scrollPadding: const EdgeInsets.only(bottom: 200),
-                          onChanged: (_) => setSheet(() {}),
+                          onChanged: (v) {
+                            // Typing a known place re-syncs its country so
+                            // the config never keeps stale location data.
+                            final match = _knownPlace(v);
+                            if (match != null) {
+                              final parts = match.location.split(',');
+                              if (parts.length > 1) {
+                                countryCtl.text = parts.last.trim();
+                              }
+                            }
+                            setSheet(() {});
+                          },
                           decoration: const InputDecoration(
                               labelText: 'City',
                               isDense: true,

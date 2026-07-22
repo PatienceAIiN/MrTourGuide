@@ -59,7 +59,7 @@ void main() {
 
     expect(find.text('Explore Experiences'), findsOneWidget);
     expect(
-        find.textContaining('Cannot reach the media server'), findsOneWidget);
+        find.textContaining('Could not sync'), findsOneWidget);
   });
 
   testWidgets('Search page searches and shows result state',
@@ -71,7 +71,7 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 400));
 
     expect(
-        find.textContaining('Cannot reach the media server'), findsOneWidget);
+        find.textContaining('Could not sync'), findsOneWidget);
   });
 
   testWidgets('AI Itinerary page renders prompt, quick chips and plans',

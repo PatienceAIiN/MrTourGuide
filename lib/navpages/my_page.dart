@@ -283,6 +283,13 @@ class _MyPageState extends State<MyPage> {
                     title: const Text('Sign out', style: TextStyle(color: red)),
                     onTap: _signOut,
                   ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.person_remove, color: red),
+                    title: const Text('Delete account',
+                        style: TextStyle(color: red)),
+                    onTap: _deleteAccount,
+                  ),
                 ],
               ),
             ),
@@ -489,6 +496,43 @@ class _MyPageState extends State<MyPage> {
       if (!mounted) return;
       setState(() => AuthApi.currentUser?.about = about);
       newSnackBar(context, title: 'Bio saved.');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  /// Permanent account deletion — double confirmation, then the backend
+  /// removes the account (community posts stay, marked deleted).
+  Future<void> _deleteAccount() async {
+    final user = AuthApi.currentUser;
+    if (user == null) return;
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete your account?',
+      message: 'This permanently deletes your account, saved itineraries '
+          'and uploads. Community posts stay, marked as from a deleted '
+          'account. This cannot be undone.',
+      confirmLabel: 'Delete forever',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    final really = await confirmDialog(
+      context,
+      title: 'Are you absolutely sure?',
+      message: 'Your account "${user.name}" will be gone for good.',
+      confirmLabel: 'Yes, delete',
+      destructive: true,
+    );
+    if (!really || !mounted) return;
+    try {
+      await MediaApi.deleteAccount(user.id);
+      await AuthApi.signOut();
+      if (!mounted) return;
+      newSnackBar(context, title: 'Your account has been deleted.');
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const HomePage()),
+        (route) => false,
+      );
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }

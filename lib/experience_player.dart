@@ -83,19 +83,47 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
   void _startHaptics() {
     _hapticTimer?.cancel();
     if (!haptics) return;
-    final track = widget.video.hapticTrack;
+    final fine = widget.video.hapticFine;
+    final track =
+        fine.isNotEmpty ? fine : widget.video.hapticTrack; // 250ms or 1s res
+    final perSecond = fine.isEmpty;
+    final events = widget.video.hapticEvents;
     if (track.isNotEmpty) {
-      // Four interpolated feel steps per second: the vibration strength
-      // glides between the track's values like a console controller.
+      _nextEvent = 0;
+      // Feel engine: glide along the energy curve; when the ML marked an
+      // impact (gunshot, slam, drum hit) answer with a recoil — hard hit
+      // then a soft settle, like a console controller.
       _hapticTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
         final c = controller;
         if (c == null || !c.value.isPlaying) return;
         final ms = c.value.position.inMilliseconds;
-        final sec = ms ~/ 1000;
-        final frac = (ms % 1000) / 1000.0;
-        final a = track[sec.clamp(0, track.length - 1)];
-        final b = track[(sec + 1).clamp(0, track.length - 1)];
-        final energy = a + (b - a) * frac; // linear glide between seconds
+        if (feelStyle == 'adaptive' && events.isNotEmpty) {
+          while (_nextEvent < events.length &&
+              (events[_nextEvent]['t'] as num) < ms - 400) {
+            _nextEvent++; // skip events we seeked past
+          }
+          if (_nextEvent < events.length) {
+            final e = events[_nextEvent];
+            final t = (e['t'] as num).toInt();
+            if ((ms - t).abs() <= 250) {
+              _nextEvent++;
+              final punch = ((e['power'] as num) * intensity).clamp(0.0, 1.0);
+              Haptics.recoil(punch.toDouble());
+              if (mounted) {
+                setState(() => _pulse = true);
+                Timer(const Duration(milliseconds: 220), () {
+                  if (mounted) setState(() => _pulse = false);
+                });
+              }
+              return; // the recoil owns this tick
+            }
+          }
+        }
+        final idx = perSecond ? ms ~/ 1000 : ms ~/ 250;
+        final frac = perSecond ? (ms % 1000) / 1000.0 : (ms % 250) / 250.0;
+        final a = track[idx.clamp(0, track.length - 1)];
+        final b = track[(idx + 1).clamp(0, track.length - 1)];
+        final energy = a + (b - a) * frac;
         final feel = (energy * intensity).clamp(0.0, 1.0);
         if (feel < 0.06) return; // near-silence: no feel
         Haptics.level(feel);
@@ -128,9 +156,88 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
   bool get _isImmersive =>
       widget.video.config.kind == 'vr' || widget.video.config.kind == 'mr';
 
-  void _enterVr() {
+  Future<void> _enterVr() async {
     final c = controller;
     if (c == null || !c.value.isInitialized) return;
+    final cap = await VrCapability.check();
+    if (!mounted) return;
+    if (!cap.eligible) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          icon: const Icon(Icons.vrpano, color: red, size: 36),
+          title: const Text('Your device is ineligible for VR/MR'),
+          content: Text(
+            '${cap.reason}\n\nSupported: Android 7.0+ phones with a '
+            'gyroscope, used with Google Cardboard or any phone-holder VR '
+            'headset. Standalone headsets (Meta Quest, Pico) can open '
+            'experiences via their built-in browser.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13.5, height: 1.5),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Got it'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    final mode = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
+              child: Text('Choose your VR device',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text('Detected: ${cap.model} — VR ready ✓',
+                  style: const TextStyle(fontSize: 12, color: Colors.green)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.smartphone, color: Colors.purple),
+              title: const Text('Phone in headset (Cardboard & similar)'),
+              subtitle: const Text(
+                  'Split-screen stereo — works with any phone-holder headset'),
+              onTap: () => Navigator.pop(context, 'cardboard'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.view_in_ar, color: blue),
+              title: const Text('Meta Quest / standalone headset'),
+              subtitle:
+                  const Text('Open this experience in the headset browser'),
+              onTap: () => Navigator.pop(context, 'quest'),
+            ),
+            const ListTile(
+              enabled: false,
+              leading: Icon(Icons.visibility, color: Colors.grey),
+              title: Text('Smart glasses (AR)'),
+              subtitle: Text('Coming soon'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || mode == null) return;
+    if (mode == 'quest') {
+      newSnackBar(context,
+          title: 'Open this experience in your headset browser: '
+              '${widget.video.absoluteUrl}');
+      return;
+    }
     Haptics.string();
     Navigator.push(
       context,

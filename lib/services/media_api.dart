@@ -198,6 +198,18 @@ class VideoItem {
               const []))
             (v as num).toDouble()
         ],
+        hapticFine: [
+          for (final v in ((json['haptics'] as Map<String, dynamic>?)?['fine']
+                  as List? ??
+              const []))
+            (v as num).toDouble()
+        ],
+        hapticEvents: [
+          for (final e in ((json['haptics'] as Map<String, dynamic>?)?['events']
+                  as List? ??
+              const []))
+            {'t': (e as Map)['t'] as num, 'power': e['power'] as num}
+        ],
         id: json['id'] as int,
         city: json['city'] as String,
         title: json['title'] as String,
@@ -600,7 +612,7 @@ class MediaApi {
       }
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the media server. Is the backend running on port 8080?');
+          'Could not sync — check your internet and try again.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode == 201) {
@@ -802,10 +814,10 @@ class MediaApi {
           .post(Uri.parse('$apiBase$path'),
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode(body))
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 20));
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the media server. Is the backend running on port 8080?');
+          'Could not sync — check your internet and try again.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode >= 400) {
@@ -822,10 +834,10 @@ class MediaApi {
     try {
       response = await http
           .get(Uri.parse('$apiBase$path'))
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 20));
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the media server. Is the backend running on port 8080?');
+          'Could not sync — check your internet and try again.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode != 200) {
@@ -841,6 +853,6 @@ class MediaApi {
       if (decoded is Map<String, dynamic>) return decoded;
     } catch (_) {}
     throw const AuthException(
-        'Cannot reach the media server. Is the backend running on port 8080?');
+        'Could not sync — check your internet and try again.');
   }
 }

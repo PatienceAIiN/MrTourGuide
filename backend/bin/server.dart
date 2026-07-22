@@ -460,7 +460,9 @@ void _scheduleMlProcessing(int videoId) {
 
       await _db.execute(
         Sql.named("UPDATE videos SET status = 'ready', haptics = @haptics, "
-            'thumb_url = @thumb WHERE id = @id'),
+            // COALESCE: a creator-set thumbnail must survive processing —
+            // the auto frame only fills the gap when none was uploaded.
+            'thumb_url = COALESCE(thumb_url, @thumb) WHERE id = @id'),
         parameters: {
           'id': videoId,
           'thumb': thumbUrl,
@@ -1596,7 +1598,7 @@ Future<Response> _addCity(Request request) async {
   final slug = name
       .toLowerCase()
       .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
-      .replaceAll(RegExp(r'^-+|-+\$'), '');
+      .replaceAll(RegExp(r'^-+|-+$'), '');
   if (slug.isEmpty) return _json(400, {'error': 'Invalid place name.'});
   final dup = await _db.execute(
     Sql.named('SELECT 1 FROM cities WHERE slug = @s'),
@@ -1618,7 +1620,99 @@ Future<Response> _addCity(Request request) async {
     },
   );
   _logActivity('user:$userId', 'city-added', '$name ($slug) $location');
+  // Fire-and-forget: fetch a high-res cover so the place looks alive
+  // in the carousel and hero the moment it exists.
+  _autoCityCover(slug, name, location);
   return _json(201, {'slug': slug, 'name': name});
+}
+
+/// Finds a high-resolution photo of the place (Wikipedia article lead
+/// image at 1920px) and installs it as the city cover.
+Future<void> _autoCityCover(String slug, String name, String location) async {
+  File? tmpIn;
+  File? tmpOut;
+  HttpClient? client;
+  try {
+    final q = Uri.encodeQueryComponent(
+        location.isEmpty ? name : '$name ${location.split(',').first}');
+    final body = await _httpGetText(
+            'https://en.wikipedia.org/w/api.php?action=query&format=json'
+            '&generator=search&gsrsearch=$q&gsrlimit=5'
+            '&prop=pageimages&piprop=thumbnail&pithumbsize=1920')
+        .timeout(const Duration(seconds: 15));
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    final pages = (decoded['query']?['pages'] as Map<String, dynamic>?) ?? {};
+    final entries = pages.values.toList()
+      ..sort((a, b) =>
+          ((a['index'] as num?) ?? 99).compareTo((b['index'] as num?) ?? 99));
+    String? imgUrl;
+    for (final p in entries) {
+      final t =
+          (p['thumbnail'] as Map<String, dynamic>?)?['source'] as String?;
+      if (t == null) continue;
+      final lower = t.toLowerCase();
+      if (lower.contains('.pdf') ||
+          lower.contains('.djvu') ||
+          lower.contains('.tif') ||
+          lower.endsWith('.svg.png')) {
+        continue;
+      }
+      imgUrl = t;
+      break;
+    }
+    if (imgUrl == null) return;
+    client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    final req = await client
+        .getUrl(Uri.parse(imgUrl))
+        .timeout(const Duration(seconds: 15));
+    req.headers.set('User-Agent', 'MrTourGuide/1.0 (info@patienceai.in)');
+    final res = await req.close().timeout(const Duration(seconds: 15));
+    final bytes = <int>[];
+    var oversized = false;
+    await for (final chunk
+        in res.timeout(const Duration(seconds: 30), onTimeout: (sink) {
+      sink.close();
+    })) {
+      bytes.addAll(chunk);
+      if (bytes.length > 12 * 1024 * 1024) {
+        oversized = true; // reject, never process a truncated image
+        break;
+      }
+    }
+    if (oversized || bytes.length < 10240) return;
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    tmpIn = File('${Directory.systemTemp.path}/mrt_cc_$stamp.img');
+    await tmpIn.writeAsBytes(bytes);
+    tmpOut = File('${Directory.systemTemp.path}/mrt_cc_$stamp.jpg');
+    final result = await Process.run('ffmpeg', [
+      '-y', '-loglevel', 'error',
+      '-i', tmpIn.path,
+      '-vf', "scale='trunc(min(1920,iw)/2)*2':-2",
+      '-q:v', '4',
+      tmpOut.path,
+    ]).timeout(const Duration(minutes: 2));
+    if (result.exitCode != 0 || !await tmpOut.exists()) return;
+    final coverName = 'autocover_$slug$stamp.jpg';
+    await _storage.save(
+        slug, coverName, Stream.value(await tmpOut.readAsBytes()));
+    // Never clobber a creator-uploaded cover.
+    await _db.execute(
+      Sql.named('UPDATE cities SET cover_url = COALESCE(cover_url, @c) '
+          'WHERE slug = @s'),
+      parameters: {'c': '/files/$slug/$coverName', 's': slug},
+    );
+    _logActivity('system', 'auto-cover', '$name ($slug) ← Wikipedia HD');
+  } catch (_) {
+  } finally {
+    client?.close(force: true);
+    try {
+      if (tmpIn != null && await tmpIn.exists()) await tmpIn.delete();
+    } catch (_) {}
+    try {
+      if (tmpOut != null && await tmpOut.exists()) await tmpOut.delete();
+    } catch (_) {}
+  }
 }
 
 /// Creator: upload a high-res cover image for a city (raw bytes).

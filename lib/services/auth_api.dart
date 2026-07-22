@@ -190,10 +190,10 @@ class AuthApi {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 20));
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the auth server. Is the backend running on port 8080?');
+          'Could not sign in — check your internet and try again.');
     }
 
     final Map<String, dynamic> decoded;
@@ -201,7 +201,7 @@ class AuthApi {
       decoded = jsonDecode(response.body) as Map<String, dynamic>;
     } catch (_) {
       throw const AuthException(
-          'Cannot reach the auth server. Is the backend running on port 8080?');
+          'Could not sign in — check your internet and try again.');
     }
     if (response.statusCode == 200 || response.statusCode == 201) {
       return decoded;

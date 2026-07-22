@@ -415,10 +415,22 @@ class _ItineraryPageState extends State<ItineraryPage> {
                     controller: prompt,
                     scrollPadding: const EdgeInsets.only(bottom: 180),
                     onSubmitted: (_) => _plan(),
-                    decoration: const InputDecoration(
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
                       border: InputBorder.none,
                       hintText: 'Plan my trip… e.g. "3 days in Rajasthan"',
-                      hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                      hintStyle:
+                          const TextStyle(color: Colors.grey, fontSize: 14),
+                      // Clear appears only while there is text to clear.
+                      suffixIcon: prompt.text.isEmpty
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.close, size: 18),
+                              onPressed: () {
+                                Haptics.tick();
+                                setState(() => prompt.clear());
+                              },
+                            ),
                     ),
                   ),
                 ),
@@ -729,11 +741,23 @@ class _ItineraryPageState extends State<ItineraryPage> {
                   controller: followUp,
                   scrollPadding: const EdgeInsets.only(bottom: 200),
                   onSubmitted: (_) => _askFollowUp(),
-                  decoration: const InputDecoration(
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
                     isDense: true,
                     border: InputBorder.none,
                     hintText: 'Add, reduce or ask anything about this plan…',
-                    hintStyle: TextStyle(color: Colors.grey, fontSize: 13),
+                    hintStyle:
+                        const TextStyle(color: Colors.grey, fontSize: 13),
+                    suffixIcon: followUp.text.isEmpty
+                        ? null
+                        : IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.close, size: 16),
+                            onPressed: () {
+                              Haptics.tick();
+                              setState(() => followUp.clear());
+                            },
+                          ),
                   ),
                 ),
               ),
