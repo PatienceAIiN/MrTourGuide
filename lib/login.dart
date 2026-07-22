@@ -185,10 +185,10 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                           );
                         },
-                        child: const Text(
+                        child: Text(
                           'Sign Up',
                           style: TextStyle(
-                            color: blue,
+                            color: brandInk(context),
                           ),
                         ),
                       ),
@@ -203,9 +203,9 @@ class _LoginPageState extends State<LoginPage> {
                                     'your new password.');
                           }
                         },
-                        child: const Text(
+                        child: Text(
                           'Forgot password?',
-                          style: TextStyle(color: blue),
+                          style: TextStyle(color: brandInk(context)),
                         ),
                       ),
                     ],

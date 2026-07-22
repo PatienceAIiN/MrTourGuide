@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -6,6 +7,26 @@ import 'dart:typed_data';
 
 import 'api_base.dart';
 import 'auth_api.dart';
+
+/// One attachment on a post: a compressed image or an inline-playable video.
+class PostMedia {
+  final String type; // 'image' | 'video'
+  final String url;
+  final String? thumb;
+
+  const PostMedia({required this.type, required this.url, this.thumb});
+
+  bool get isVideo => type == 'video';
+  String get absoluteUrl => url.startsWith('http') ? url : '$apiBase$url';
+  String? get absoluteThumb =>
+      thumb == null ? null : (thumb!.startsWith('http') ? thumb : '$apiBase$thumb');
+
+  Map<String, String> toJson() => {
+        'type': type,
+        'url': url,
+        if (thumb != null) 'thumb': thumb!,
+      };
+}
 
 class CommunityPost {
   final int id;
@@ -33,6 +54,10 @@ class CommunityPost {
 
   /// The resharer's own comment on top of the shared post.
   final String? reshareComment;
+
+  /// All attachments (up to 10 images + 2 videos). For posts made before
+  /// multi-media, this wraps the legacy single image.
+  final List<PostMedia> media;
   int replyCount;
 
   CommunityPost({
@@ -51,6 +76,7 @@ class CommunityPost {
     this.resharedById,
     this.resharedByRole,
     this.reshareComment,
+    this.media = const [],
     this.replyCount = 0,
   });
 
@@ -73,8 +99,28 @@ class CommunityPost {
         },
         myReactions: {for (final e in json['myReactions'] as List) e as String},
         imageUrl: json['imageUrl'] as String?,
+        media: _parseMedia(json),
         replyCount: (json['replyCount'] as num?)?.toInt() ?? 0,
       );
+
+  static List<PostMedia> _parseMedia(Map<String, dynamic> json) {
+    final raw = json['media'];
+    if (raw is List && raw.isNotEmpty) {
+      return [
+        for (final m in raw)
+          if (m is Map && m['url'] is String)
+            PostMedia(
+              type: m['type'] as String? ?? 'image',
+              url: m['url'] as String,
+              thumb: m['thumb'] as String?,
+            )
+      ];
+    }
+    final legacy = json['imageUrl'] as String?;
+    return legacy == null
+        ? const []
+        : [PostMedia(type: 'image', url: legacy)];
+  }
 }
 
 class CommunityReply {
@@ -140,6 +186,7 @@ class CommunityApi {
     required String body,
     String? city,
     String? imageUrl,
+    List<PostMedia> media = const [],
   }) async {
     await _send('POST', '/community/posts', {
       'userId': _me,
@@ -147,6 +194,7 @@ class CommunityApi {
       'body': body,
       if (city != null) 'city': city,
       if (imageUrl != null) 'imageUrl': imageUrl,
+      if (media.isNotEmpty) 'media': [for (final m in media) m.toJson()],
     });
   }
 
@@ -211,6 +259,52 @@ class CommunityApi {
     }
     return decoded['imageUrl'] as String;
   }
+
+  /// Uploads a post video (client cap 25 MB) as a stream so a clip never
+  /// sits fully in memory. The backend serves it immediately and re-encodes
+  /// it to 720p in the background under the same URL.
+  static Future<PostMedia> uploadVideo(String filePath) async {
+    final me = _me;
+    if (me == null) throw const AuthException('Sign in to attach videos.');
+    final file = File(filePath);
+    final size = await file.length();
+    if (size > 25 * 1024 * 1024) {
+      throw const AuthException('Post videos are limited to 25 MB.');
+    }
+    try {
+      final req = http.StreamedRequest(
+          'POST',
+          Uri.parse('$apiBase/community/upload-video').replace(
+              queryParameters: {
+                'userId': '$me',
+                'filename': filePath.split('/').last,
+              }));
+      req.headers['Content-Type'] = 'application/octet-stream';
+      req.contentLength = size;
+      file.openRead().listen(req.sink.add,
+          onDone: req.sink.close, onError: req.sink.addError);
+      final streamed = await req.send().timeout(const Duration(minutes: 4));
+      final body = await streamed.stream.bytesToString();
+      final decoded = jsonDecode(body) as Map<String, dynamic>;
+      if (streamed.statusCode != 201) {
+        throw AuthException(
+            decoded['error'] as String? ?? 'Video upload failed.');
+      }
+      return PostMedia(
+        type: 'video',
+        url: decoded['videoUrl'] as String,
+        thumb: decoded['thumbUrl'] as String?,
+      );
+    } on AuthException {
+      rethrow;
+    } catch (_) {
+      throw const AuthException(
+          'Video upload failed — check your internet and try again.');
+    }
+  }
+
+  /// The public, shareable browser link for a post.
+  static String shareUrl(int postId) => '$apiBase/post/$postId';
 
   static Future<void> react(int postId, String emoji) async {
     await _send('POST', '/community/posts/$postId/react',

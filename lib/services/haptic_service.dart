@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:vibration/vibration.dart';
@@ -38,20 +40,27 @@ class Haptics {
   /// Feel the current intensity: on phones with amplitude control this is a
   /// continuous 1-255 strength (console-controller smooth); otherwise it
   /// falls back to the three graded impacts.
-  static void level(double v) {
+  ///
+  /// [durationMs] sets how long the pulse lasts. The video engine passes a
+  /// value slightly longer than its tick interval so back-to-back calls
+  /// overlap into one continuously-changing vibration instead of a stutter.
+  static void level(double v, {int durationMs = 60}) {
     if (!_enabled) return;
-    _levelAsync(v.clamp(0.0, 1.0));
+    _levelAsync(v.clamp(0.0, 1.0), durationMs);
   }
 
-  static Future<void> _levelAsync(double v) async {
+  static Future<void> _levelAsync(double v, int durationMs) async {
     if (!kIsWeb) {
       try {
         _hasAmplitude ??= await Vibration.hasAmplitudeControl();
         if (_hasAmplitude == true) {
-          // Short pulse whose strength tracks the feel value exactly.
+          // Perceptual curve: human vibration sense is roughly logarithmic,
+          // so a gamma lift makes low/mid energy actually noticeable instead
+          // of everything reading as off-or-max.
+          final perceptual = math.pow(v, 0.6).toDouble();
           await Vibration.vibrate(
-            duration: (30 + 50 * v).round(),
-            amplitude: (1 + 254 * v).round(),
+            duration: durationMs,
+            amplitude: (1 + 254 * perceptual).round().clamp(1, 255),
           );
           return;
         }

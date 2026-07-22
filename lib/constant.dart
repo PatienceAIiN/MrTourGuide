@@ -42,3 +42,11 @@ Color inkSoft(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark
         ? Colors.white60
         : Colors.black54;
+
+/// Brand blue as a *foreground* (text/icon) colour. The base navy (#1E319D)
+/// is nearly invisible on the dark scaffold, so dark mode gets a light
+/// periwinkle that keeps the brand identity while staying readable.
+Color brandInk(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+        ? const Color(0xFF9DB2FF)
+        : blue;

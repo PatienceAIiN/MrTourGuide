@@ -26,7 +26,11 @@ class ItineraryPage extends StatefulWidget {
 }
 
 class _ItineraryPageState extends State<ItineraryPage> {
-  static const _kChats = 'ai.chats';
+  // Chat history is private to each signed-in account — on a shared device
+  // one user's conversations must never appear for another. The legacy
+  // un-scoped 'ai.chats' key is intentionally abandoned (not migrated) so
+  // pre-fix history can't leak across accounts.
+  String get _kChats => 'ai.chats.${AuthApi.currentUser?.id ?? 'guest'}';
 
   final prompt = TextEditingController();
   final followUp = TextEditingController();
@@ -73,6 +77,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
   Future<void> _loadChatHistory() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      // Purge the old shared-across-accounts store.
+      await prefs.remove('ai.chats');
       final raw = prefs.getString(_kChats);
       if (raw == null || !mounted) return;
       setState(() =>

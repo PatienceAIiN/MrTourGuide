@@ -1470,8 +1470,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             ),
                           ),
                           ActionChip(
-                            avatar: const Icon(Icons.image_outlined,
-                                size: 17, color: blue),
+                            avatar: Icon(Icons.image_outlined,
+                                size: 17, color: brandInk(context)),
                             label: const Text('Change cover'),
                             onPressed: _changeCover,
                           ),

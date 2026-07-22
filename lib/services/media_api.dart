@@ -641,8 +641,15 @@ class MediaApi {
   }
 
   /// Travel news: precautions, advisories and fresh ideas (server-cached).
-  static Future<List<NewsItem>> fetchNews() async {
-    final decoded = await _get('/news');
+  static Future<List<NewsItem>> fetchNews({
+    String country = '',
+    String city = '',
+  }) async {
+    final q = <String>[
+      if (country.isNotEmpty) 'country=${Uri.encodeComponent(country)}',
+      if (city.isNotEmpty) 'city=${Uri.encodeComponent(city)}',
+    ].join('&');
+    final decoded = await _get('/news${q.isEmpty ? '' : '?$q'}');
     return [
       for (final n in decoded['items'] as List)
         NewsItem.fromJson(n as Map<String, dynamic>)

@@ -235,60 +235,127 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
-  /// AI text split into the overview body and "Getting there:"/"Stay:" rows.
-  List<Widget> _aiBody() {
-    final text = ai!.overview;
-    final widgets = <Widget>[];
-    final plain = StringBuffer();
+  /// Strip stray markdown; normalize bullets so cards read cleanly.
+  String _tidyAi(String raw) => raw
+      .replaceAll(RegExp(r'[*_#`]+'), '')
+      .replaceAll(RegExp(r'^\s*[-•]\s*', multiLine: true), '•  ')
+      .replaceAll(RegExp(r'[ \t]{2,}'), ' ')
+      .trim();
+
+  /// Break the AI answer into labelled sections (Getting there, Stay,
+  /// Highlights, Tips, Best time…) with a lead paragraph for anything
+  /// before the first header — mirrors the itinerary planner's layout.
+  List<MapEntry<String, String>> _aiSections() {
+    final text = _tidyAi(ai!.overview);
+    final sections = <MapEntry<String, String>>[];
+    var title = '';
+    var body = StringBuffer();
+    void push() {
+      if (title.isNotEmpty || body.toString().trim().isNotEmpty) {
+        sections.add(MapEntry(title, body.toString().trim()));
+      }
+      body = StringBuffer();
+    }
+
     for (final raw in text.split('\n')) {
       final line = raw.trim();
       if (line.isEmpty) continue;
-      final m =
-          RegExp(r'^(Getting there|Stay)\s*:\s*(.*)', caseSensitive: false)
-              .firstMatch(line);
-      if (m == null) {
-        plain.writeln(line);
+      // A header is a short label line ending in ':' (with little/no text
+      // after it), e.g. "Getting there:", "Highlights:", "Best time to go:".
+      final m = RegExp(r'^([A-Z][A-Za-z /&]{2,28}):\s*(.*)$').firstMatch(line);
+      if (m != null && (m.group(2)!.isEmpty || m.group(1)!.length <= 22)) {
+        push();
+        title = m.group(1)!.trim();
+        if (m.group(2)!.isNotEmpty) body.writeln(m.group(2));
+      } else {
+        body.writeln(line);
+      }
+    }
+    push();
+    return sections;
+  }
+
+  (IconData, Color) _aiSectionStyle(String title) {
+    final t = title.toLowerCase();
+    if (t.contains('getting') || t.contains('reach') || t.contains('transport')) {
+      return (Icons.flight_takeoff, blue);
+    }
+    if (t.contains('stay') || t.contains('hotel') || t.contains('where to')) {
+      return (Icons.hotel, Colors.teal);
+    }
+    if (t.contains('tip') || t.contains('know')) {
+      return (Icons.lightbulb_outline, Colors.amber);
+    }
+    if (t.contains('time') || t.contains('season') || t.contains('weather')) {
+      return (Icons.wb_sunny_outlined, Colors.orange);
+    }
+    if (t.contains('eat') || t.contains('food')) {
+      return (Icons.restaurant, Colors.redAccent);
+    }
+    if (t.contains('cost') || t.contains('budget') || t.contains('price')) {
+      return (Icons.payments_outlined, Colors.green);
+    }
+    if (t.contains('highlight') || t.contains('see') || t.contains('do')) {
+      return (Icons.star_outline, Colors.purple);
+    }
+    return (Icons.auto_awesome, Colors.purple);
+  }
+
+  List<Widget> _aiBody() {
+    final sections = _aiSections();
+    if (sections.isEmpty) {
+      return [
+        Text(_tidyAi(ai!.overview),
+            style: TextStyle(fontSize: 13.5, height: 1.5, color: ink(context)))
+      ];
+    }
+    final widgets = <Widget>[];
+    for (final s in sections) {
+      if (s.key.isEmpty) {
+        // Lead paragraph — no card, just the intro text.
+        widgets.add(Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text(s.value,
+              style:
+                  TextStyle(fontSize: 13.5, height: 1.5, color: ink(context))),
+        ));
         continue;
       }
-      final isTravel = m.group(1)!.toLowerCase().startsWith('getting');
-      widgets.add(Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: Row(
+      final (icon, color) = _aiSectionStyle(s.key);
+      widgets.add(Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: cardBg(context),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(isTravel ? Icons.flight_takeoff : Icons.hotel,
-                size: 16, color: isTravel ? blue : Colors.teal),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text.rich(
-                TextSpan(
-                  text: '${m.group(1)}: ',
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                      color: ink(context)),
-                  children: [
-                    TextSpan(
-                      text: m.group(2),
-                      style: const TextStyle(fontWeight: FontWeight.normal),
-                    ),
-                  ],
+            Row(
+              children: [
+                Icon(icon, size: 15, color: color),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(s.key,
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          color: ink(context))),
                 ),
-                style:
-                    TextStyle(fontSize: 13, height: 1.45, color: ink(context)),
-              ),
+              ],
             ),
+            if (s.value.isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Text(s.value,
+                  style: TextStyle(
+                      fontSize: 12.8, height: 1.5, color: inkSoft(context))),
+            ],
           ],
         ),
       ));
     }
-    return [
-      Text(
-        plain.toString().trim(),
-        style: TextStyle(fontSize: 13.5, height: 1.5, color: ink(context)),
-      ),
-      ...widgets,
-    ];
+    return widgets;
   }
 
   /// Matching on-platform experiences under the AI answer — visuals,

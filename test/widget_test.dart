@@ -103,13 +103,29 @@ void main() {
   testWidgets('Bottom nav shows merged entries and slides between tabs',
       (WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(home: MainPage()));
-    await tester.pumpAndSettle();
+    // Home's waving-hand animation repeats forever, so pumpAndSettle would
+    // time out — a fixed pump lets the first frame lay out.
+    await tester.pump(const Duration(milliseconds: 300));
 
     // Merged navbar: tabs + global actions in one scrollable, centered bar.
-    // (Feedback, updates and log out live inside Settings.)
+    // (Alerts sits before Settings; feedback/updates/log out live inside it.)
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('Explore'), findsOneWidget);
     expect(find.text('MR/VR'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AppBottomNav),
+        matching: find.text('GuideVibe'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(AppBottomNav),
+        matching: find.text('Alerts'),
+      ),
+      findsOneWidget,
+    );
     expect(
       find.descendant(
         of: find.byType(AppBottomNav),
@@ -123,7 +139,9 @@ void main() {
       of: find.byType(AppBottomNav),
       matching: find.text('Community'),
     ));
-    await tester.pumpAndSettle();
+    await tester.pump(); // kick off the page slide
+    await tester.pump(const Duration(milliseconds: 500)); // past the 220ms slide
+    await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('Share how it felt...'), findsOneWidget);
   });
 

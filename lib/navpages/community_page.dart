@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:video_player/video_player.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 
@@ -267,9 +269,12 @@ class _CommunityPageState extends State<CommunityPage> {
   String? error;
   final composer = TextEditingController();
 
-  // Image attachment (uploaded compressed via the backend).
-  Uint8List? attachedBytes;
-  String? attachedName;
+  // Attachments: up to 10 images (compressed client + server side) and
+  // 2 videos (streamed, size-capped, re-encoded on the server).
+  final List<_Attachment> attached = [];
+
+  int get _attachedImages => attached.where((a) => !a.isVideo).length;
+  int get _attachedVideos => attached.where((a) => a.isVideo).length;
 
   bool get isCreator => AuthApi.currentUser?.isCreator ?? false;
 
@@ -340,19 +345,23 @@ class _CommunityPageState extends State<CommunityPage> {
     }
     setState(() => posting = true);
     try {
-      String? imageUrl;
-      if (attachedBytes != null) {
-        imageUrl = await CommunityApi.uploadImage(
-            attachedName ?? 'photo.jpg', attachedBytes!);
+      final media = <PostMedia>[];
+      for (final a in attached) {
+        if (a.isVideo) {
+          media.add(await CommunityApi.uploadVideo(a.path!));
+        } else {
+          final url =
+              await CommunityApi.uploadImage(a.name ?? 'photo.png', a.bytes!);
+          media.add(PostMedia(type: 'image', url: url));
+        }
       }
       await CommunityApi.createPost(
-          community: community, body: text, imageUrl: imageUrl);
+          community: community, body: text, media: media);
       if (!mounted) return;
       composer.clear();
       setState(() {
         posting = false;
-        attachedBytes = null;
-        attachedName = null;
+        attached.clear();
       });
       Haptics.medium();
       await _reload();
@@ -363,22 +372,57 @@ class _CommunityPageState extends State<CommunityPage> {
     }
   }
 
-  Future<void> _attachImage() async {
+  Future<void> _attachImages() async {
+    if (_attachedImages >= 10) {
+      newSnackBar(context, title: 'Up to 10 images per post.');
+      return;
+    }
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.image,
       withData: true,
+      allowMultiple: true,
     );
-    final file = picked?.files.single;
-    if (file == null || file.bytes == null) return;
-    if (file.bytes!.length > 5 * 1024 * 1024) {
-      if (mounted) newSnackBar(context, title: 'Images are limited to 5 MB.');
+    if (picked == null) return;
+    var skipped = 0;
+    for (final file in picked.files) {
+      if (_attachedImages >= 10) {
+        skipped++;
+        continue;
+      }
+      if (file.bytes == null || file.bytes!.length > 5 * 1024 * 1024) {
+        skipped++;
+        continue;
+      }
+      final clean = await normalizeImage(file.bytes!, maxWidth: 1280);
+      attached.add(_Attachment.image(clean));
+    }
+    if (mounted) {
+      setState(() {});
+      if (skipped > 0) {
+        newSnackBar(context,
+            title: '$skipped skipped — max 10 images, 5 MB each.');
+      }
+    }
+  }
+
+  Future<void> _attachVideo() async {
+    if (_attachedVideos >= 2) {
+      newSnackBar(context, title: 'Up to 2 videos per post.');
       return;
     }
-    final clean = await normalizeImage(file.bytes!, maxWidth: 1280);
-    setState(() {
-      attachedBytes = clean;
-      attachedName = 'photo.png';
-    });
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.video,
+      withData: false,
+    );
+    final file = picked?.files.single;
+    if (file == null || file.path == null) return;
+    if (file.size > 25 * 1024 * 1024) {
+      if (mounted) {
+        newSnackBar(context, title: 'Post videos are limited to 25 MB.');
+      }
+      return;
+    }
+    setState(() => attached.add(_Attachment.video(file.path!, file.name)));
   }
 
   Future<void> _toggleReaction(CommunityPost post, String emoji) async {
@@ -531,70 +575,102 @@ class _CommunityPageState extends State<CommunityPage> {
                 color: cardBg(context),
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      scrollPadding: const EdgeInsets.only(bottom: 180),
-                      controller: composer,
-                      maxLength: 1000,
-                      decoration: InputDecoration(
-                        border: InputBorder.none,
-                        counterText: '',
-                        hintText: community == 'creators'
-                            ? 'Share tips with fellow creators...'
-                            : 'Share how it felt...',
-                        hintStyle:
-                            const TextStyle(color: Colors.grey, fontSize: 14),
-                      ),
-                    ),
-                  ),
-                  if (attachedBytes != null)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: Stack(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.memory(attachedBytes!,
-                                width: 40, height: 40, fit: BoxFit.cover),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          scrollPadding: const EdgeInsets.only(bottom: 180),
+                          controller: composer,
+                          maxLength: 1000,
+                          decoration: InputDecoration(
+                            border: InputBorder.none,
+                            counterText: '',
+                            hintText: community == 'creators'
+                                ? 'Share tips with fellow creators...'
+                                : 'Share how it felt...',
+                            hintStyle: const TextStyle(
+                                color: Colors.grey, fontSize: 14),
                           ),
-                          Positioned(
-                            right: -2,
-                            top: -2,
-                            child: InkWell(
-                              onTap: () => setState(() {
-                                attachedBytes = null;
-                                attachedName = null;
-                              }),
-                              child: const CircleAvatar(
-                                radius: 8,
-                                backgroundColor: Colors.black54,
-                                child: Icon(Icons.close,
-                                    size: 10, color: Colors.white),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    IconButton(
-                      tooltip: 'Attach image (max 5 MB, auto-compressed)',
-                      icon:
-                          const Icon(Icons.image_outlined, color: Colors.grey),
-                      onPressed: _attachImage,
-                    ),
-                  posting
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: blue))
-                      : IconButton(
-                          icon: const Icon(Icons.send_rounded, color: blue),
-                          onPressed: _post,
                         ),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Add photos (up to 10, 5 MB each)',
+                        icon: const Icon(Icons.image_outlined,
+                            color: Colors.grey),
+                        onPressed: _attachImages,
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Add a video (up to 2, 25 MB each)',
+                        icon: const Icon(Icons.videocam_outlined,
+                            color: Colors.grey),
+                        onPressed: _attachVideo,
+                      ),
+                      posting
+                          ? SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: brandInk(context)))
+                          : IconButton(
+                              icon: Icon(Icons.send_rounded,
+                                  color: brandInk(context)),
+                              onPressed: _post,
+                            ),
+                    ],
+                  ),
+                  if (attached.isNotEmpty)
+                    SizedBox(
+                      height: 56,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.only(bottom: 8),
+                        itemCount: attached.length,
+                        separatorBuilder: (context, i) =>
+                            const SizedBox(width: 6),
+                        itemBuilder: (context, i) {
+                          final a = attached[i];
+                          return Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: a.isVideo
+                                    ? Container(
+                                        width: 48,
+                                        height: 48,
+                                        color: Colors.black87,
+                                        child: const Icon(Icons.play_circle,
+                                            color: Colors.white, size: 22),
+                                      )
+                                    : Image.memory(a.bytes!,
+                                        width: 48,
+                                        height: 48,
+                                        fit: BoxFit.cover),
+                              ),
+                              Positioned(
+                                right: -5,
+                                top: -5,
+                                child: InkWell(
+                                  onTap: () =>
+                                      setState(() => attached.removeAt(i)),
+                                  child: const CircleAvatar(
+                                    radius: 9,
+                                    backgroundColor: Colors.black54,
+                                    child: Icon(Icons.close,
+                                        size: 11, color: Colors.white),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -704,8 +780,8 @@ class _CommunityPageState extends State<CommunityPage> {
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         tooltip: 'Edit comment',
-                        icon: const Icon(Icons.edit_outlined,
-                            size: 17, color: blue),
+                        icon: Icon(Icons.edit_outlined,
+                            size: 17, color: brandInk(context)),
                         onPressed: () => _editReshareComment(post),
                       ),
                       IconButton(
@@ -768,12 +844,12 @@ class _CommunityPageState extends State<CommunityPage> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
-                        color: blue.withValues(alpha: 0.08),
+                        color: brandInk(context).withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Text('📍 ${post.city}',
-                          style: const TextStyle(
-                              fontSize: 10.5, color: Color(0xFF1E319D))),
+                          style: TextStyle(
+                              fontSize: 10.5, color: brandInk(context))),
                     ),
                   if (!mine)
                     IconButton(
@@ -859,24 +935,10 @@ class _CommunityPageState extends State<CommunityPage> {
                       const SizedBox(height: 6),
                       Text(post.body,
                           style: const TextStyle(fontSize: 13, height: 1.4)),
-                      if (post.absoluteImageUrl != null) ...[
+                      if (post.media.isNotEmpty) ...[
                         const SizedBox(height: 8),
-                        GestureDetector(
-                          onTap: () => showImageViewer(
-                              context, post.absoluteImageUrl!,
-                              caption: post.authorName),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.network(
-                              post.absoluteImageUrl!,
-                              height: 140,
-                              width: double.infinity,
-                              fit: BoxFit.cover,
-                              errorBuilder: (c, e, s) =>
-                                  const SizedBox.shrink(),
-                            ),
-                          ),
-                        ),
+                        _MediaCarousel(
+                            post: post, height: 140, compact: true),
                       ],
                     ],
                   ),
@@ -884,63 +946,156 @@ class _CommunityPageState extends State<CommunityPage> {
               else ...[
                 Text(post.body,
                     style: const TextStyle(fontSize: 14, height: 1.45)),
-                if (post.absoluteImageUrl != null) ...[
+                if (post.media.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  GestureDetector(
-                    onTap: () => showImageViewer(
-                        context, post.absoluteImageUrl!,
-                        caption: post.authorName),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        post.absoluteImageUrl!,
-                        height: 180,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) => const SizedBox.shrink(),
-                      ),
+                  _MediaCarousel(post: post, height: 200),
+                ],
+              ],
+              const SizedBox(height: 8),
+              // Facebook-style: summary line, thin divider, action row.
+              // Tap React toggles ❤️; long-press summons the animated picker.
+              _reactionSummary(post),
+              Divider(height: 12, color: Colors.grey.withValues(alpha: 0.2)),
+              Row(
+                children: [
+                  Expanded(child: _reactButton(post)),
+                  Expanded(
+                    child: _actionButton(
+                      icon: Icons.mode_comment_outlined,
+                      label: 'Comment',
+                      onTap: () => _openPost(post),
+                    ),
+                  ),
+                  Expanded(
+                    child: _actionButton(
+                      icon: Icons.share_outlined,
+                      label: 'Share',
+                      onTap: () => _sharePost(post),
                     ),
                   ),
                 ],
-              ],
-              const SizedBox(height: 10),
-              // Reactions + replies — long-press for the animated picker,
-              // tap chips directly as before.
-              GestureDetector(
-                onLongPress: () => _showReactionPicker(post),
-                child: Wrap(
-                  spacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    for (final emoji in CommunityApi.emojis)
-                      _reactionChip(post, emoji),
-                    InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: () => _openPost(post),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.mode_comment_outlined,
-                                size: 15, color: Colors.grey),
-                            const SizedBox(width: 4),
-                            Text('${post.replyCount}',
-                                style: const TextStyle(
-                                    fontSize: 12.5, color: Colors.grey)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// Overlapping emoji cluster + totals, like Facebook's summary strip.
+  Widget _reactionSummary(CommunityPost post) {
+    final entries = post.reactions.entries.where((e) => e.value > 0).toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final total = entries.fold<int>(0, (n, e) => n + e.value);
+    if (total == 0 && post.replyCount == 0) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          if (total > 0) ...[
+            SizedBox(
+              width: 14.0 * entries.take(3).length + 8,
+              height: 20,
+              child: Stack(
+                children: [
+                  for (var i = 0; i < entries.length && i < 3; i++)
+                    Positioned(
+                      left: i * 14.0,
+                      child: Container(
+                        padding: const EdgeInsets.all(1),
+                        decoration: BoxDecoration(
+                          color: cardBg(context),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(entries[i].key,
+                            style: const TextStyle(fontSize: 12)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Text('$total',
+                style: const TextStyle(fontSize: 12.5, color: Colors.grey)),
+          ],
+          const Spacer(),
+          if (post.replyCount > 0)
+            Text(
+                '${post.replyCount} '
+                '${post.replyCount == 1 ? 'reply' : 'replies'}',
+                style: const TextStyle(fontSize: 12.5, color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
+  /// The React button reflects my current reaction (emoji + bold blue);
+  /// tap toggles ❤️, long-press opens the full picker.
+  Widget _reactButton(CommunityPost post) {
+    final mine = post.myReactions.isNotEmpty ? post.myReactions.first : null;
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => _toggleReaction(post, mine ?? '❤️'),
+      onLongPress: () => _showReactionPicker(post),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            mine != null
+                ? Text(mine, style: const TextStyle(fontSize: 15))
+                : const Icon(Icons.favorite_border,
+                    size: 17, color: Colors.grey),
+            const SizedBox(width: 5),
+            Text(
+              mine != null ? 'Reacted' : 'React',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: mine != null ? FontWeight.w700 : FontWeight.w500,
+                color: mine != null ? brandInk(context) : Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 17, color: Colors.grey),
+            const SizedBox(width: 5),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.grey)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Share the public browser view of a post (works without the app).
+  Future<void> _sharePost(CommunityPost post) async {
+    Haptics.tick();
+    final preview = post.body.length > 80
+        ? '${post.body.substring(0, 80)}…'
+        : post.body;
+    await SharePlus.instance.share(ShareParams(
+      subject: '${post.authorName} on Mr.Tour Guide',
+      text: '$preview\n\n${CommunityApi.shareUrl(post.id)}',
+    ));
   }
 
   /// Full post in a pop-up modal: image, reactions, replies (add + delete).
@@ -1033,39 +1188,230 @@ class _CommunityPageState extends State<CommunityPage> {
     if (picked != null && mounted) _toggleReaction(post, picked);
   }
 
-  Widget _reactionChip(CommunityPost post, String emoji) {
-    final count = post.reactions[emoji] ?? 0;
-    final mine = post.myReactions.contains(emoji);
-    if (count == 0 && !mine) {
-      // Ghost chip: shown small so any reaction is one tap away.
-      return InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: () => _toggleReaction(post, emoji),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          child: Opacity(
-              opacity: 0.35,
-              child: Text(emoji, style: const TextStyle(fontSize: 14))),
+}
+
+/// A pending composer attachment: an in-memory compressed image, or a video
+/// referenced by its on-device file path (streamed at post time).
+class _Attachment {
+  final Uint8List? bytes; // images only
+  final String? path; // videos only
+  final String? name;
+  final bool isVideo;
+
+  _Attachment.image(this.bytes)
+      : path = null,
+        name = 'photo.png',
+        isVideo = false;
+  _Attachment.video(this.path, this.name)
+      : bytes = null,
+        isVideo = true;
+}
+
+/// Swipeable media gallery for a post: images open full-screen, videos play
+/// inline inside the card. A dot row + counter shows position when >1.
+class _MediaCarousel extends StatefulWidget {
+  final CommunityPost post;
+  final double height;
+  final bool compact;
+
+  const _MediaCarousel({
+    required this.post,
+    required this.height,
+    this.compact = false,
+  });
+
+  @override
+  State<_MediaCarousel> createState() => _MediaCarouselState();
+}
+
+class _MediaCarouselState extends State<_MediaCarousel> {
+  final _controller = PageController();
+  int _page = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = widget.post.media;
+    final radius = BorderRadius.circular(widget.compact ? 10 : 12);
+    return Column(
+      children: [
+        ClipRRect(
+          borderRadius: radius,
+          child: SizedBox(
+            height: widget.height,
+            width: double.infinity,
+            child: media.length == 1
+                ? _slide(media.first)
+                : PageView.builder(
+                    controller: _controller,
+                    itemCount: media.length,
+                    onPageChanged: (i) => setState(() => _page = i),
+                    itemBuilder: (context, i) => _slide(media[i]),
+                  ),
+          ),
+        ),
+        if (media.length > 1) ...[
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (var i = 0; i < media.length; i++)
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                  width: i == _page ? 16 : 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: i == _page
+                        ? blue
+                        : Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _slide(PostMedia m) {
+    if (m.isVideo) {
+      return _InlineVideo(media: m);
+    }
+    return GestureDetector(
+      onTap: () => showImageViewer(context, m.absoluteUrl,
+          caption: widget.post.authorName),
+      child: Image.network(
+        m.absoluteUrl,
+        fit: BoxFit.cover,
+        errorBuilder: (c, e, s) => Container(
+          color: Colors.grey.withValues(alpha: 0.15),
+          child: const Icon(Icons.broken_image_outlined, color: Colors.grey),
+        ),
+      ),
+    );
+  }
+}
+
+/// Video that plays inline inside the post card. Loads on first tap so the
+/// feed stays cheap (only a poster frame until the user chooses to watch).
+class _InlineVideo extends StatefulWidget {
+  final PostMedia media;
+  const _InlineVideo({required this.media});
+
+  @override
+  State<_InlineVideo> createState() => _InlineVideoState();
+}
+
+class _InlineVideoState extends State<_InlineVideo> {
+  VideoPlayerController? _controller;
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _start() async {
+    if (_loading || _controller != null) return;
+    setState(() => _loading = true);
+    final c = VideoPlayerController.networkUrl(Uri.parse(widget.media.absoluteUrl));
+    try {
+      await c.initialize();
+      c.setLooping(true);
+      await c.play();
+      if (!mounted) {
+        c.dispose();
+        return;
+      }
+      setState(() {
+        _controller = c;
+        _loading = false;
+      });
+    } catch (_) {
+      c.dispose();
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _controller;
+    if (c != null && c.value.isInitialized) {
+      return GestureDetector(
+        onTap: () => setState(
+            () => c.value.isPlaying ? c.pause() : c.play()),
+        child: Stack(
+          alignment: Alignment.center,
+          fit: StackFit.expand,
+          children: [
+            FittedBox(
+              fit: BoxFit.cover,
+              clipBehavior: Clip.hardEdge,
+              child: SizedBox(
+                width: c.value.size.width,
+                height: c.value.size.height,
+                child: VideoPlayer(c),
+              ),
+            ),
+            ValueListenableBuilder(
+              valueListenable: c,
+              builder: (context, value, child) => value.isPlaying
+                  ? const SizedBox.shrink()
+                  : Container(
+                      color: Colors.black26,
+                      child: const Icon(Icons.play_arrow,
+                          color: Colors.white, size: 48),
+                    ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: VideoProgressIndicator(c,
+                  allowScrubbing: true,
+                  colors: const VideoProgressColors(playedColor: blue)),
+            ),
+          ],
         ),
       );
     }
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () => _toggleReaction(post, emoji),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-        decoration: BoxDecoration(
-          color: mine
-              ? blue.withValues(alpha: 0.14)
-              : Colors.black.withValues(alpha: 0.05),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: mine ? blue : Colors.transparent, width: 1),
-        ),
-        child: Text('$emoji $count',
-            style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: mine ? FontWeight.w700 : FontWeight.w400)),
+    // Not yet playing: poster frame (if any) + a big play affordance.
+    return GestureDetector(
+      onTap: _start,
+      child: Stack(
+        alignment: Alignment.center,
+        fit: StackFit.expand,
+        children: [
+          if (widget.media.absoluteThumb != null)
+            Image.network(widget.media.absoluteThumb!,
+                fit: BoxFit.cover,
+                errorBuilder: (c, e, s) => Container(color: Colors.black87))
+          else
+            Container(color: Colors.black87),
+          Container(
+            decoration: const BoxDecoration(
+              color: Colors.black38,
+              shape: BoxShape.circle,
+            ),
+            padding: const EdgeInsets.all(8),
+            child: _loading
+                ? const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: CircularProgressIndicator(
+                        color: Colors.white, strokeWidth: 3))
+                : const Icon(Icons.play_arrow,
+                    color: Colors.white, size: 40),
+          ),
+        ],
       ),
     );
   }
@@ -1253,22 +1599,9 @@ class _PostModalState extends State<_PostModal> {
                   const SizedBox(height: 12),
                   Text(post.body,
                       style: const TextStyle(fontSize: 15, height: 1.5)),
-                  if (post.absoluteImageUrl != null) ...[
+                  if (post.media.isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    GestureDetector(
-                      onTap: () => showImageViewer(
-                          context, post.absoluteImageUrl!,
-                          caption: post.authorName),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: Image.network(
-                          post.absoluteImageUrl!,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => const SizedBox.shrink(),
-                        ),
-                      ),
-                    ),
+                    _MediaCarousel(post: post, height: 240),
                   ],
                   const SizedBox(height: 12),
                   Wrap(
@@ -1387,14 +1720,14 @@ class _PostModalState extends State<_PostModal> {
                         ),
                         const SizedBox(width: 8),
                         sending
-                            ? const SizedBox(
+                            ? SizedBox(
                                 width: 22,
                                 height: 22,
                                 child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: blue))
+                                    strokeWidth: 2, color: brandInk(context)))
                             : IconButton(
-                                icon:
-                                    const Icon(Icons.send_rounded, color: blue),
+                                icon: Icon(Icons.send_rounded,
+                                    color: brandInk(context)),
                                 onPressed: _send,
                               ),
                       ],

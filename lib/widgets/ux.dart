@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -295,5 +296,112 @@ class _SpringyState extends State<Springy> {
         child: widget.child,
       ),
     );
+  }
+}
+
+/// A 👋 that waves — a repeating rotate wiggle, like the classic greeting.
+class WavingHand extends StatefulWidget {
+  final double size;
+  const WavingHand({super.key, this.size = 26});
+
+  @override
+  State<WavingHand> createState() => _WavingHandState();
+}
+
+class _WavingHandState extends State<WavingHand>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        // Wiggle during the first ~45% of the loop, then rest.
+        final t = _c.value;
+        final wave = t < 0.45 ? t / 0.45 : 0.0;
+        // Three quick wiggles, easing out as the wave finishes.
+        final angle = wave == 0.0
+            ? 0.0
+            : 0.4 * math.sin(wave * 3 * 2 * math.pi) * (1 - wave);
+        return Transform.rotate(
+          alignment: Alignment.bottomCenter,
+          angle: angle,
+          child: child,
+        );
+      },
+      child: Text('👋', style: TextStyle(fontSize: widget.size)),
+    );
+  }
+}
+
+/// Types out [text] character by character; when [text] changes it restarts.
+/// Used for the rotating dashboard headline (paired with a slide switch).
+class TypewriterText extends StatefulWidget {
+  final String text;
+  final TextStyle? style;
+  final Duration perChar;
+
+  const TypewriterText(
+    this.text, {
+    super.key,
+    this.style,
+    this.perChar = const Duration(milliseconds: 42),
+  });
+
+  @override
+  State<TypewriterText> createState() => _TypewriterTextState();
+}
+
+class _TypewriterTextState extends State<TypewriterText> {
+  int _shown = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  @override
+  void didUpdateWidget(TypewriterText old) {
+    super.didUpdateWidget(old);
+    if (old.text != widget.text) _run();
+  }
+
+  void _run() {
+    _timer?.cancel();
+    _shown = 0;
+    _timer = Timer.periodic(widget.perChar, (t) {
+      if (!mounted) return;
+      if (_shown >= widget.text.length) {
+        t.cancel();
+        return;
+      }
+      setState(() => _shown++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // A zero-width joiner keeps the box height stable before the first char.
+    final shown =
+        widget.text.substring(0, _shown.clamp(0, widget.text.length));
+    return Text(shown.isEmpty ? '​' : shown, style: widget.style);
   }
 }

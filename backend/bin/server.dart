@@ -468,7 +468,7 @@ void _scheduleMlProcessing(int videoId) {
           'thumb': thumbUrl,
           'haptics': jsonEncode({
             'profile': 'auto',
-            'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v2',
+            'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v3',
             'generatedAt': DateTime.now().toIso8601String(),
             'track': track,
             'fine': fine,
@@ -536,11 +536,13 @@ void _logActivity(String actor, String action, String details) {
 /// with their millisecond timestamps and punch strength.
 Future<(List<double> fine, List<Map<String, num>> events)>
     _audioEnergyAnalysis(String path) async {
-  try {
+  // One ffmpeg pass over a band of the spectrum -> 250ms RMS values in dB.
+  Future<List<double>> rms(List<String> preFilter) async {
     final result = await Process.run('ffmpeg', [
       '-i', path, '-map', '0:a:0?', '-af',
       // 11025 samples ≈ 250 ms windows at 44.1 kHz.
-      'asetnsamples=11025,astats=metadata=1:reset=1,'
+      '${preFilter.isEmpty ? '' : '${preFilter.join(',')},'}'
+          'asetnsamples=11025,astats=metadata=1:reset=1,'
           'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
       '-f', 'null', '-',
     ]).timeout(const Duration(minutes: 3));
@@ -551,27 +553,68 @@ Future<(List<double> fine, List<Map<String, num>> events)>
       db.add(raw == '-inf' ? -90.0 : (double.tryParse(raw) ?? -90.0));
       if (db.length >= 2400) break; // cap at 10 minutes
     }
-    if (db.isEmpty) return (const <double>[], const <Map<String, num>>[]);
-    final raw = [for (final v in db) ((v + 60) / 55).clamp(0.0, 1.0)];
-    // Transient detection BEFORE smoothing: a big jump over the previous
-    // window is an impact (recoil-style feedback); smoothing would hide it.
+    return db;
+  }
+
+  // Per-video adaptive normalization: quiet vlogs and loud action clips both
+  // land on the full 0..1 range instead of a fixed -60..-5 dB window.
+  List<double> normalize(List<double> db) {
+    final sorted = [...db]..sort();
+    final lo = sorted[(sorted.length * 0.10).floor()];
+    var hi = sorted[((sorted.length - 1) * 0.95).floor()];
+    if (hi - lo < 6) hi = lo + 6; // near-constant audio: avoid noise blowup
+    return [for (final v in db) ((v - lo) / (hi - lo)).clamp(0.0, 1.0)];
+  }
+
+  try {
+    final fullDb = await rms(const []);
+    if (fullDb.isEmpty) return (const <double>[], const <Map<String, num>>[]);
+    final raw = normalize(fullDb);
+
+    // Second pass over the low band only: gunshots, explosions, slams and
+    // drum hits live under ~160 Hz, where speech and wind barely register.
+    var low = const <double>[];
+    try {
+      final lowDb = await rms(const ['lowpass=f=160']);
+      if (lowDb.length == fullDb.length) low = normalize(lowDb);
+    } catch (_) {}
+
+    // Transient detection BEFORE smoothing: a sharp jump in either band is
+    // an impact (recoil-style feedback); smoothing would hide it.
     final events = <Map<String, num>>[];
     for (var i = 1; i < raw.length; i++) {
       final jump = raw[i] - raw[i - 1];
-      if (jump > 0.28 && raw[i] > 0.45) {
+      final lowJump =
+          i < low.length ? low[i] - low[i - 1] : 0.0;
+      final fullHit = jump > 0.26 && raw[i] > 0.42;
+      final bassHit = lowJump > 0.30 && i < low.length && low[i] > 0.5;
+      if (fullHit || bassHit) {
+        final punch =
+            (jump > lowJump ? jump : lowJump).clamp(0.0, 1.0);
+        // Merge with a hit in the previous window: keep the stronger punch.
+        if (events.isNotEmpty &&
+            (i * 250) - (events.last['t'] as num) <= 250) {
+          if (punch > (events.last['power'] as num)) {
+            events.last['power'] =
+                double.parse(punch.toStringAsFixed(2));
+          }
+          continue;
+        }
         events.add({
           't': i * 250, // ms into the video
-          'power': double.parse(jump.clamp(0.0, 1.0).toStringAsFixed(2)),
+          'power': double.parse(punch.toStringAsFixed(2)),
         });
-        if (events.length >= 120) break;
+        if (events.length >= 150) break;
       }
     }
+
+    // Fast attack, slow decay: rises hit instantly (the hand feels the drop
+    // of a beat), falls glide so the motor never sputters.
     final fine = <double>[];
+    var level = raw.first;
     for (var i = 0; i < raw.length; i++) {
-      final prev = i > 0 ? raw[i - 1] : raw[i];
-      final next = i < raw.length - 1 ? raw[i + 1] : raw[i];
-      fine.add(double.parse(
-          ((prev + raw[i] * 2 + next) / 4).toStringAsFixed(3)));
+      level = raw[i] >= level ? raw[i] : level * 0.55 + raw[i] * 0.45;
+      fine.add(double.parse(level.toStringAsFixed(3)));
     }
     return (fine, events);
   } catch (_) {
@@ -1541,7 +1584,7 @@ Future<Response> _resharePost(Request request, String id) async {
   if (userId == null) return _json(401, {'error': 'Sign in to reshare.'});
   final orig = await _db.execute(
     Sql.named('SELECT community, author_id, author_name, author_role, body, '
-        'image_url, city FROM posts WHERE id = @p'),
+        'image_url, city, media FROM posts WHERE id = @p'),
     parameters: {'p': postId},
   );
   if (orig.isEmpty) return _json(404, {'error': 'Post not found.'});
@@ -1565,10 +1608,10 @@ Future<Response> _resharePost(Request request, String id) async {
   }
   await _db.execute(
     Sql.named('INSERT INTO posts (community, author_id, author_name, '
-        'author_role, body, image_url, city, reshared_from, reshared_by, '
-        'reshared_by_id, reshared_by_role) '
-        'VALUES (@c, @aid, @aname, @arole, @body, @img, @city, @from, @by, '
-        '@byId, @byRole)'),
+        'author_role, body, image_url, city, media, reshared_from, '
+        'reshared_by, reshared_by_id, reshared_by_role) '
+        'VALUES (@c, @aid, @aname, @arole, @body, @img, @city, @media, '
+        '@from, @by, @byId, @byRole)'),
     parameters: {
       'c': orig.first[0],
       'aid': orig.first[1],
@@ -1577,6 +1620,7 @@ Future<Response> _resharePost(Request request, String id) async {
       'body': orig.first[4],
       'img': orig.first[5],
       'city': orig.first[6],
+      'media': orig.first[7] == null ? null : jsonEncode(orig.first[7]),
       'from': postId,
       'by': me.first[0],
       'byId': userId,
@@ -1663,26 +1707,43 @@ Future<Response> _ratePlace(Request request, String slug) async {
 /// parsed server-side and cached 60 min (free-tier friendly).
 final Map<String, (DateTime, Map<String, Object?>)> _newsCache = {};
 
+/// Country-keyed publisher feeds. India keeps its rich local set; everywhere
+/// else gets stable global travel desks. Feeds that fail are just skipped.
+const _newsFeedsIndia = [
+  ('https://timesofindia.indiatimes.com/rssfeeds/2647163.cms', 'TOI Travel'),
+  ('https://www.hindustantimes.com/feeds/rss/lifestyle/travel/rssfeed.xml',
+      'HT Travel'),
+  ('https://www.indiatoday.in/rss/1206577', 'India Today'),
+  ('https://www.thehindu.com/life-and-style/travel/feeder/default.rss',
+      'The Hindu Travel'),
+  ('https://travel.economictimes.indiatimes.com/rss/topstories',
+      'ET TravelWorld'),
+  ('https://www.news18.com/commonfeeds/v1/eng/rss/travel.xml', 'News18'),
+];
+const _newsFeedsGlobal = [
+  ('https://www.theguardian.com/uk/travel/rss', 'The Guardian'),
+  ('http://rss.cnn.com/rss/edition_travel.rss', 'CNN Travel'),
+  ('https://rss.nytimes.com/services/xml/rss/nyt/Travel.xml', 'NYT Travel'),
+];
+
 Future<Response> _travelNews(Request request) async {
-  const key = 'news';
+  final country =
+      (request.url.queryParameters['country'] ?? 'india').trim().toLowerCase();
+  final city = (request.url.queryParameters['city'] ?? '').trim().toLowerCase();
+  final india = country.isEmpty || country.contains('india') || country == 'in';
+  final key = india ? 'news.in' : 'news.global';
   final cached = _newsCache[key];
   if (cached != null &&
       DateTime.now().difference(cached.$1) < const Duration(minutes: 60)) {
-    return _json(200, cached.$2);
+    return _json(200, _rankNews(cached.$2, country, city));
   }
   final items = <Map<String, String>>[];
   // Publisher feeds: direct article URLs + real cover images (enclosures).
-  const feeds = [
-    ('https://timesofindia.indiatimes.com/rssfeeds/2647163.cms',
-        'TOI Travel'),
-    ('https://www.hindustantimes.com/feeds/rss/lifestyle/travel/rssfeed.xml',
-        'HT Travel'),
-    ('https://www.indiatoday.in/rss/1206577', 'India Today'),
-    ('https://www.thehindu.com/life-and-style/travel/feeder/default.rss',
-        'The Hindu Travel'),
-  ];
+  final feeds = india
+      ? [..._newsFeedsIndia, _newsFeedsGlobal.first]
+      : _newsFeedsGlobal;
   for (final (feedUrl, sourceName) in feeds) {
-    if (items.length >= 10) break;
+    if (items.length >= 14) break;
     try {
       final xml = await _httpGetText(feedUrl,
               userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
@@ -1723,13 +1784,29 @@ Future<Response> _travelNews(Request request) async {
           'source': sourceName,
           if (image != null && image.startsWith('http')) 'image': image,
         });
-        if (items.length >= 10) break;
+        if (items.length >= 14) break;
       }
     } catch (_) {}
   }
   final payload = <String, Object?>{'items': items};
   if (items.isNotEmpty) _newsCache[key] = (DateTime.now(), payload);
-  return _json(200, payload);
+  return _json(200, _rankNews(payload, country, city));
+}
+
+/// Reorders cached items so pieces mentioning the reader's city float to the
+/// top, then their country — ranking is per-request, the cache stays shared.
+Map<String, Object?> _rankNews(
+    Map<String, Object?> payload, String country, String city) {
+  final items = (payload['items'] as List?)?.cast<Map>() ?? const [];
+  if (items.isEmpty || (city.isEmpty && country.isEmpty)) return payload;
+  int score(Map it) {
+    final t = '${it['title']}'.toLowerCase();
+    if (city.isNotEmpty && t.contains(city)) return 2;
+    if (country.isNotEmpty && t.contains(country)) return 1;
+    return 0;
+  }
+  final ranked = [...items]..sort((a, b) => score(b).compareTo(score(a)));
+  return {...payload, 'items': ranked.take(10).toList()};
 }
 
 /// Reverse geocoding proxy (OpenStreetMap Nominatim) — the upload sheet's
@@ -2068,7 +2145,7 @@ Future<Response> _communityPosts(Request request) async {
              p.image_url,
              (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id),
              p.reshared_by, p.reshared_by_id, p.reshared_by_role,
-             p.reshare_comment
+             p.reshare_comment, p.media
       FROM posts p
       LEFT JOIN (SELECT post_id, emoji, count(*) AS n FROM reactions
                  GROUP BY post_id, emoji) r ON r.post_id = p.id
@@ -2107,6 +2184,7 @@ Future<Response> _communityPosts(Request request) async {
           'resharedById': r[13],
           'resharedByRole': r[14],
           'reshareComment': r[15],
+          'media': r[16],
         }
     ],
     'hasMore': hasMore,
@@ -2295,6 +2373,751 @@ Future<Response> _uploadCommunityImage(Request request) async {
   return _json(201, {'imageUrl': '/files/community/$rawName'});
 }
 
+const _maxPostVideoBytes = 25 * 1024 * 1024; // hard cap per video (25 MB)
+
+/// One community video is compressed at a time — the free-tier VM cannot
+/// afford parallel ffmpeg runs.
+Future<void> _videoCompressQueue = Future.value();
+
+/// Community post video upload. The original (size-capped) file is served
+/// immediately; a queued background ffmpeg pass re-encodes it to 720p/CRF28
+/// and overwrites the same storage key, so the URL never changes but the
+/// stored bytes shrink.
+Future<Response> _uploadCommunityVideo(Request request) async {
+  final params = request.url.queryParameters;
+  final userId = int.tryParse(params['userId'] ?? '');
+  if (userId == null || await _roleOf(userId) == null) {
+    return _json(401, {'error': 'Sign in to attach videos.'});
+  }
+  final original = _sanitizeFilename(params['filename'] ?? 'clip.mp4');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'mp4', 'mov', 'm4v', 'webm'}.contains(ext)) {
+    return _json(400, {'error': 'Only MP4, MOV or WebM videos.'});
+  }
+
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_pvid_$stamp.$ext');
+  final sink = tmpIn.openWrite();
+  var size = 0;
+  try {
+    await for (final chunk in request.read()) {
+      size += chunk.length;
+      if (size > _maxPostVideoBytes) {
+        await sink.close();
+        await tmpIn.delete();
+        return _json(413, {'error': 'Post videos are limited to 25 MB.'});
+      }
+      sink.add(chunk);
+    }
+  } finally {
+    try {
+      await sink.close();
+    } catch (_) {}
+  }
+  if (size == 0) {
+    try {
+      await tmpIn.delete();
+    } catch (_) {}
+    return _json(400, {'error': 'Empty upload body.'});
+  }
+
+  final finalName = 'vid_$stamp.mp4';
+  // Poster frame first (fast — reads only the head of the file).
+  String? thumbUrl;
+  final poster = File('${Directory.systemTemp.path}/mrt_pposter_$stamp.jpg');
+  try {
+    final r = await Process.run('ffmpeg', [
+      '-y', '-loglevel', 'error',
+      '-ss', '0.5', '-i', tmpIn.path,
+      '-frames:v', '1',
+      '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+      '-q:v', '5',
+      poster.path,
+    ]).timeout(const Duration(seconds: 45));
+    if (r.exitCode == 0 && await poster.exists()) {
+      final thumbName = 'vthumb_$stamp.jpg';
+      await _storage.save(
+          'community', thumbName, Stream.value(await poster.readAsBytes()));
+      thumbUrl = '/files/community/$thumbName';
+    }
+  } catch (_) {} finally {
+    try {
+      if (await poster.exists()) await poster.delete();
+    } catch (_) {}
+  }
+
+  // Serve the original right away so the post can publish immediately.
+  await _storage.save('community', finalName, tmpIn.openRead());
+
+  // Queue the compression pass; the temp original is deleted afterwards.
+  _videoCompressQueue = _videoCompressQueue.then((_) async {
+    final tmpOut = File('${Directory.systemTemp.path}/mrt_pvidc_$stamp.mp4');
+    try {
+      final r = await Process.run('ffmpeg', [
+        '-y', '-loglevel', 'error',
+        '-i', tmpIn.path,
+        '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+        '-c:a', 'aac', '-b:a', '96k',
+        '-movflags', '+faststart',
+        tmpOut.path,
+      ]).timeout(const Duration(minutes: 8));
+      if (r.exitCode == 0 && await tmpOut.exists()) {
+        final outSize = await tmpOut.length();
+        // Only replace when the re-encode actually saved space.
+        if (outSize > 0 && outSize < size) {
+          await _storage.save('community', finalName, tmpOut.openRead());
+          print('community video: $size -> $outSize bytes ($finalName)');
+        }
+      }
+    } catch (e) {
+      print('community video compress skipped: $e');
+    } finally {
+      for (final f in [tmpIn, tmpOut]) {
+        try {
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+    }
+  });
+
+  return _json(201, {
+    'videoUrl': '/files/community/$finalName',
+    if (thumbUrl != null) 'thumbUrl': thumbUrl,
+  });
+}
+
+
+// ===========================================================================
+// GuideVibe — short vertical videos (Reels/Shorts). Creator uploads are
+// compressed to a lean 720-wide vertical clip; the feed blends them with
+// YouTube Shorts picks (aesthetic chip marks the YouTube ones).
+// ===========================================================================
+const _shortColumns =
+    'id, owner_id, owner_name, owner_role, caption, city, filename, '
+    'thumb_url, kind, haptics, likes, views, created_at';
+
+Map<String, Object?> _shortRowToJson(List<dynamic> row, {bool liked = false}) =>
+    {
+      'id': row[0],
+      'source': 'creator',
+      'ownerId': row[1],
+      'ownerName': row[2],
+      'ownerRole': row[3],
+      'caption': row[4],
+      'city': row[5],
+      'thumbUrl': row[7],
+      'kind': row[8],
+      'haptics': row[9],
+      'likes': row[10],
+      'views': row[11],
+      'createdAt': (row[12] as DateTime).toIso8601String(),
+      'liked': liked,
+      'url': '/files/guidevibe/${row[6]}',
+    };
+
+const _maxShortBytes = 80 * 1024 * 1024; // hard cap per short (80 MB raw)
+
+/// One short is transcoded at a time — the free-tier VM can't run parallel
+/// ffmpeg passes.
+Future<void> _shortQueue = Future.value();
+
+/// Creator uploads a GuideVibe short. The raw file is size-capped and served
+/// immediately (status processing); a queued background pass re-encodes it to
+/// 720-wide vertical H.264 CRF28, extracts a poster, and runs the same
+/// audio-to-haptics analysis the experience player uses.
+Future<Response> _uploadShort(Request request) async {
+  final params = request.url.queryParameters;
+  final userId = int.tryParse(params['userId'] ?? '');
+  if (userId == null) return _json(401, {'error': 'Sign in to post a GuideVibe.'});
+  final user = await _db.execute(
+    Sql.named('SELECT name, role FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (user.isEmpty) return _json(401, {'error': 'Unknown user.'});
+  final caption = (params['caption'] ?? '').trim();
+  if (caption.length > 400) {
+    return _json(400, {'error': 'Keep captions under 400 characters.'});
+  }
+  final unsafe = caption.isEmpty ? null : _unsafeText(caption);
+  if (unsafe != null) return _json(400, {'error': unsafe});
+  final city = (params['city'] ?? '').trim();
+  final kind = const ['normal', 'vr', 'mr'].contains(params['kind'])
+      ? params['kind']!
+      : 'normal';
+  final original = _sanitizeFilename(params['filename'] ?? 'short.mp4');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'mp4', 'mov', 'm4v', 'webm', '3gp'}.contains(ext)) {
+    return _json(400, {'error': 'Only MP4, MOV or WebM videos.'});
+  }
+
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_short_$stamp.$ext');
+  final sink = tmpIn.openWrite();
+  var size = 0;
+  try {
+    await for (final chunk in request.read()) {
+      size += chunk.length;
+      if (size > _maxShortBytes) {
+        await sink.close();
+        await tmpIn.delete();
+        return _json(413, {'error': 'GuideVibe clips are limited to 80 MB.'});
+      }
+      sink.add(chunk);
+    }
+  } finally {
+    try {
+      await sink.close();
+    } catch (_) {}
+  }
+  if (size == 0) {
+    try {
+      await tmpIn.delete();
+    } catch (_) {}
+    return _json(400, {'error': 'Empty upload body.'});
+  }
+
+  final finalName = 'gv_$stamp.mp4';
+  // Poster frame first (fast — reads only the head of the file).
+  String? thumbUrl;
+  final poster = File('${Directory.systemTemp.path}/mrt_gvposter_$stamp.jpg');
+  try {
+    final r = await Process.run('ffmpeg', [
+      '-y', '-loglevel', 'error',
+      '-ss', '0.5', '-i', tmpIn.path,
+      '-frames:v', '1',
+      '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+      '-q:v', '5',
+      poster.path,
+    ]).timeout(const Duration(seconds: 45));
+    if (r.exitCode == 0 && await poster.exists()) {
+      final thumbName = 'gvthumb_$stamp.jpg';
+      await _storage.save(
+          'guidevibe', thumbName, Stream.value(await poster.readAsBytes()));
+      thumbUrl = '/files/guidevibe/$thumbName';
+    }
+  } catch (_) {} finally {
+    try {
+      if (await poster.exists()) await poster.delete();
+    } catch (_) {}
+  }
+
+  // Serve the original immediately so the short appears while it transcodes.
+  await _storage.save('guidevibe', finalName, tmpIn.openRead());
+
+  final rows = await _db.execute(
+    Sql.named('INSERT INTO shorts (owner_id, owner_name, owner_role, caption, '
+        'city, filename, thumb_url, kind, size_bytes, status) VALUES '
+        '(@o, @on, @or, @cap, @city, @f, @t, @k, @sz, \'processing\') '
+        'RETURNING $_shortColumns'),
+    parameters: {
+      'o': userId,
+      'on': user.first[0],
+      'or': user.first[1],
+      'cap': caption,
+      'city': city.isEmpty ? null : city,
+      'f': finalName,
+      't': thumbUrl,
+      'k': kind,
+      'sz': size,
+    },
+  );
+  final shortId = rows.first[0] as int;
+  _logActivity('user:$userId', 'guidevibe-upload', 'short #$shortId ($kind)');
+
+  // Queue transcode + haptics; overwrite the same storage key when smaller.
+  _shortQueue = _shortQueue.then((_) async {
+    final tmpOut = File('${Directory.systemTemp.path}/mrt_shortc_$stamp.mp4');
+    try {
+      final r = await Process.run('ffmpeg', [
+        '-y', '-loglevel', 'error',
+        '-i', tmpIn.path,
+        '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+        '-c:a', 'aac', '-b:a', '96k',
+        '-movflags', '+faststart',
+        tmpOut.path,
+      ]).timeout(const Duration(minutes: 8));
+      var analyzePath = tmpIn.path;
+      if (r.exitCode == 0 && await tmpOut.exists()) {
+        final outSize = await tmpOut.length();
+        if (outSize > 0 && outSize < size) {
+          await _storage.save('guidevibe', finalName, tmpOut.openRead());
+          analyzePath = tmpOut.path;
+          await _db.execute(
+            Sql.named('UPDATE shorts SET size_bytes = @s WHERE id = @id'),
+            parameters: {'s': outSize, 'id': shortId},
+          );
+          print('guidevibe short: $size -> $outSize bytes ($finalName)');
+        }
+      }
+      // Audio -> haptics (same {track, fine, events} contract).
+      final (fine, events) = await _audioEnergyAnalysis(analyzePath);
+      final track = <double>[];
+      for (var i = 0; i + 3 < fine.length; i += 4) {
+        track.add(double.parse(
+            ((fine[i] + fine[i + 1] + fine[i + 2] + fine[i + 3]) / 4)
+                .toStringAsFixed(3)));
+      }
+      await _db.execute(
+        Sql.named("UPDATE shorts SET status = 'ready', haptics = @h "
+            'WHERE id = @id'),
+        parameters: {
+          'id': shortId,
+          'h': jsonEncode({
+            'profile': 'auto',
+            'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v3',
+            'track': track,
+            'fine': fine,
+            'events': events,
+          }),
+        },
+      );
+      // Tell travelers a new GuideVibe just landed.
+      _sendPush(
+        await _tokensFor(excludeUserId: userId),
+        'New GuideVibe',
+        '${user.first[0]} shared a new GuideVibe short.',
+        data: {'type': 'guidevibe'},
+      );
+    } catch (e) {
+      print('guidevibe transcode failed for $shortId: $e');
+      try {
+        await _db.execute(
+          Sql.named("UPDATE shorts SET status = 'ready' WHERE id = @id"),
+          parameters: {'id': shortId},
+        );
+      } catch (_) {}
+    } finally {
+      for (final f in [tmpIn, tmpOut]) {
+        try {
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+    }
+  });
+
+  return _json(201, {'short': _shortRowToJson(rows.first)});
+}
+
+// YouTube Shorts blend — scraped from the public results page (no API key),
+// seeded by the reader's city/activity. Cached per seed for 30 min.
+final Map<String, (DateTime, List<Map<String, String>>)> _ytShortsCache = {};
+
+Future<List<Map<String, String>>> _youtubeShorts(String seed) async {
+  final key = seed.toLowerCase();
+  final cached = _ytShortsCache[key];
+  if (cached != null &&
+      DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
+    return cached.$2;
+  }
+  final out = <Map<String, String>>[];
+  try {
+    final html = await _httpGetText(
+            'https://www.youtube.com/results?search_query='
+            '${Uri.encodeQueryComponent('$seed travel shorts')}',
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
+        .timeout(const Duration(seconds: 10));
+    final matches = RegExp(
+            r'"videoRenderer":\{"videoId":"([\w-]{11})".*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"')
+        .allMatches(html);
+    final seen = <String>{};
+    for (final m in matches) {
+      final id = m.group(1)!;
+      if (!seen.add(id)) continue;
+      var title = m.group(2)!.replaceAll(r'\"', '"').replaceAll(r'\\', r'\');
+      out.add({
+        'ytId': id,
+        'caption': title,
+        'thumb': 'https://i.ytimg.com/vi/$id/hqdefault.jpg',
+      });
+      if (out.length >= 6) break;
+    }
+  } catch (_) {}
+  if (out.isNotEmpty) _ytShortsCache[key] = (DateTime.now(), out);
+  return out;
+}
+
+/// GuideVibe feed: ready creator shorts ranked by the reader's city then
+/// recency, blended with YouTube Shorts (every 4th slot) so the feed stays
+/// full even when few creators have posted.
+Future<Response> _guidevibeFeed(Request request) async {
+  final params = request.url.queryParameters;
+  final userId = int.tryParse(params['userId'] ?? '');
+  final city = (params['city'] ?? '').trim();
+  final offset = int.tryParse(params['offset'] ?? '0') ?? 0;
+  final limit = (int.tryParse(params['limit'] ?? '10') ?? 10).clamp(1, 20);
+
+  final rows = await _db.execute(
+    Sql.named('''
+      SELECT $_shortColumns,
+             EXISTS(SELECT 1 FROM short_likes sl
+                    WHERE sl.short_id = shorts.id AND sl.user_id = @me) AS liked
+      FROM shorts
+      WHERE status = 'ready'
+      ORDER BY (city IS NOT NULL AND city = @city) DESC, created_at DESC
+      OFFSET @offset LIMIT @limit
+    '''),
+    parameters: {
+      'me': userId ?? -1,
+      'city': city,
+      'offset': offset,
+      'limit': limit + 1,
+    },
+  );
+  final hasMore = rows.length > limit;
+  final page = hasMore ? rows.take(limit).toList() : rows.toList();
+  final items = <Map<String, Object?>>[
+    for (final r in page)
+      _shortRowToJson(r, liked: r[13] == true)
+  ];
+
+  // Blend YouTube Shorts on the first page only (keeps later pages cheap).
+  if (offset == 0) {
+    final seed = city.isEmpty ? 'india' : city;
+    final yt = await _youtubeShorts(seed);
+    var yi = 0;
+    final blended = <Map<String, Object?>>[];
+    for (var i = 0; i < items.length; i++) {
+      blended.add(items[i]);
+      if ((i + 1) % 3 == 0 && yi < yt.length) {
+        final y = yt[yi++];
+        blended.add({
+          'id': 'yt_${y['ytId']}',
+          'source': 'youtube',
+          'ownerName': 'YouTube Shorts',
+          'ownerRole': 'youtube',
+          'caption': y['caption'],
+          'city': city.isEmpty ? null : city,
+          'thumbUrl': y['thumb'],
+          'ytId': y['ytId'],
+          'kind': 'normal',
+          'likes': 0,
+          'views': 0,
+          'liked': false,
+        });
+      }
+    }
+    // Any leftover YT items ride along at the end of the first page.
+    while (yi < yt.length && items.isNotEmpty) {
+      final y = yt[yi++];
+      blended.add({
+        'id': 'yt_${y['ytId']}',
+        'source': 'youtube',
+        'ownerName': 'YouTube Shorts',
+        'ownerRole': 'youtube',
+        'caption': y['caption'],
+        'city': city.isEmpty ? null : city,
+        'thumbUrl': y['thumb'],
+        'ytId': y['ytId'],
+        'kind': 'normal',
+        'likes': 0,
+        'views': 0,
+        'liked': false,
+      });
+    }
+    // If no creator shorts at all, still show YouTube ones.
+    if (items.isEmpty) {
+      for (final y in yt) {
+        blended.add({
+          'id': 'yt_${y['ytId']}',
+          'source': 'youtube',
+          'ownerName': 'YouTube Shorts',
+          'ownerRole': 'youtube',
+          'caption': y['caption'],
+          'city': city.isEmpty ? null : city,
+          'thumbUrl': y['thumb'],
+          'ytId': y['ytId'],
+          'kind': 'normal',
+          'likes': 0,
+          'views': 0,
+          'liked': false,
+        });
+      }
+    }
+    return _json(200, {'shorts': blended, 'hasMore': hasMore});
+  }
+  return _json(200, {'shorts': items, 'hasMore': hasMore});
+}
+
+/// Toggle a like on a short.
+Future<Response> _likeShort(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in to like.'});
+  final removed = await _db.execute(
+    Sql.named('DELETE FROM short_likes WHERE short_id = @s AND user_id = @u '
+        'RETURNING 1'),
+    parameters: {'s': shortId, 'u': userId},
+  );
+  if (removed.isEmpty) {
+    await _db.execute(
+      Sql.named('INSERT INTO short_likes (short_id, user_id) VALUES (@s, @u) '
+          'ON CONFLICT DO NOTHING'),
+      parameters: {'s': shortId, 'u': userId},
+    );
+    await _db.execute(
+      Sql.named('UPDATE shorts SET likes = likes + 1 WHERE id = @s'),
+      parameters: {'s': shortId},
+    );
+    return _json(200, {'ok': true, 'liked': true});
+  }
+  await _db.execute(
+    Sql.named('UPDATE shorts SET likes = GREATEST(0, likes - 1) WHERE id = @s'),
+    parameters: {'s': shortId},
+  );
+  return _json(200, {'ok': true, 'liked': false});
+}
+
+/// Count a view (fire-and-forget from the client).
+Future<Response> _viewShort(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  await _db.execute(
+    Sql.named('UPDATE shorts SET views = views + 1 WHERE id = @s'),
+    parameters: {'s': shortId},
+  );
+  return _json(200, {'ok': true});
+}
+
+Future<Response> _shortComments(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  final rows = await _db.execute(
+    Sql.named('SELECT id, author_id, author_name, body, created_at '
+        'FROM short_comments WHERE short_id = @s ORDER BY created_at DESC '
+        'LIMIT 200'),
+    parameters: {'s': shortId},
+  );
+  return _json(200, {
+    'comments': [
+      for (final r in rows)
+        {
+          'id': r[0],
+          'authorId': r[1],
+          'authorName': r[2],
+          'body': r[3],
+          'createdAt': (r[4] as DateTime).toIso8601String(),
+        }
+    ]
+  });
+}
+
+Future<Response> _addShortComment(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final text = (body?['body'] as String?)?.trim() ?? '';
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in to comment.'});
+  if (text.isEmpty) return _json(400, {'error': 'Say something first!'});
+  if (text.length > 400) return _json(400, {'error': 'Keep it under 400 chars.'});
+  final unsafe = _unsafeText(text);
+  if (unsafe != null) return _json(400, {'error': unsafe});
+  final user = await _db.execute(
+    Sql.named('SELECT name FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (user.isEmpty) return _json(401, {'error': 'Unknown user.'});
+  await _db.execute(
+    Sql.named('INSERT INTO short_comments (short_id, author_id, author_name, '
+        'body) VALUES (@s, @a, @an, @b)'),
+    parameters: {'s': shortId, 'a': userId, 'an': user.first[0], 'b': text},
+  );
+  return _json(201, {'ok': true});
+}
+
+String _escapeHtml(String t) => t
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+
+/// Public, shareable post page (no auth): an app-styled card view in the
+/// browser. After two minutes an interactive install/sign-up card slides in.
+Future<Response> _publicPost(Request request, String id) async {
+  final postId = int.tryParse(id);
+  if (postId == null) return Response.notFound('Not found');
+  final rows = await _db.execute(
+    Sql.named('''
+      SELECT p.author_name, p.author_role, p.city, p.body, p.created_at,
+             p.image_url, p.media, p.reshared_by, p.reshare_comment,
+             COALESCE(json_object_agg(r.emoji, r.n)
+               FILTER (WHERE r.emoji IS NOT NULL), '{}'::json),
+             (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id)
+      FROM posts p
+      LEFT JOIN (SELECT post_id, emoji, count(*) AS n FROM reactions
+                 GROUP BY post_id, emoji) r ON r.post_id = p.id
+      WHERE p.id = @p
+      GROUP BY p.id
+    '''),
+    parameters: {'p': postId},
+  );
+  if (rows.isEmpty) {
+    return Response.notFound('This post is no longer available.');
+  }
+  final r = rows.first;
+  final name = _escapeHtml(r[0] as String? ?? 'Traveler');
+  final role = (r[1] as String?) == 'creator' ? 'Creator' : 'Traveler';
+  final roleIcon = role == 'Creator' ? '&#127909;' : '&#129523;';
+  final city = _escapeHtml(r[2] as String? ?? '');
+  final body = _escapeHtml(r[3] as String? ?? '');
+  final created = r[4] as DateTime;
+  final when =
+      '${created.day} ${const ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][created.month]} ${created.year}';
+  final sharedBy = r[7] as String?;
+  final shareComment = r[8] as String?;
+  final reactions = (r[9] as Map?) ?? const {};
+  final replyCount = r[10];
+
+  // Media: prefer the media list; fall back to the legacy single image.
+  final media = <Map<String, dynamic>>[];
+  if (r[6] is List) {
+    for (final m in r[6] as List) {
+      if (m is Map && m['url'] is String) {
+        media.add({'type': m['type'], 'url': m['url'], 'thumb': m['thumb']});
+      }
+    }
+  }
+  if (media.isEmpty && r[5] is String) {
+    media.add({'type': 'image', 'url': r[5]});
+  }
+  const base = 'https://mrtourguide.patienceai.in';
+  String abs(String u) => u.startsWith('http') ? u : '$base/api$u';
+
+  final slides = StringBuffer();
+  for (final m in media) {
+    final url = _escapeHtml(abs(m['url'] as String));
+    if (m['type'] == 'video') {
+      final poster = m['thumb'] is String
+          ? ' poster="${_escapeHtml(abs(m['thumb'] as String))}"'
+          : '';
+      slides.write('<div class="slide"><video controls playsinline '
+          'preload="metadata"$poster src="$url"></video></div>');
+    } else {
+      slides.write('<div class="slide"><img src="$url" alt=""></div>');
+    }
+  }
+  final reactHtml = StringBuffer();
+  var reactTotal = 0;
+  reactions.forEach((emoji, n) {
+    reactTotal += (n as num).toInt();
+    reactHtml.write('<span class="rx">$emoji&nbsp;$n</span>');
+  });
+  final ogImage = media.isNotEmpty
+      ? abs((media.first['thumb'] ?? media.first['url']) as String)
+      : '$base/api/files/covers/placeholder.jpg';
+  final preview =
+      _escapeHtml((r[3] as String? ?? '').replaceAll('\n', ' ')).trim();
+
+  final html = '''<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$name on Mr.Tour Guide</title>
+<meta property="og:title" content="$name on Mr.Tour Guide">
+<meta property="og:description" content="$preview">
+<meta property="og:image" content="${_escapeHtml(ogImage)}">
+<meta property="og:type" content="article">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,sans-serif;
+  background:#F3F5FA;min-height:100vh;padding:18px 12px 120px}
+.wrap{max-width:520px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:8px;margin:2px 4px 14px;
+  color:#1E319D;font-weight:800;font-size:17px}
+.brand span{background:#1E319D;color:#fff;border-radius:9px;
+  padding:4px 9px;font-size:14px}
+.card{background:#fff;border-radius:16px;padding:16px;
+  box-shadow:0 6px 24px rgba(30,49,157,.10)}
+.head{display:flex;align-items:center;gap:10px}
+.av{width:44px;height:44px;border-radius:50%;background:#1E319D;color:#fff;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:19px}
+.who b{font-size:15px;color:#0d1330}
+.sub{font-size:12px;color:#7a7f95}
+.badge{font-size:11px;background:#eef1ff;color:#1E319D;border-radius:8px;
+  padding:2px 7px;margin-left:6px}
+.shared{font-size:12.5px;color:#5a5f78;background:#f4f6ff;border-radius:10px;
+  padding:7px 10px;margin:10px 0 0}
+.body{font-size:14.5px;line-height:1.5;color:#23283e;margin-top:12px;
+  white-space:pre-wrap}
+.carousel{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;
+  gap:8px;margin-top:12px;border-radius:12px;-webkit-overflow-scrolling:touch}
+.carousel::-webkit-scrollbar{display:none}
+.slide{flex:0 0 100%;scroll-snap-align:center}
+.slide img,.slide video{width:100%;max-height:420px;object-fit:cover;
+  border-radius:12px;display:block;background:#000}
+.count{font-size:11px;color:#fff;background:rgba(13,19,48,.65);
+  border-radius:8px;padding:2px 8px;position:relative;top:-34px;left:10px;
+  display:inline-block}
+.foot{display:flex;align-items:center;gap:8px;margin-top:10px;
+  flex-wrap:wrap;color:#5a5f78;font-size:13px}
+.rx{background:#f4f6ff;border-radius:10px;padding:3px 8px;font-size:12.5px}
+.cta{position:fixed;left:0;right:0;bottom:-100%;transition:bottom .5s
+  cubic-bezier(.2,.9,.3,1.1);padding:14px}
+.cta.show{bottom:0}
+.cta .in{max-width:520px;margin:0 auto;background:linear-gradient(135deg,
+  #1E319D,#3D53D8);border-radius:18px;padding:18px;color:#fff;
+  box-shadow:0 -8px 30px rgba(30,49,157,.35)}
+.cta h3{font-size:16.5px;margin-bottom:4px}
+.cta p{font-size:12.5px;opacity:.9}
+.cta .row{display:flex;gap:10px;margin-top:12px}
+.cta a{flex:1;text-align:center;border-radius:12px;padding:11px 8px;
+  font-size:13.5px;font-weight:700;text-decoration:none}
+.cta a.dl{background:#fff;color:#1E319D}
+.cta a.web{border:1.5px solid rgba(255,255,255,.7);color:#fff}
+.cta .x{float:right;background:none;border:none;color:#fff;font-size:18px;
+  cursor:pointer;opacity:.8}
+@media (prefers-color-scheme: dark){
+  body{background:#0d1020}.card{background:#171b2e}
+  .who b{color:#eef0ff}.body{color:#d9dcef}
+  .rx,.shared{background:#20263f}.brand{color:#aebaff}}
+</style></head><body>
+<div class="wrap">
+  <div class="brand"><span>Mr.Tour Guide</span> Community</div>
+  <div class="card">
+    <div class="head">
+      <div class="av">${name.isEmpty ? 'T' : name[0].toUpperCase()}</div>
+      <div class="who"><b>$name</b><span class="badge">$roleIcon $role</span>
+        <div class="sub">$when${city.isEmpty ? '' : ' &middot; $city'}</div>
+      </div>
+    </div>
+    ${sharedBy == null ? '' : '<div class="shared">&#8634; ${_escapeHtml(sharedBy)} shared this${shareComment == null || shareComment.isEmpty ? '' : ' &mdash; &ldquo;${_escapeHtml(shareComment)}&rdquo;'}</div>'}
+    <div class="body">$body</div>
+    ${media.isEmpty ? '' : '<div class="carousel" id="car">$slides</div>${media.length > 1 ? '<span class="count" id="cnt">1/${media.length}</span>' : ''}'}
+    <div class="foot">
+      $reactHtml
+      <span>$reactTotal reactions</span> &middot; <span>$replyCount replies</span>
+    </div>
+  </div>
+</div>
+<div class="cta" id="cta"><div class="in">
+  <button class="x" onclick="document.getElementById('cta').classList.remove('show')">&times;</button>
+  <h3>Feel this journey, don&rsquo;t just read it</h3>
+  <p>Mr.Tour Guide turns travel videos into touch &mdash; haptics, MR/VR and
+  an AI trip planner. Join $name and the community.</p>
+  <div class="row">
+    <a class="dl" href="$base/api/apk">&#11015; Download the app</a>
+    <a class="web" href="$base/">Explore Mr.Tour Guide</a>
+  </div>
+</div></div>
+<script>
+setTimeout(function(){document.getElementById('cta').classList.add('show')},120000);
+var car=document.getElementById('car'),cnt=document.getElementById('cnt');
+if(car&&cnt){car.addEventListener('scroll',function(){
+  var i=Math.round(car.scrollLeft/car.clientWidth)+1;
+  cnt.textContent=i+'/'+${media.length};},{passive:true});}
+</script>
+</body></html>''';
+  return Response.ok(html, headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'public, max-age=300',
+  });
+}
+
 Future<Response> _createPost(Request request) async {
   final body = await _readJsonBody(request);
   final userId = body?['userId'] as int?;
@@ -2323,10 +3146,40 @@ Future<Response> _createPost(Request request) async {
       ? imageUrl
       : null;
 
+  // Multi-media attachments: up to 10 images + 2 videos per post, every
+  // URL must come from our own upload pipeline.
+  final mediaIn = body?['media'] as List?;
+  final media = <Map<String, String>>[];
+  if (mediaIn != null) {
+    var images = 0, videos = 0;
+    for (final m in mediaIn) {
+      if (m is! Map) continue;
+      final type = m['type'] as String?;
+      final url = (m['url'] as String?)?.trim() ?? '';
+      final thumb = (m['thumb'] as String?)?.trim();
+      if (!url.startsWith('/files/community/')) continue;
+      if (type == 'image' && images < 10) {
+        images++;
+        media.add({'type': 'image', 'url': url});
+      } else if (type == 'video' && videos < 2) {
+        videos++;
+        media.add({
+          'type': 'video',
+          'url': url,
+          if (thumb != null && thumb.startsWith('/files/community/'))
+            'thumb': thumb,
+        });
+      }
+    }
+  }
+  // Older clients read image_url only — mirror the first image there.
+  final firstImage = media
+      .firstWhere((m) => m['type'] == 'image', orElse: () => const {})['url'];
+
   final rows = await _db.execute(
     Sql.named('INSERT INTO posts (community, author_id, author_name, '
-        'author_role, city, body, image_url) VALUES (@community, @id, @name, '
-        '@role, @city, @body, @image) RETURNING id'),
+        'author_role, city, body, image_url, media) VALUES (@community, @id, '
+        '@name, @role, @city, @body, @image, @media) RETURNING id'),
     parameters: {
       'community': community,
       'id': userId,
@@ -2334,7 +3187,8 @@ Future<Response> _createPost(Request request) async {
       'role': user.first[1],
       'city': (city?.isEmpty ?? true) ? null : city,
       'body': text,
-      'image': safeImage,
+      'image': firstImage ?? safeImage,
+      'media': media.isEmpty ? null : jsonEncode(media),
     },
   );
   return _json(201, {'ok': true, 'id': rows.first[0]});
@@ -2796,18 +3650,21 @@ Future<Response> _aiSearch(Request request) async {
           'content':
               "You are Mr.Tour Guide's travel AI helper. The user searches "
                   'for places, monuments or travel experiences (often in '
-                  'India). Reply with a MINIMAL overview: 2-4 short '
-                  'sentences on what the place feels like, accessibility '
-                  'for elderly/disabled visitors, and current practical '
-                  'tips. Then, when the query is about a reachable place, '
-                  "add one line starting with 'Getting there:' (realistic "
-                  'flight and train options) and one line starting with '
-                  "'Stay:' (hotel and homestay suggestions with typical "
-                  'budgets). No other headings, no lists, no markdown.'
+                  'India). Structure the reply so it renders as clean cards: '
+                  'FIRST a 2-3 sentence overview paragraph (what it feels '
+                  'like + accessibility for elderly/disabled visitors), THEN '
+                  'these labelled sections, each on its own line as '
+                  '"Label: one concise sentence" — only include a label when '
+                  'you have something useful for it: '
+                  '"Getting there:" (realistic flight/train options), '
+                  '"Stay:" (hotel + homestay with typical budgets), '
+                  '"Best time:" (season/months), "Tips:" (1-2 practical '
+                  'notes). Keep it tight. No markdown, no bullet characters, '
+                  'no headings other than those exact labels.'
         },
         {'role': 'user', 'content': query},
       ],
-      'max_tokens': 380,
+      'max_tokens': 480,
       'temperature': 0.4,
     }));
     final res = await req.close();
@@ -3930,6 +4787,7 @@ Future<void> main() async {
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_id INTEGER",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_role TEXT",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshare_comment TEXT",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS media JSONB",
   ]) {
     try {
       await _db.execute(ddl);
@@ -3941,6 +4799,38 @@ Future<void> main() async {
     await _db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_key '
         'ON users (lower(username)) WHERE username IS NOT NULL');
   } catch (_) {}
+
+  // GuideVibe: short vertical videos (Reels/Shorts). Kept separate from the
+  // long-form `videos` table so the two features never interfere. haptics is
+  // the same {track, fine, events} contract used by the experience player.
+  await _db.execute('CREATE TABLE IF NOT EXISTS shorts ('
+      'id SERIAL PRIMARY KEY, '
+      'owner_id INTEGER NOT NULL, '
+      'owner_name TEXT NOT NULL, '
+      'owner_role TEXT NOT NULL, '
+      'caption TEXT NOT NULL DEFAULT \'\', '
+      'city TEXT, '
+      'filename TEXT NOT NULL, '
+      'thumb_url TEXT, '
+      'kind TEXT NOT NULL DEFAULT \'normal\', ' // normal | vr | mr
+      'haptics JSONB, '
+      'likes INTEGER NOT NULL DEFAULT 0, '
+      'views INTEGER NOT NULL DEFAULT 0, '
+      'size_bytes BIGINT NOT NULL DEFAULT 0, '
+      'status TEXT NOT NULL DEFAULT \'processing\', '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  await _db.execute('CREATE TABLE IF NOT EXISTS short_likes ('
+      'short_id INTEGER NOT NULL, '
+      'user_id INTEGER NOT NULL, '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
+      'PRIMARY KEY (short_id, user_id))');
+  await _db.execute('CREATE TABLE IF NOT EXISTS short_comments ('
+      'id SERIAL PRIMARY KEY, '
+      'short_id INTEGER NOT NULL, '
+      'author_id INTEGER NOT NULL, '
+      'author_name TEXT NOT NULL, '
+      'body TEXT NOT NULL, '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
 
   // Security / audit trail for the admin panel.
   await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
@@ -4026,6 +4916,14 @@ Future<void> main() async {
     ..post('/community/posts/<id>/replies', _addReply)
     ..post('/community/replies/<id>/delete', _deleteReply)
     ..post('/community/upload-image', _uploadCommunityImage)
+    ..post('/community/upload-video', _uploadCommunityVideo)
+    ..get('/post/<id>', _publicPost)
+    ..get('/guidevibe', _guidevibeFeed)
+    ..post('/guidevibe/upload', _uploadShort)
+    ..post('/guidevibe/<id>/like', _likeShort)
+    ..post('/guidevibe/<id>/view', _viewShort)
+    ..get('/guidevibe/<id>/comments', _shortComments)
+    ..post('/guidevibe/<id>/comments', _addShortComment)
     ..post('/upload', _upload)
     ..post('/videos/<id>/config', _updateConfig)
     ..post('/videos/<id>/thumbnail', _uploadThumbnail)

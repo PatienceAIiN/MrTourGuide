@@ -3,12 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mrtouride/ar_view.dart';
 import 'package:mrtouride/constant.dart';
+import 'package:mrtouride/guidevibe_page.dart';
 import 'package:mrtouride/home_page.dart';
 import 'package:mrtouride/navpages/community_page.dart';
 import 'package:mrtouride/navpages/itinerary_page.dart';
 import 'package:mrtouride/navpages/dashboard_page.dart';
 import 'package:mrtouride/navpages/search_page.dart';
-import 'package:mrtouride/services/api_base.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/haptic_service.dart';
 import 'package:mrtouride/services/notification_service.dart';
@@ -19,9 +19,8 @@ import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 import 'package:mrtouride/widgets/content_toast.dart';
+import 'package:mrtouride/widgets/notifications_sheet.dart';
 import 'package:mrtouride/widgets/update_flow.dart';
-import 'package:mrtouride/widgets/ux.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class MainPage extends StatefulWidget {
   @override
@@ -34,14 +33,15 @@ class _MainPageState extends State<MainPage> {
   bool hasNewContent = false;
   Timer? _newContentTimer;
 
-  // Ordered exactly like the navbar so swipes travel left→right in
-  // sequence: Home → Studio → Planner → Community → Profile. Search is
-  // last (hidden from the bar; opened from the home search field).
+  // Ordered so swipes travel in sequence: Home → Studio → Planner →
+  // Community → GuideVibe. Search is last (index 5, hidden from the bar;
+  // opened from the home search field).
   late final List<Widget> pages = [
     HomeScreen(onSelectTab: onTap),
     DashboardPage(onSelectTab: onTap),
     ItineraryPage(onSelectTab: onTap),
     CommunityPage(onSelectTab: onTap),
+    GuideVibePage(onSelectTab: onTap),
     SearchPage(onSelectTab: onTap),
   ];
 
@@ -164,6 +164,20 @@ class _MainPageState extends State<MainPage> {
             ),
             const NavEntry(
                 icon: Icons.forum_rounded, label: 'Community', tabIndex: 3),
+            const NavEntry(
+                icon: Icons.play_circle_outline_rounded,
+                label: 'GuideVibe',
+                tabIndex: 4,
+                color: Color(0xFFFF4D5E)),
+            NavEntry(
+              icon: Icons.notifications_none_rounded,
+              label: 'Alerts',
+              badge: hasNewContent,
+              action: () async {
+                await showNotificationsSheet(context, onSelectTab: onTap);
+                if (mounted) setState(() => hasNewContent = false);
+              },
+            ),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',

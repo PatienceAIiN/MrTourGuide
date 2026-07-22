@@ -298,9 +298,9 @@ class _DetailScreenState extends State<DetailScreen> {
                                     child: Text(
                                       '${weather!.temperatureC.round()}°C'
                                       ' · ${weather!.description}',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           fontSize: 11,
-                                          color: Color(0xFF1E319D),
+                                          color: brandInk(context),
                                           fontWeight: FontWeight.w600),
                                     ),
                                   ),

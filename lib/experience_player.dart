@@ -38,6 +38,7 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
   Timer? _hideTimer;
   Timer? _hapticTimer;
   int _nextEvent = 0;
+  int _recoilUntilMs = 0;
 
   /// Traveler-tunable feel style: 'adaptive' answers impacts with recoil
   /// pulses on top of the smooth curve; 'smooth' is the curve only.
@@ -90,10 +91,16 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
     final events = widget.video.hapticEvents;
     if (track.isNotEmpty) {
       _nextEvent = 0;
-      // Feel engine: glide along the energy curve; when the ML marked an
-      // impact (gunshot, slam, drum hit) answer with a recoil — hard hit
-      // then a soft settle, like a console controller.
-      _hapticTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      _recoilUntilMs = 0;
+      // Feel engine: a fast tick glides smoothly along the energy curve
+      // (interpolated between the 250ms samples) so sustained sound feels
+      // continuous, not a stutter; when the ML marked an impact (gunshot,
+      // slam, drum hit) it answers with a recoil — hard hit then a soft
+      // settle, like a console controller. Pulses are cut a touch longer
+      // than the tick so consecutive ones overlap into one vibration.
+      const tickMs = 90;
+      _hapticTimer =
+          Timer.periodic(const Duration(milliseconds: tickMs), (_) {
         final c = controller;
         if (c == null || !c.value.isPlaying) return;
         final ms = c.value.position.inMilliseconds;
@@ -105,10 +112,12 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
           if (_nextEvent < events.length) {
             final e = events[_nextEvent];
             final t = (e['t'] as num).toInt();
-            if ((ms - t).abs() <= 250) {
+            if ((ms - t).abs() <= 130) {
               _nextEvent++;
               final punch = ((e['power'] as num) * intensity).clamp(0.0, 1.0);
               Haptics.recoil(punch.toDouble());
+              // Let the recoil breathe — don't stomp it with level pulses.
+              _recoilUntilMs = ms + 230;
               if (mounted) {
                 setState(() => _pulse = true);
                 Timer(const Duration(milliseconds: 220), () {
@@ -119,17 +128,20 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
             }
           }
         }
-        final idx = perSecond ? ms ~/ 1000 : ms ~/ 250;
-        final frac = perSecond ? (ms % 1000) / 1000.0 : (ms % 250) / 250.0;
+        if (ms < _recoilUntilMs) return; // still settling from a recoil
+        final step = perSecond ? 1000 : 250;
+        final idx = ms ~/ step;
+        final frac = (ms % step) / step;
         final a = track[idx.clamp(0, track.length - 1)];
         final b = track[(idx + 1).clamp(0, track.length - 1)];
         final energy = a + (b - a) * frac;
         final feel = (energy * intensity).clamp(0.0, 1.0);
         if (feel < 0.06) return; // near-silence: no feel
-        Haptics.level(feel);
-        if (mounted && frac < 0.3) {
+        // Duration a hair over the tick → overlapping, continuous feel.
+        Haptics.level(feel, durationMs: tickMs + 40);
+        if (mounted && !_pulse) {
           setState(() => _pulse = true);
-          Timer(const Duration(milliseconds: 180), () {
+          Timer(const Duration(milliseconds: 140), () {
             if (mounted) setState(() => _pulse = false);
           });
         }

@@ -184,11 +184,11 @@ class _MyPageState extends State<MyPage> {
                                     decoration: BoxDecoration(
                                       color: cardBg(context),
                                       shape: BoxShape.circle,
-                                      border:
-                                          Border.all(color: blue, width: 1.5),
+                                      border: Border.all(
+                                          color: brandInk(context), width: 1.5),
                                     ),
-                                    child: const Icon(Icons.photo_camera,
-                                        size: 14, color: blue),
+                                    child: Icon(Icons.photo_camera,
+                                        size: 14, color: brandInk(context)),
                                   ),
                                 ),
                               ),
@@ -217,11 +217,12 @@ class _MyPageState extends State<MyPage> {
                                       child: Container(
                                         padding: const EdgeInsets.all(6),
                                         decoration: BoxDecoration(
-                                          color: blue.withValues(alpha: 0.1),
+                                          color: brandInk(context)
+                                              .withValues(alpha: 0.15),
                                           shape: BoxShape.circle,
                                         ),
-                                        child: const Icon(Icons.edit,
-                                            size: 16, color: blue),
+                                        child: Icon(Icons.edit,
+                                            size: 16, color: brandInk(context)),
                                       ),
                                     ),
                                 ],
