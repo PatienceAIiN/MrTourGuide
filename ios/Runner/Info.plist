@@ -4,8 +4,17 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used to auto-fill the location when you publish an experience.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Lets you pick videos, covers and photos to share.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+	</dict>
 	<key>CFBundleDisplayName</key>
-	<string>Mrtouride</string>
+	<string>Mr.TourGuide</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

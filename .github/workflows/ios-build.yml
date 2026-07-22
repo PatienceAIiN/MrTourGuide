@@ -1,0 +1,44 @@
+# Builds the iOS app in the cloud (this repo's dev machine is Linux, and
+# iOS can only compile on macOS). Produces an UNSIGNED build that proves
+# the code compiles for iPhone; signing for devices/App Store needs an
+# Apple Developer account.
+name: iOS build
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['ios-*']
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # Firebase iOS config is required for firebase_messaging. Add the
+      # iOS app in the Firebase console (bundle id com.example.mrtouride)
+      # and store GoogleService-Info.plist base64 in this repo secret.
+      - name: Restore GoogleService-Info.plist
+        if: ${{ vars.HAS_IOS_FIREBASE == 'true' }}
+        run: echo "${{ secrets.IOS_GOOGLE_SERVICE_PLIST_B64 }}" | base64 -d > ios/Runner/GoogleService-Info.plist
+
+      - run: flutter pub get
+
+      - name: Build iOS (unsigned)
+        run: flutter build ios --release --no-codesign --dart-define=API_BASE=https://mrtourguide.patienceai.in/api
+
+      - name: Package Runner.app
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -qr mrtouride-ios-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mrtouride-ios-unsigned
+          path: build/ios/iphoneos/mrtouride-ios-unsigned.ipa
