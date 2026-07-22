@@ -385,6 +385,7 @@ Map<String, Object?> _videoRowToJson(List<dynamic> row) => {
       'mime': row[4],
       'sizeBytes': row[5],
       'hapticsReady': row[6] != null,
+      'haptics': row[6],
       'uploadedAt': (row[7] as DateTime).toIso8601String(),
       'status': row[8],
       'config': row[9],
@@ -434,6 +435,20 @@ void _scheduleMlProcessing(int videoId) {
         }
       }
 
+      // Real audio-energy analysis: background sound, music, wind and
+      // ambience all raise the per-second energy, which becomes the haptic
+      // track — light feel in quiet moments, heavy in loud ones.
+      List<double> track = const [];
+      final trackRows = await _db.execute(
+        Sql.named('SELECT city, filename FROM videos WHERE id = @id'),
+        parameters: {'id': videoId},
+      );
+      if (trackRows.isNotEmpty) {
+        final file = await _storage.open(
+            trackRows.first[0] as String, trackRows.first[1] as String);
+        if (file != null) track = await _audioEnergyTrack(file.path);
+      }
+
       await _db.execute(
         Sql.named("UPDATE videos SET status = 'ready', haptics = @haptics, "
             'thumb_url = @thumb WHERE id = @id'),
@@ -442,18 +457,343 @@ void _scheduleMlProcessing(int videoId) {
           'thumb': thumbUrl,
           'haptics': jsonEncode({
             'profile': 'auto',
-            'source': 'ml-sim',
+            'source': track.isEmpty ? 'ml-sim' : 'audio-energy',
             'generatedAt': DateTime.now().toIso8601String(),
-            'events': 8 + Random().nextInt(24),
+            'track': track,
           }),
         },
       );
-      print('ML-sim: video $videoId processed (trim/enhance/thumb/haptics).');
+      print('ML: video $videoId processed '
+          '(thumb + ${track.length}s haptic track).');
     } catch (e) {
       print('ML-sim: failed for video $videoId: $e');
     }
   });
 }
+
+/// Per-second normalized audio energy (0..1) — the haptic track. Uses
+/// ffmpeg's astats RMS levels; silence → 0, the loudest second → 1.
+/// Fire-and-forget audit log — powers the admin activity view.
+void _logActivity(String actor, String action, String details) {
+  () async {
+    try {
+      await _db.execute(
+        Sql.named('INSERT INTO activity_logs (actor, action, details) '
+            'VALUES (@a, @ac, @d)'),
+        parameters: {'a': actor, 'ac': action, 'd': details},
+      );
+    } catch (_) {}
+  }();
+}
+
+Future<List<double>> _audioEnergyTrack(String path) async {
+  try {
+    final result = await Process.run('ffmpeg', [
+      '-i', path, '-map', '0:a:0?', '-af',
+      'asetnsamples=44100,astats=metadata=1:reset=1,'
+          'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+      '-f', 'null', '-',
+    ]).timeout(const Duration(minutes: 2));
+    final db = <double>[];
+    for (final m in RegExp(r'RMS_level=(-?[\d.]+|-inf)')
+        .allMatches(result.stdout as String)) {
+      final raw = m.group(1)!;
+      db.add(raw == '-inf' ? -90.0 : (double.tryParse(raw) ?? -90.0));
+      if (db.length >= 600) break; // cap at 10 minutes
+    }
+    if (db.isEmpty) return const [];
+    // Map dB (-60 quiet .. -5 loud) to 0..1 with gentle smoothing.
+    final raw = [
+      for (final v in db) ((v + 60) / 55).clamp(0.0, 1.0)
+    ];
+    final track = <double>[];
+    for (var i = 0; i < raw.length; i++) {
+      final prev = i > 0 ? raw[i - 1] : raw[i];
+      final next = i < raw.length - 1 ? raw[i + 1] : raw[i];
+      track.add(double.parse(
+          ((prev + raw[i] * 2 + next) / 4).toStringAsFixed(3)));
+    }
+    return track;
+  } catch (_) {
+    return const [];
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Admin panel (/admin) — Basic-auth gated user CRUD + activity/audit logs.
+// Credentials come from ADMIN_USER / ADMIN_PASS env (never committed).
+// ---------------------------------------------------------------------------
+
+bool _adminAuthed(Request request) {
+  final user = Platform.environment['ADMIN_USER'] ?? 'admin';
+  final pass = Platform.environment['ADMIN_PASS'] ?? '';
+  if (pass.isEmpty) return false; // panel disabled until configured
+  final header = request.headers['authorization'] ?? '';
+  if (!header.startsWith('Basic ')) return false;
+  try {
+    final decoded = utf8.decode(base64.decode(header.substring(6)));
+    return decoded == '$user:$pass';
+  } catch (_) {
+    return false;
+  }
+}
+
+Response _adminChallenge() => Response(401,
+    headers: {'WWW-Authenticate': 'Basic realm="Mr.TourGuide Admin"'},
+    body: 'Authentication required.');
+
+Future<Response> _adminPage(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  _logActivity('admin', 'admin-login', 'panel opened');
+  return Response.ok(_adminHtml, headers: {'content-type': 'text/html'});
+}
+
+Future<Response> _adminUsers(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final rows = await _db.execute(
+      'SELECT u.id, u.name, u.email, u.role, u.provider, u.verified, '
+      'u.created_at, u.about, '
+      '(SELECT count(*) FROM videos v WHERE v.owner_id = u.id), '
+      '(SELECT count(*) FROM posts p WHERE p.author_id = u.id), '
+      '(SELECT count(*) FROM itineraries i WHERE i.user_id = u.id) '
+      'FROM users u ORDER BY u.id DESC');
+  return _json(200, {
+    'users': [
+      for (final r in rows)
+        {
+          'id': r[0],
+          'name': r[1],
+          'email': r[2],
+          'role': r[3],
+          'provider': r[4],
+          'verified': r[5],
+          'joined': (r[6] as DateTime).toIso8601String(),
+          'about': r[7],
+          'uploads': r[8],
+          'posts': r[9],
+          'itineraries': r[10],
+        }
+    ]
+  });
+}
+
+Future<Response> _adminCreateUser(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final body = await _readJsonBody(request);
+  final name = (body?['name'] as String?)?.trim() ?? '';
+  final email = (body?['email'] as String?)?.trim().toLowerCase() ?? '';
+  final password = body?['password'] as String? ?? '';
+  final role = body?['role'] == 'creator' ? 'creator' : 'traveler';
+  if (name.isEmpty || !email.contains('@') || password.length < 6) {
+    return _json(400,
+        {'error': 'Name, valid email and a 6+ char password required.'});
+  }
+  final salt = _newSalt();
+  try {
+    final rows = await _db.execute(
+      Sql.named('INSERT INTO users (name, email, password_hash, salt, role, '
+          "provider, verified) VALUES (@n, @e, @h, @s, @r, 'password', true) "
+          'RETURNING id'),
+      parameters: {
+        'n': name,
+        'e': email,
+        'h': _hashPassword(password, salt),
+        's': salt,
+        'r': role,
+      },
+    );
+    _logActivity('admin', 'admin-user-created', '$name <$email> role=$role');
+    return _json(201, {'id': rows.first[0]});
+  } catch (_) {
+    return _json(409, {'error': 'That email already has an account.'});
+  }
+}
+
+Future<Response> _adminUpdateUser(Request request, String id) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final userId = int.tryParse(id);
+  if (userId == null) return _json(400, {'error': 'Bad user id.'});
+  final body = await _readJsonBody(request);
+  final name = (body?['name'] as String?)?.trim();
+  final role = body?['role'] as String?;
+  final verified = body?['verified'] as bool?;
+  final rows = await _db.execute(
+    Sql.named('UPDATE users SET '
+        'name = COALESCE(@n, name), '
+        'role = COALESCE(@r, role), '
+        'verified = COALESCE(@v, verified) '
+        'WHERE id = @id RETURNING name, email'),
+    parameters: {
+      'n': (name?.isEmpty ?? true) ? null : name,
+      'r': const ['creator', 'traveler'].contains(role) ? role : null,
+      'v': verified,
+      'id': userId,
+    },
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'User not found.'});
+  _logActivity('admin', 'admin-user-updated',
+      '#$userId ${rows.first[0]} <${rows.first[1]}> '
+      '${name != null ? 'name→$name ' : ''}'
+      '${role != null ? 'role→$role ' : ''}'
+      '${verified != null ? 'verified→$verified' : ''}');
+  return _json(200, {'ok': true});
+}
+
+Future<Response> _adminDeleteUser(Request request, String id) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final userId = int.tryParse(id);
+  if (userId == null) return _json(400, {'error': 'Bad user id.'});
+  final exists = await _db.execute(
+    Sql.named('SELECT name, email, role, created_at FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (exists.isEmpty) return _json(404, {'error': 'User not found.'});
+  final u = exists.first;
+  try {
+    for (final sql in [
+      'DELETE FROM reactions WHERE user_id = @id',
+      'DELETE FROM replies WHERE author_id = @id',
+      'DELETE FROM reactions WHERE post_id IN '
+          '(SELECT id FROM posts WHERE author_id = @id)',
+      'DELETE FROM replies WHERE post_id IN '
+          '(SELECT id FROM posts WHERE author_id = @id)',
+      'DELETE FROM posts WHERE author_id = @id',
+      'DELETE FROM videos WHERE owner_id = @id',
+      'DELETE FROM users WHERE id = @id',
+    ]) {
+      await _db.execute(Sql.named(sql), parameters: {'id': userId});
+    }
+    _logActivity(
+        'admin',
+        'user-deleted',
+        '${u[0]} <${u[1]}> role=${u[2]} '
+            'joined=${(u[3] as DateTime).toIso8601String().substring(0, 10)} '
+            '(removed by admin)');
+    return _json(200, {'ok': true});
+  } catch (_) {
+    return _json(500, {'error': 'Could not delete the user.'});
+  }
+}
+
+Future<Response> _adminLogs(Request request) async {
+  if (!_adminAuthed(request)) return _adminChallenge();
+  final action = request.url.queryParameters['action'];
+  final rows = await _db.execute(
+    Sql.named('SELECT at, actor, action, details FROM activity_logs '
+        '${action != null ? 'WHERE action = @a ' : ''}'
+        'ORDER BY at DESC LIMIT 200'),
+    parameters: {if (action != null) 'a': action},
+  );
+  return _json(200, {
+    'logs': [
+      for (final r in rows)
+        {
+          'at': (r[0] as DateTime).toIso8601String(),
+          'actor': r[1],
+          'action': r[2],
+          'details': r[3],
+        }
+    ]
+  });
+}
+
+const _adminHtml = r"""<!doctype html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Mr.TourGuide Admin</title>
+<style>
+:root{--bg:#0e1116;--card:#171c24;--ink:#e8ecf2;--mut:#8b95a5;--blue:#3cebff;--purple:#b17ff5;--red:#ff6b6b;--green:#5bd6a2}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;padding:20px;max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin-bottom:2px}h1 span{color:var(--blue)}.sub{color:var(--mut);font-size:12px;margin-bottom:18px}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}.tabs button{background:var(--card);color:var(--mut);border:1px solid #2a3240;padding:8px 16px;border-radius:10px;cursor:pointer;font-size:13px}
+.tabs button.on{color:var(--ink);border-color:var(--blue)}
+.card{background:var(--card);border:1px solid #232b38;border-radius:14px;padding:16px;margin-bottom:14px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}th{color:var(--mut);text-align:left;font-weight:600;padding:6px 10px;border-bottom:1px solid #2a3240}
+td{padding:8px 10px;border-bottom:1px solid #1d2430}tr.u{cursor:pointer}tr.u:hover{background:#1b2230}
+.chip{display:inline-block;padding:1px 9px;border-radius:9px;font-size:11px;font-weight:700}
+.creator{background:rgba(177,127,245,.15);color:var(--purple)}.traveler{background:rgba(60,235,255,.12);color:var(--blue)}
+.ok{color:var(--green)}.no{color:var(--red)}
+input,select{background:#0e1420;border:1px solid #2a3240;color:var(--ink);padding:8px 10px;border-radius:8px;font-size:13px;width:100%}
+label{font-size:11px;color:var(--mut);display:block;margin:8px 0 3px}
+.btn{background:var(--blue);color:#04222b;border:0;padding:9px 18px;border-radius:9px;font-weight:700;cursor:pointer;font-size:13px}
+.btn.red{background:var(--red);color:#fff}.btn.ghost{background:transparent;border:1px solid #2a3240;color:var(--mut)}
+.row{display:flex;gap:10px;flex-wrap:wrap}.row>div{flex:1;min-width:140px}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;padding:16px}
+#modal .box{background:var(--card);border:1px solid #2a3240;border-radius:16px;padding:20px;width:100%;max-width:460px;max-height:90vh;overflow:auto}
+.stat{display:inline-block;margin-right:14px;color:var(--mut);font-size:12px}.stat b{color:var(--ink);font-size:16px;display:block}
+.log-act{font-weight:700}.act-login{color:var(--blue)}.act-signup{color:var(--green)}.act-user-deleted{color:var(--red)}
+.act-video-upload{color:var(--purple)}.act-admin-login,.act-admin-user-created,.act-admin-user-updated{color:#f0b354}
+.mut{color:var(--mut);font-size:12px}
+</style></head><body>
+<h1>Mr.Tour Guide <span>Admin</span></h1>
+<div class="sub">User management · security activity · a product of PatienceAI</div>
+<div class="tabs">
+<button id="t-users" class="on" onclick="show('users')">Users</button>
+<button id="t-logs" onclick="show('logs')">Activity logs</button>
+<button id="t-deleted" onclick="show('deleted')">Deleted users</button>
+<button id="t-add" onclick="show('add')">+ Add user</button>
+</div>
+<div id="p-users" class="card"><div id="stats"></div><table><thead><tr>
+<th>#</th><th>Name</th><th>Email</th><th>Role</th><th>Verified</th><th>Uploads</th><th>Posts</th><th>Joined</th>
+</tr></thead><tbody id="users"></tbody></table></div>
+<div id="p-logs" class="card" style="display:none"><table><thead><tr>
+<th>When</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead><tbody id="logs"></tbody></table></div>
+<div id="p-deleted" class="card" style="display:none"><div class="mut" style="margin-bottom:8px">Every removed account with its details — self-service and admin removals.</div>
+<table><thead><tr><th>When</th><th>Details</th></tr></thead><tbody id="deleted"></tbody></table></div>
+<div id="p-add" class="card" style="display:none">
+<div class="row"><div><label>Name</label><input id="a-name"></div><div><label>Email</label><input id="a-email"></div></div>
+<div class="row"><div><label>Password</label><input id="a-pass" type="password"></div><div><label>Role</label>
+<select id="a-role"><option value="traveler">Traveler</option><option value="creator">Creator</option></select></div></div>
+<div style="margin-top:12px"><button class="btn" onclick="createUser()">Create user</button> <span id="a-msg" class="mut"></span></div></div>
+<div id="modal" onclick="if(event.target===this)this.style.display='none'"><div class="box">
+<h3 id="m-title" style="margin-bottom:2px"></h3><div id="m-sub" class="mut" style="margin-bottom:10px"></div>
+<div id="m-stats" style="margin-bottom:8px"></div>
+<label>Name</label><input id="m-name">
+<label>Role</label><select id="m-role"><option value="traveler">Traveler</option><option value="creator">Creator</option></select>
+<label>Verified</label><select id="m-verified"><option value="true">Verified</option><option value="false">Not verified</option></select>
+<div style="margin-top:14px;display:flex;gap:8px">
+<button class="btn" onclick="saveUser()">Save changes</button>
+<button class="btn red" onclick="deleteUser()">Delete user</button>
+<button class="btn ghost" onclick="modal.style.display='none'">Close</button></div>
+<div id="m-msg" class="mut" style="margin-top:8px"></div></div></div>
+<script>
+const modal=document.getElementById('modal');let current=null;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function show(p){for(const x of ['users','logs','deleted','add']){document.getElementById('p-'+x).style.display=x===p?'':'none';document.getElementById('t-'+x).className=x===p?'on':''}
+if(p==='users')loadUsers();if(p==='logs')loadLogs();if(p==='deleted')loadDeleted()}
+async function api(path,opts){const r=await fetch('/admin/api/'+path,opts);if(!r.ok&&r.status===401){location.reload();return null}return r.json()}
+async function loadUsers(){const d=await api('users');if(!d)return;const u=d.users;
+document.getElementById('stats').innerHTML=
+'<span class="stat"><b>'+u.length+'</b>total users</span><span class="stat"><b>'+u.filter(x=>x.role==='creator').length+'</b>creators</span>'+
+'<span class="stat"><b>'+u.filter(x=>x.verified).length+'</b>verified</span>';
+document.getElementById('users').innerHTML=u.map(x=>'<tr class="u" onclick=\'openUser('+JSON.stringify(x).replace(/'/g,"&#39;")+')\'>'+
+'<td>'+x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.email)+'</td><td><span class="chip '+x.role+'">'+x.role+'</span></td>'+
+'<td class="'+(x.verified?'ok':'no')+'">'+(x.verified?'✓':'✗')+'</td><td>'+x.uploads+'</td><td>'+x.posts+'</td>'+
+'<td class="mut">'+x.joined.slice(0,10)+'</td></tr>').join('')}
+function openUser(x){current=x;document.getElementById('m-title').textContent='#'+x.id+' '+x.name;
+document.getElementById('m-sub').textContent=x.email+' · '+x.provider+' · joined '+x.joined.slice(0,10);
+document.getElementById('m-stats').innerHTML='<span class="stat"><b>'+x.uploads+'</b>uploads</span><span class="stat"><b>'+x.posts+'</b>posts</span><span class="stat"><b>'+x.itineraries+'</b>itineraries</span>';
+document.getElementById('m-name').value=x.name;document.getElementById('m-role').value=x.role;
+document.getElementById('m-verified').value=String(x.verified);document.getElementById('m-msg').textContent='';
+modal.style.display='flex'}
+async function saveUser(){if(!current)return;const d=await api('users/'+current.id+'/update',{method:'POST',headers:{'content-type':'application/json'},
+body:JSON.stringify({name:document.getElementById('m-name').value,role:document.getElementById('m-role').value,verified:document.getElementById('m-verified').value==='true'})});
+document.getElementById('m-msg').textContent=d.error||'Saved.';if(!d.error){loadUsers();setTimeout(()=>modal.style.display='none',600)}}
+async function deleteUser(){if(!current)return;if(!confirm('Permanently delete '+current.name+' and all their data?'))return;
+const d=await api('users/'+current.id+'/delete',{method:'POST'});document.getElementById('m-msg').textContent=d.error||'Deleted.';
+if(!d.error){loadUsers();setTimeout(()=>modal.style.display='none',600)}}
+async function createUser(){const d=await api('users',{method:'POST',headers:{'content-type':'application/json'},
+body:JSON.stringify({name:document.getElementById('a-name').value,email:document.getElementById('a-email').value,
+password:document.getElementById('a-pass').value,role:document.getElementById('a-role').value})});
+document.getElementById('a-msg').textContent=d.error||'Created — verified and ready to sign in.';if(!d.error)loadUsers()}
+async function loadLogs(){const d=await api('logs');if(!d)return;
+document.getElementById('logs').innerHTML=d.logs.map(l=>'<tr><td class="mut">'+l.at.slice(0,19).replace('T',' ')+'</td>'+
+'<td>'+esc(l.actor)+'</td><td class="log-act act-'+l.action+'">'+l.action+'</td><td>'+esc(l.details)+'</td></tr>').join('')}
+async function loadDeleted(){const d=await api('logs?action=user-deleted');if(!d)return;
+document.getElementById('deleted').innerHTML=d.logs.map(l=>'<tr><td class="mut">'+l.at.slice(0,19).replace('T',' ')+'</td>'+
+'<td>'+esc(l.details)+'</td></tr>').join('')||'<tr><td colspan=2 class="mut">No deletions yet.</td></tr>'}
+loadUsers();
+</script></body></html>""";
 
 // ---------------------------------------------------------------------------
 // Auth handlers
@@ -537,6 +877,7 @@ Future<Response> _signup(Request request) async {
       },
     );
     final row = rows.first;
+    _logActivity('user:${row[0]}', 'signup', '$name <$email> role=$role');
     final sent = await _sendEmail(
         email, 'Your Mr.Tour Guide verification code', _verifyEmailHtml(code));
     if (!sent) print('VERIFY-EMAIL (no mailer): code for $email is $code');
@@ -720,6 +1061,7 @@ Future<Response> _login(Request request) async {
       'needsVerification': true,
     });
   }
+  _logActivity('user:${row[0]}', 'login', '${row[1]} <${row[2]}>');
   return _json(200, {
     'id': row[0],
     'name': row[1],
@@ -762,6 +1104,47 @@ Future<Response> _cities(Request request) async {
         }
     ]
   });
+}
+
+/// Creator enrolls a new place on the platform (city/monument/region).
+Future<Response> _addCity(Request request) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final name = (body?['name'] as String?)?.trim() ?? '';
+  final location = (body?['location'] as String?)?.trim() ?? '';
+  final description = (body?['description'] as String?)?.trim() ?? '';
+  if (userId == null || await _roleOf(userId) != 'creator') {
+    return _json(403, {'error': 'Only creator accounts can add places.'});
+  }
+  if (name.isEmpty || name.length > 60) {
+    return _json(400, {'error': 'Give the place a name (max 60 chars).'});
+  }
+  final slug = name
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+\$'), '');
+  if (slug.isEmpty) return _json(400, {'error': 'Invalid place name.'});
+  final dup = await _db.execute(
+    Sql.named('SELECT 1 FROM cities WHERE slug = @s'),
+    parameters: {'s': slug},
+  );
+  if (dup.isNotEmpty) {
+    return _json(409, {'error': 'That place is already on the platform.'});
+  }
+  await _db.execute(
+    Sql.named('INSERT INTO cities (slug, name, location, description, rating) '
+        'VALUES (@s, @n, @l, @d, 4.5)'),
+    parameters: {
+      's': slug,
+      'n': name,
+      'l': location,
+      'd': description.isEmpty
+          ? 'A new destination on Mr.TourGuide — experiences coming soon.'
+          : description,
+    },
+  );
+  _logActivity('user:$userId', 'city-added', '$name ($slug) $location');
+  return _json(201, {'slug': slug, 'name': name});
 }
 
 /// Creator: upload a high-res cover image for a city (raw bytes).
@@ -1823,6 +2206,7 @@ Future<Response> _upload(Request request) async {
   }
   if (size == 0) return _json(400, {'error': 'Empty upload body.'});
 
+  _logActivity('user:$userId', 'video-upload', '"$title" → $city');
   final rows = await _db.execute(
     Sql.named('INSERT INTO videos (city, title, filename, mime, size_bytes, '
         "status, owner_id) VALUES (@city, @title, @filename, @mime, @size, "
@@ -2282,10 +2666,16 @@ Future<Response> _deleteAccount(Request request) async {
   final userId = body?['userId'] as int?;
   if (userId == null) return _json(401, {'error': 'Sign in first.'});
   final exists = await _db.execute(
-    Sql.named('SELECT 1 FROM users WHERE id = @id'),
+    Sql.named('SELECT name, email, role, created_at FROM users WHERE id = @id'),
     parameters: {'id': userId},
   );
   if (exists.isEmpty) return _json(404, {'error': 'Account not found.'});
+  final u = exists.first;
+  _logActivity(
+      'user:$userId',
+      'user-deleted',
+      '${u[0]} <${u[1]}> role=${u[2]} joined=${(u[3] as DateTime).toIso8601String().substring(0, 10)} '
+          '(self-service deletion)');
   try {
     for (final sql in [
       'DELETE FROM reactions WHERE user_id = @id',
@@ -2430,6 +2820,14 @@ Future<void> main() async {
       'query TEXT NOT NULL, '
       'plan TEXT NOT NULL, '
       'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  // Security / audit trail for the admin panel.
+  await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
+      'id SERIAL PRIMARY KEY, '
+      'at TIMESTAMPTZ NOT NULL DEFAULT now(), '
+      'actor TEXT NOT NULL, '
+      'action TEXT NOT NULL, '
+      'details TEXT)');
+
   // Notification timeline columns (no-ops when already present). Guarded:
   // on databases where the app user doesn't own these tables the ALTER is
   // applied manually instead — startup must never crash on it.
@@ -2474,6 +2872,7 @@ Future<void> main() async {
     ..post('/resend-code', _resendCode)
     ..post('/auth/google', _googleAuth)
     ..get('/cities', _cities)
+    ..post('/cities', _addCity)
     ..post('/cities/<city>/cover', _uploadCover)
     ..get('/videos', _videos)
     ..get('/videos/trending', _trending)
@@ -2508,6 +2907,12 @@ Future<void> main() async {
     ..post('/users/delete-account', _deleteAccount)
     ..get('/users/<id>/profile', _publicProfile)
     ..post('/feedback', _feedback)
+    ..get('/admin', _adminPage)
+    ..get('/admin/api/users', _adminUsers)
+    ..post('/admin/api/users', _adminCreateUser)
+    ..post('/admin/api/users/<id>/update', _adminUpdateUser)
+    ..post('/admin/api/users/<id>/delete', _adminDeleteUser)
+    ..get('/admin/api/logs', _adminLogs)
     ..get('/app/version', _appVersion)
     ..get('/apk', _apk)
     ..get('/files/<city>/<name>', _serveFile);

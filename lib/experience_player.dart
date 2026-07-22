@@ -70,13 +70,39 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
     }
   }
 
-  /// Haptic engine: on phones this vibrates in sync with the (ML-generated)
-  /// haptic track; on web it renders as the pulsing feel indicator.
+  /// Haptic engine: follows the per-video ML haptic track — background
+  /// sound, music and ambient energy analysed server-side become graded
+  /// light→heavy feel, scaled by the creator's and the viewer's intensity.
   void _startHaptics() {
     _hapticTimer?.cancel();
     if (!haptics) return;
-    // Pulse cadence scales with intensity (placeholder for the real
-    // per-video ML haptic track).
+    final track = widget.video.hapticTrack;
+    if (track.isNotEmpty) {
+      // One feel step per second of video, graded by the track's energy.
+      _hapticTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        final c = controller;
+        if (c == null || !c.value.isPlaying) return;
+        final sec = c.value.position.inSeconds;
+        final energy = track[sec.clamp(0, track.length - 1)];
+        final feel = (energy * intensity).clamp(0.0, 1.0);
+        if (feel < 0.08) return; // near-silence: no feel
+        if (feel < 0.3) {
+          HapticFeedback.lightImpact();
+        } else if (feel < 0.6) {
+          HapticFeedback.mediumImpact();
+        } else {
+          HapticFeedback.heavyImpact();
+        }
+        if (mounted) {
+          setState(() => _pulse = true);
+          Timer(const Duration(milliseconds: 180), () {
+            if (mounted) setState(() => _pulse = false);
+          });
+        }
+      });
+      return;
+    }
+    // No track yet (older uploads): steady cadence scaled by intensity.
     final period = Duration(
         milliseconds: (1400 - 900 * intensity).round().clamp(300, 2000));
     _hapticTimer = Timer.periodic(period, (_) {

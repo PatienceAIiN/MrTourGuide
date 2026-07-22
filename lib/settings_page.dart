@@ -56,7 +56,6 @@ class _SettingsPageState extends State<SettingsPage> {
               secondary: Icon(s.darkMode ? Icons.dark_mode : Icons.light_mode,
                   color: Colors.indigo),
               title: const Text('Dark theme'),
-              subtitle: const Text('Easier on the eyes at night'),
               value: s.darkMode,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.darkMode = v),
@@ -66,7 +65,6 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.vibration, color: Colors.purple),
               title: const Text('Haptics'),
-              subtitle: const Text('Feel every experience through your phone'),
               value: s.haptics,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.haptics = v),
@@ -91,9 +89,6 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.touch_app, color: Colors.purple),
               title: const Text('UI touch feedback'),
-              subtitle: const Text(
-                  'Buttons and cards respond with graded vibration — like a '
-                  'plucked string'),
               value: s.uiHaptics,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.uiHaptics = v),
@@ -103,7 +98,6 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.volume_up, color: blue),
               title: const Text('Sound'),
-              subtitle: const Text('Play experience audio by default'),
               value: s.sound,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.sound = v),
@@ -111,7 +105,6 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.play_circle, color: blue),
               title: const Text('Autoplay'),
-              subtitle: const Text('Start playing as soon as you open'),
               value: s.autoplay,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.autoplay = v),
@@ -122,8 +115,6 @@ class _SettingsPageState extends State<SettingsPage> {
               secondary:
                   const Icon(Icons.accessibility_new, color: Colors.green),
               title: const Text('Reduce motion'),
-              subtitle:
-                  const Text('Minimize animations for a calmer experience'),
               value: s.reduceMotion,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.reduceMotion = v),

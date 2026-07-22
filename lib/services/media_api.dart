@@ -152,6 +152,10 @@ class VideoItem {
   final DateTime uploadedAt;
   final String url;
 
+  /// Per-second feel intensities (0..1) from the ML audio-energy analysis —
+  /// background sound, music and ambience drive light→heavy haptics.
+  final List<double> hapticTrack;
+
   const VideoItem({
     required this.id,
     required this.city,
@@ -165,6 +169,7 @@ class VideoItem {
     this.thumbUrl,
     required this.uploadedAt,
     required this.url,
+    this.hapticTrack = const [],
   });
 
   bool get isProcessing => status == 'processing';
@@ -172,6 +177,12 @@ class VideoItem {
   String? get absoluteThumbUrl => thumbUrl == null ? null : '$apiBase$thumbUrl';
 
   factory VideoItem.fromJson(Map<String, dynamic> json) => VideoItem(
+        hapticTrack: [
+          for (final v in ((json['haptics'] as Map<String, dynamic>?)?['track']
+                  as List? ??
+              const []))
+            (v as num).toDouble()
+        ],
         id: json['id'] as int,
         city: json['city'] as String,
         title: json['title'] as String,
@@ -464,6 +475,19 @@ class MediaApi {
         {...config.toJson(), 'userId': AuthApi.currentUser?.id});
     return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
   }
+
+  /// Creator enrolls a new place on the platform.
+  static Future<void> addCity({
+    required String name,
+    required String location,
+    String description = '',
+  }) =>
+      _postJson('/cities', {
+        'userId': AuthApi.currentUser?.id,
+        'name': name,
+        'location': location,
+        'description': description,
+      });
 
   /// Creator: set a custom thumbnail for an owned video (compressed
   /// server-side, like YouTube Studio).

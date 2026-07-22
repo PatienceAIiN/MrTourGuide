@@ -8,6 +8,7 @@ import '../services/auth_api.dart';
 import '../services/media_api.dart';
 import '../services/community_api.dart';
 import '../services/haptic_service.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
 /// Communities.
@@ -508,14 +509,18 @@ class _CommunityPageState extends State<CommunityPage> {
                   style: const TextStyle(fontSize: 14, height: 1.45)),
               if (post.absoluteImageUrl != null) ...[
                 const SizedBox(height: 10),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    post.absoluteImageUrl!,
-                    height: 180,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                    errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                GestureDetector(
+                  onTap: () => showImageViewer(context, post.absoluteImageUrl!,
+                      caption: post.authorName),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.network(
+                      post.absoluteImageUrl!,
+                      height: 180,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                    ),
                   ),
                 ),
               ],
@@ -799,13 +804,18 @@ class _PostModalState extends State<_PostModal> {
                       style: const TextStyle(fontSize: 15, height: 1.5)),
                   if (post.absoluteImageUrl != null) ...[
                     const SizedBox(height: 12),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: Image.network(
-                        post.absoluteImageUrl!,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                    GestureDetector(
+                      onTap: () => showImageViewer(
+                          context, post.absoluteImageUrl!,
+                          caption: post.authorName),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: Image.network(
+                          post.absoluteImageUrl!,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                        ),
                       ),
                     ),
                   ],

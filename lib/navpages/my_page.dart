@@ -8,6 +8,7 @@ import '../main.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
 /// Profile tab: account info, experience-library stats, sign out.

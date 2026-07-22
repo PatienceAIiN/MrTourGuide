@@ -11,6 +11,7 @@ import '../models/place.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
 /// "Feel it" tap: play the place's experience video with haptics right away;
@@ -488,14 +489,18 @@ class _SearchPageState extends State<SearchPage> {
             scrollDirection: Axis.horizontal,
             itemCount: m.images.length,
             separatorBuilder: (_, __) => const SizedBox(width: 10),
-            itemBuilder: (context, i) => ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                m.images[i],
-                width: 170,
-                height: 120,
-                fit: BoxFit.cover,
-                errorBuilder: (c, e, s) => const SizedBox.shrink(),
+            itemBuilder: (context, i) => GestureDetector(
+              onTap: () =>
+                  showImageViewer(context, m.images[i], caption: query.text),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(
+                  m.images[i],
+                  width: 170,
+                  height: 120,
+                  fit: BoxFit.cover,
+                  errorBuilder: (c, e, s) => const SizedBox.shrink(),
+                ),
               ),
             ),
           ),

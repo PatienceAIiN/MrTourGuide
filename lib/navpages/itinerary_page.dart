@@ -8,6 +8,7 @@ import '../constant.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 import 'search_page.dart' show feelPlace;
 
@@ -471,13 +472,17 @@ class _ItineraryPageState extends State<ItineraryPage> {
                   scrollDirection: Axis.horizontal,
                   itemCount: media!.images.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 10),
-                  itemBuilder: (context, i) => ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.network(media!.images[i],
-                        width: 170,
-                        height: 120,
-                        fit: BoxFit.cover,
-                        errorBuilder: (c, e, s) => const SizedBox.shrink()),
+                  itemBuilder: (context, i) => GestureDetector(
+                    onTap: () => showImageViewer(context, media!.images[i],
+                        caption: lastQuery),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(media!.images[i],
+                          width: 170,
+                          height: 120,
+                          fit: BoxFit.cover,
+                          errorBuilder: (c, e, s) => const SizedBox.shrink()),
+                    ),
                   ),
                 ),
               ),

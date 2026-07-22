@@ -1,9 +1,11 @@
 import 'dart:async';
-
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../constant.dart';
 import '../experience_player.dart';
@@ -179,6 +181,57 @@ class _DashboardPageState extends State<DashboardPage> {
     await _uploadControlSheet(city, file.name, file.bytes!);
   }
 
+  /// True when the picked video is an immersive capture: VR/MR needs an
+  /// equirectangular 360° frame, which is (about) twice as wide as tall.
+  Future<bool> _probeImmersive(Uint8List bytes) async {
+    if (kIsWeb) return true; // probing needs a file; web is dev-only
+    File? tmp;
+    VideoPlayerController? probe;
+    try {
+      tmp = File('${Directory.systemTemp.path}/'
+          'mrt_probe_${DateTime.now().millisecondsSinceEpoch}.mp4');
+      await tmp.writeAsBytes(bytes);
+      probe = VideoPlayerController.file(tmp);
+      await probe.initialize().timeout(const Duration(seconds: 12));
+      final size = probe.value.size;
+      if (size.width <= 0 || size.height <= 0) return false;
+      final ratio = size.width / size.height;
+      return ratio >= 1.85 && ratio <= 2.15;
+    } catch (_) {
+      return false;
+    } finally {
+      await probe?.dispose();
+      try {
+        await tmp?.delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _notImmersiveDialog() => showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          icon: const Icon(Icons.vrpano, color: Colors.purple, size: 36),
+          title: const Text('Not VR/MR compatible'),
+          content: const Text(
+            'This video is not compatible for a VR/MR experience — it is a '
+            'flat capture, not a 360° one. Record or export in '
+            'equirectangular 360° format (2:1) and try again, or publish it '
+            'as a Normal experience.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14, height: 1.5),
+          ),
+          actions: [
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.purple),
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Got it'),
+            ),
+          ],
+        ),
+      );
+
   /// The publish control window: everything about the experience is set
   /// here before upload — title, video type (Normal / VR 360° / MR), feel
   /// mapping (auto ML track or per-frame fine-tuning), feel intensity and
@@ -190,6 +243,8 @@ class _DashboardPageState extends State<DashboardPage> {
     );
     var config = const ExperienceConfig();
     var busy = false;
+    bool? immersiveOk; // probed once, on first VR/MR selection
+    var probing = false;
     Uint8List? thumbBytes;
     String thumbName = '';
     // Location defaults from the city's catalog line ("Jaipur, Rajasthan").
@@ -280,11 +335,41 @@ class _DashboardPageState extends State<DashboardPage> {
                         label: Text('MR')),
                   ],
                   selected: {config.kind},
-                  onSelectionChanged: (s) {
+                  onSelectionChanged: (s) async {
+                    final kind = s.first;
+                    if (kind != 'normal') {
+                      // Gate VR/MR behind a real 360° compatibility check.
+                      if (immersiveOk == null) {
+                        setSheet(() => probing = true);
+                        immersiveOk = await _probeImmersive(bytes);
+                        setSheet(() => probing = false);
+                      }
+                      if (immersiveOk != true) {
+                        Haptics.heavy();
+                        await _notImmersiveDialog();
+                        return; // stays on the current type
+                      }
+                    }
                     Haptics.tick();
-                    setSheet(() => config = config.copyWith(kind: s.first));
+                    setSheet(() => config = config.copyWith(kind: kind));
                   },
                 ),
+                if (probing)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('Checking 360° compatibility…',
+                            style:
+                                TextStyle(fontSize: 11.5, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
                 const SizedBox(height: 16),
                 const Text('Feel mapping',
                     style:
@@ -678,6 +763,71 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  /// Creator enrolls a new place — it appears for everyone immediately.
+  Future<void> _addPlace() async {
+    final nameCtl = TextEditingController();
+    final locCtl = TextEditingController();
+    final descCtl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Add a place'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtl,
+                autofocus: true,
+                maxLength: 60,
+                decoration: const InputDecoration(
+                    labelText: 'Place name', hintText: 'e.g. Sun Temple'),
+              ),
+              TextField(
+                controller: locCtl,
+                decoration: const InputDecoration(
+                    labelText: 'Location', hintText: 'City, State, Country'),
+              ),
+              TextField(
+                controller: descCtl,
+                maxLines: 2,
+                decoration:
+                    const InputDecoration(labelText: 'Short description'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Add place')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    if (nameCtl.text.trim().isEmpty) {
+      newSnackBar(context, title: 'Give the place a name.');
+      return;
+    }
+    try {
+      await MediaApi.addCity(
+        name: nameCtl.text.trim(),
+        location: locCtl.text.trim(),
+        description: descCtl.text.trim(),
+      );
+      Haptics.medium();
+      if (!mounted) return;
+      newSnackBar(context, title: '"${nameCtl.text.trim()}" is live!');
+      await _loadCities();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
   /// Creator swaps an owned video's thumbnail (YouTube-Studio style).
   Future<void> _changeThumbnail(VideoItem video) async {
     final picked = await FilePicker.platform
@@ -875,13 +1025,23 @@ class _DashboardPageState extends State<DashboardPage> {
                               },
                             ),
                           ),
-                        if (isCreator)
+                        if (isCreator) ...[
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ActionChip(
+                              avatar: const Icon(Icons.add_location_alt,
+                                  size: 17, color: Colors.purple),
+                              label: const Text('Add place'),
+                              onPressed: _addPlace,
+                            ),
+                          ),
                           ActionChip(
                             avatar: const Icon(Icons.image_outlined,
                                 size: 17, color: blue),
                             label: const Text('Change cover'),
                             onPressed: _changeCover,
                           ),
+                        ],
                       ],
                     ),
                   ),
