@@ -136,7 +136,13 @@ class _MainPageState extends State<MainPage> {
           },
           children: pages,
         ),
-        bottomNavigationBar: AppBottomNav(
+        // GuideVibe (tab 4) is a full-screen immersive feed for travelers —
+        // hide the floating navbar there (swipe or the on-screen close exits).
+        // Creators see the GuideVibe Studio instead, which keeps the navbar.
+        bottomNavigationBar: (currentIndex == 4 &&
+                !(AuthApi.currentUser?.isCreator ?? false))
+            ? null
+            : AppBottomNav(
           currentIndex: currentIndex,
           onSelectTab: onTap,
           entries: [

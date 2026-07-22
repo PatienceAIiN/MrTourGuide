@@ -35,7 +35,11 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   List<City> cities = [];
   String? selectedCity;
   final List<VideoItem> videos = [];
@@ -1357,6 +1361,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // keep this tab alive across switches
     final isCreator = AuthApi.currentUser?.isCreator ?? false;
     return Scaffold(
       backgroundColor: pageBg(context),

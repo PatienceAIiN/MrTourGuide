@@ -2700,53 +2700,47 @@ Future<Response> _uploadShort(Request request) async {
   return _json(201, {'short': _shortRowToJson(rows.first)});
 }
 
-// YouTube Shorts blend — scraped from the public results page (no API key),
-// seeded by the reader's city/activity. Cached per seed for 30 min.
-final Map<String, (DateTime, List<Map<String, String>>)> _ytShortsCache = {};
-
-Future<List<Map<String, String>>> _youtubeShorts(String seed) async {
-  final key = seed.toLowerCase();
-  final cached = _ytShortsCache[key];
-  if (cached != null &&
-      DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
-    return cached.$2;
-  }
-  final out = <Map<String, String>>[];
-  try {
-    final html = await _httpGetText(
-            'https://www.youtube.com/results?search_query='
-            '${Uri.encodeQueryComponent('$seed travel shorts')}',
-            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)')
-        .timeout(const Duration(seconds: 10));
-    final matches = RegExp(
-            r'"videoRenderer":\{"videoId":"([\w-]{11})".*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"')
-        .allMatches(html);
-    final seen = <String>{};
-    for (final m in matches) {
-      final id = m.group(1)!;
-      if (!seen.add(id)) continue;
-      var title = m.group(2)!.replaceAll(r'\"', '"').replaceAll(r'\\', r'\');
-      out.add({
-        'ytId': id,
-        'caption': title,
-        'thumb': 'https://i.ytimg.com/vi/$id/hqdefault.jpg',
-      });
-      if (out.length >= 6) break;
-    }
-  } catch (_) {}
-  if (out.isNotEmpty) _ytShortsCache[key] = (DateTime.now(), out);
-  return out;
-}
-
 /// GuideVibe feed: ready creator shorts ranked by the reader's city then
-/// recency, blended with YouTube Shorts (every 4th slot) so the feed stays
-/// full even when few creators have posted.
+/// recency. Platform-only — no third-party sources.
 Future<Response> _guidevibeFeed(Request request) async {
   final params = request.url.queryParameters;
   final userId = int.tryParse(params['userId'] ?? '');
   final city = (params['city'] ?? '').trim();
+  final owner = int.tryParse(params['owner'] ?? '');
   final offset = int.tryParse(params['offset'] ?? '0') ?? 0;
   final limit = (int.tryParse(params['limit'] ?? '10') ?? 10).clamp(1, 20);
+
+  // Creator "studio" mode: only this owner's shorts (any status, so they can
+  // preview clips still processing), newest first, no YouTube blend.
+  if (owner != null) {
+    final rows = await _db.execute(
+      Sql.named('''
+        SELECT $_shortColumns, status,
+               EXISTS(SELECT 1 FROM short_likes sl
+                      WHERE sl.short_id = shorts.id AND sl.user_id = @me) AS liked
+        FROM shorts
+        WHERE owner_id = @owner
+        ORDER BY created_at DESC
+        OFFSET @offset LIMIT @limit
+      '''),
+      parameters: {
+        'me': userId ?? -1,
+        'owner': owner,
+        'offset': offset,
+        'limit': limit + 1,
+      },
+    );
+    final more = rows.length > limit;
+    final page = more ? rows.take(limit).toList() : rows.toList();
+    // base cols 0-12, status at 13, liked at 14.
+    return _json(200, {
+      'shorts': [
+        for (final r in page)
+          {..._shortRowToJson(r, liked: r[14] == true), 'status': r[13]}
+      ],
+      'hasMore': more,
+    });
+  }
 
   final rows = await _db.execute(
     Sql.named('''
@@ -2767,77 +2761,10 @@ Future<Response> _guidevibeFeed(Request request) async {
   );
   final hasMore = rows.length > limit;
   final page = hasMore ? rows.take(limit).toList() : rows.toList();
-  final items = <Map<String, Object?>>[
-    for (final r in page)
-      _shortRowToJson(r, liked: r[13] == true)
-  ];
-
-  // Blend YouTube Shorts on the first page only (keeps later pages cheap).
-  if (offset == 0) {
-    final seed = city.isEmpty ? 'india' : city;
-    final yt = await _youtubeShorts(seed);
-    var yi = 0;
-    final blended = <Map<String, Object?>>[];
-    for (var i = 0; i < items.length; i++) {
-      blended.add(items[i]);
-      if ((i + 1) % 3 == 0 && yi < yt.length) {
-        final y = yt[yi++];
-        blended.add({
-          'id': 'yt_${y['ytId']}',
-          'source': 'youtube',
-          'ownerName': 'YouTube Shorts',
-          'ownerRole': 'youtube',
-          'caption': y['caption'],
-          'city': city.isEmpty ? null : city,
-          'thumbUrl': y['thumb'],
-          'ytId': y['ytId'],
-          'kind': 'normal',
-          'likes': 0,
-          'views': 0,
-          'liked': false,
-        });
-      }
-    }
-    // Any leftover YT items ride along at the end of the first page.
-    while (yi < yt.length && items.isNotEmpty) {
-      final y = yt[yi++];
-      blended.add({
-        'id': 'yt_${y['ytId']}',
-        'source': 'youtube',
-        'ownerName': 'YouTube Shorts',
-        'ownerRole': 'youtube',
-        'caption': y['caption'],
-        'city': city.isEmpty ? null : city,
-        'thumbUrl': y['thumb'],
-        'ytId': y['ytId'],
-        'kind': 'normal',
-        'likes': 0,
-        'views': 0,
-        'liked': false,
-      });
-    }
-    // If no creator shorts at all, still show YouTube ones.
-    if (items.isEmpty) {
-      for (final y in yt) {
-        blended.add({
-          'id': 'yt_${y['ytId']}',
-          'source': 'youtube',
-          'ownerName': 'YouTube Shorts',
-          'ownerRole': 'youtube',
-          'caption': y['caption'],
-          'city': city.isEmpty ? null : city,
-          'thumbUrl': y['thumb'],
-          'ytId': y['ytId'],
-          'kind': 'normal',
-          'likes': 0,
-          'views': 0,
-          'liked': false,
-        });
-      }
-    }
-    return _json(200, {'shorts': blended, 'hasMore': hasMore});
-  }
-  return _json(200, {'shorts': items, 'hasMore': hasMore});
+  return _json(200, {
+    'shorts': [for (final r in page) _shortRowToJson(r, liked: r[13] == true)],
+    'hasMore': hasMore,
+  });
 }
 
 /// Toggle a like on a short.

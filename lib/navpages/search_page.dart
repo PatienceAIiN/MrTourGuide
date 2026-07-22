@@ -53,7 +53,11 @@ class SearchPage extends StatefulWidget {
   State<SearchPage> createState() => _SearchPageState();
 }
 
-class _SearchPageState extends State<SearchPage> {
+class _SearchPageState extends State<SearchPage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   static const _kRecent = 'search.recent';
   static const _kAi = 'search.ai';
 
@@ -418,6 +422,7 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // keep this tab alive across switches
     return Scaffold(
       backgroundColor: pageBg(context),
       appBar: AppBar(

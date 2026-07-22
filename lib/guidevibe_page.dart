@@ -7,24 +7,40 @@ import 'package:video_player/video_player.dart';
 import 'constant.dart';
 import 'guidevibe_upload.dart';
 import 'navpages/community_page.dart' show showUserProfileDialog;
-import 'news_webview.dart';
 import 'services/auth_api.dart';
 import 'services/guidevibe_api.dart';
 import 'services/haptic_service.dart';
 import 'services/location_service.dart';
 
-/// GuideVibe — a full-screen, vertically-scrolling short-video feed (Reels /
-/// YouTube Shorts style). Creator uploads play inline with audio→haptics;
-/// blended YouTube Shorts open in the in-app player and wear a subtle chip.
-class GuideVibePage extends StatefulWidget {
+/// GuideVibe. Travelers get a full-screen, vertically-scrolling short feed
+/// (Reels style, platform videos only — no third-party sources). Creators
+/// instead get a studio: upload + a preview grid of their own shorts.
+class GuideVibePage extends StatelessWidget {
   final void Function(int index)? onSelectTab;
   const GuideVibePage({super.key, this.onSelectTab});
 
   @override
-  State<GuideVibePage> createState() => _GuideVibePageState();
+  Widget build(BuildContext context) {
+    final isCreator = AuthApi.currentUser?.isCreator ?? false;
+    return isCreator
+        ? const _CreatorStudio()
+        : _UserFeed(onSelectTab: onSelectTab);
+  }
 }
 
-class _GuideVibePageState extends State<GuideVibePage> {
+// ===========================================================================
+// Traveler side — the immersive scroll feed.
+// ===========================================================================
+class _UserFeed extends StatefulWidget {
+  final void Function(int index)? onSelectTab;
+  const _UserFeed({this.onSelectTab});
+
+  @override
+  State<_UserFeed> createState() => _UserFeedState();
+}
+
+class _UserFeedState extends State<_UserFeed>
+    with AutomaticKeepAliveClientMixin {
   final PageController _pager = PageController();
   final List<Short> _shorts = [];
   bool _loading = true;
@@ -33,11 +49,16 @@ class _GuideVibePageState extends State<GuideVibePage> {
   String? _error;
   String _city = '';
   int _index = 0;
+  bool _loadedOnce = false;
+
+  // Keep the feed alive across tab switches — no reload spinner on return.
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _load(initial: true);
   }
 
   @override
@@ -46,11 +67,10 @@ class _GuideVibePageState extends State<GuideVibePage> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  /// First call shows the spinner; later calls refresh silently (no
+  /// "hard refresh" flash when the user comes back to the tab).
+  Future<void> _load({bool initial = false}) async {
+    if (initial && !_loadedOnce) setState(() => _loading = true);
     try {
       final (city, _) = await LocationService.current();
       _city = city;
@@ -62,12 +82,15 @@ class _GuideVibePageState extends State<GuideVibePage> {
           ..addAll(list);
         _hasMore = more;
         _loading = false;
+        _loadedOnce = true;
+        _error = null;
       });
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.message;
+        // Keep whatever we already have; only surface an error on cold load.
+        if (!_loadedOnce) _error = e.message;
       });
     }
   }
@@ -84,31 +107,22 @@ class _GuideVibePageState extends State<GuideVibePage> {
         _hasMore = more;
       });
     } catch (_) {
-      // Silent — the current page keeps playing.
     } finally {
       _loadingMore = false;
     }
   }
 
-  Future<void> _openUpload() async {
-    final created = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const GuideVibeUploadPage()),
-    );
-    if (created == true) _load();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isCreator = AuthApi.currentUser?.isCreator ?? false;
+    super.build(context);
     return Scaffold(
       backgroundColor: Colors.black,
-      body: _loading
+      body: _loading && !_loadedOnce
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : _error != null
+          : _error != null && _shorts.isEmpty
               ? _errorView()
               : _shorts.isEmpty
-                  ? _emptyView(isCreator)
+                  ? _emptyView()
                   : Stack(
                       children: [
                         PageView.builder(
@@ -126,7 +140,15 @@ class _GuideVibePageState extends State<GuideVibePage> {
                             active: i == _index,
                           ),
                         ),
-                        // Header label.
+                        // Close → back to Home (the navbar is hidden here).
+                        Positioned(
+                          top: MediaQuery.of(context).padding.top + 6,
+                          left: 6,
+                          child: _circleButton(
+                            Icons.close,
+                            () => widget.onSelectTab?.call(0),
+                          ),
+                        ),
                         Positioned(
                           top: MediaQuery.of(context).padding.top + 12,
                           left: 0,
@@ -151,43 +173,23 @@ class _GuideVibePageState extends State<GuideVibePage> {
                             ),
                           ),
                         ),
-                        // Creator "Create" — top-right so it never hides
-                        // behind the floating navbar (which the feed extends
-                        // under) or collides with the action rail.
-                        if (isCreator)
-                          Positioned(
-                            top: MediaQuery.of(context).padding.top + 6,
-                            right: 8,
-                            child: Material(
-                              color: Colors.black.withValues(alpha: 0.32),
-                              shape: const StadiumBorder(),
-                              child: InkWell(
-                                customBorder: const StadiumBorder(),
-                                onTap: _openUpload,
-                                child: const Padding(
-                                  padding: EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 7),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.add_a_photo_outlined,
-                                          color: Colors.white, size: 17),
-                                      SizedBox(width: 6),
-                                      Text('Create',
-                                          style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w800)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
                       ],
                     ),
     );
   }
+
+  Widget _circleButton(IconData icon, VoidCallback onTap) => Material(
+        color: Colors.black.withValues(alpha: 0.32),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, color: Colors.white, size: 22),
+          ),
+        ),
+      );
 
   Widget _errorView() => Center(
         child: Padding(
@@ -200,7 +202,7 @@ class _GuideVibePageState extends State<GuideVibePage> {
                   style: const TextStyle(color: Colors.white70)),
               const SizedBox(height: 14),
               OutlinedButton.icon(
-                onPressed: _load,
+                onPressed: () => _load(initial: true),
                 style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
                     side: const BorderSide(color: Colors.white30)),
@@ -212,46 +214,42 @@ class _GuideVibePageState extends State<GuideVibePage> {
         ),
       );
 
-  Widget _emptyView(bool isCreator) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.video_library_outlined,
-                  color: Colors.white38, size: 54),
-              const SizedBox(height: 14),
-              const Text('No GuideVibe shorts yet',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700)),
-              const SizedBox(height: 6),
-              Text(
-                isCreator
-                    ? 'Be the first — share a short.'
-                    : 'Check back soon — creators are just getting started.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
+  Widget _emptyView() => Stack(
+        children: [
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.video_library_outlined,
+                      color: Colors.white38, size: 54),
+                  SizedBox(height: 14),
+                  Text('No GuideVibe shorts yet',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700)),
+                  SizedBox(height: 6),
+                  Text('Check back soon — creators are just getting started.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white54, fontSize: 13)),
+                ],
               ),
-              if (isCreator) ...[
-                const SizedBox(height: 18),
-                ElevatedButton.icon(
-                  onPressed: _openUpload,
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: blue, foregroundColor: Colors.white),
-                  icon: const Icon(Icons.add_a_photo_outlined, size: 18),
-                  label: const Text('Create GuideVibe'),
-                ),
-              ],
-            ],
+            ),
           ),
-        ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 6,
+            left: 6,
+            child: _circleButton(Icons.close, () => widget.onSelectTab?.call(0)),
+          ),
+        ],
       );
 }
 
-/// One full-screen short. Owns its video controller (created only while
-/// active, disposed when scrolled away) and runs the audio→haptics engine.
+// ===========================================================================
+// One full-screen short (platform video, played inline).
+// ===========================================================================
 class _ShortView extends StatefulWidget {
   final Short short;
   final bool active;
@@ -268,12 +266,10 @@ class _ShortViewState extends State<_ShortView> {
   bool _showHeart = false;
   bool _viewCounted = false;
 
-  // Haptics engine state.
   Timer? _haptics;
   int _nextEvent = 0;
   int _recoilUntilMs = 0;
 
-  // Local like state (optimistic).
   late bool _liked = widget.short.liked;
   late int _likes = widget.short.likes;
 
@@ -298,7 +294,6 @@ class _ShortViewState extends State<_ShortView> {
   }
 
   void _activate() {
-    if (widget.short.isYouTube) return; // YT plays in the webview on tap
     if (!_viewCounted) {
       _viewCounted = true;
       GuideVibeApi.view(widget.short.id);
@@ -339,8 +334,7 @@ class _ShortViewState extends State<_ShortView> {
     }
   }
 
-  /// Audio→haptics: fast tick, smooth interpolation, recoil on impacts —
-  /// the same engine as the full experience player.
+  /// Audio→haptics: fast tick, smooth interpolation, recoil on impacts.
   void _startHaptics() {
     _haptics?.cancel();
     final fine = widget.short.hapticFine;
@@ -408,10 +402,6 @@ class _ShortViewState extends State<_ShortView> {
       newSnackBar(context, title: 'Sign in to like.');
       return;
     }
-    if (widget.short.isYouTube) {
-      _openYouTube();
-      return;
-    }
     Haptics.tick();
     setState(() {
       _liked = !_liked;
@@ -428,36 +418,16 @@ class _ShortViewState extends State<_ShortView> {
     } catch (_) {}
   }
 
-  void _openYouTube() {
-    final id = widget.short.ytId;
-    if (id == null) return;
-    _controller?.pause();
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => NewsWebViewPage(
-          title: 'YouTube Shorts',
-          url: 'https://www.youtube.com/shorts/$id',
-        ),
-      ),
-    );
-  }
-
   Future<void> _share() async {
     Haptics.tick();
     final s = widget.short;
-    final text = s.isYouTube
-        ? 'https://www.youtube.com/shorts/${s.ytId}'
-        : 'Watch "${s.caption.isEmpty ? 'this GuideVibe' : s.caption}" on '
-            'Mr.Tour Guide\nhttps://mrtourguide.patienceai.in/';
-    await SharePlus.instance.share(ShareParams(text: text));
+    await SharePlus.instance.share(ShareParams(
+      text: 'Watch "${s.caption.isEmpty ? 'this GuideVibe' : s.caption}" on '
+          'Mr.Tour Guide\nhttps://mrtourguide.patienceai.in/',
+    ));
   }
 
   void _openComments() {
-    if (widget.short.isYouTube) {
-      _openYouTube();
-      return;
-    }
     _controller?.pause();
     setState(() => _paused = true);
     showModalBottomSheet<void>(
@@ -477,15 +447,14 @@ class _ShortViewState extends State<_ShortView> {
   Widget build(BuildContext context) {
     final s = widget.short;
     return GestureDetector(
-      onTap: s.isYouTube ? _openYouTube : _togglePlay,
-      onDoubleTap: s.isYouTube ? null : _doubleTapLike,
+      onTap: _togglePlay,
+      onDoubleTap: _doubleTapLike,
       child: Container(
         color: Colors.black,
         child: Stack(
           fit: StackFit.expand,
           children: [
             _videoLayer(s),
-            // Legibility gradient.
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -505,7 +474,7 @@ class _ShortViewState extends State<_ShortView> {
             _topChips(s),
             _rightRail(s),
             _bottomInfo(s),
-            if (_paused && !s.isYouTube) _pauseGlyph(),
+            if (_paused) _pauseGlyph(),
             if (_showHeart) _heartBurst(),
           ],
         ),
@@ -514,28 +483,6 @@ class _ShortViewState extends State<_ShortView> {
   }
 
   Widget _videoLayer(Short s) {
-    if (s.isYouTube) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          if (s.absoluteThumbUrl != null)
-            Image.network(s.absoluteThumbUrl!,
-                fit: BoxFit.cover,
-                errorBuilder: (c, e, st) => Container(color: Colors.black))
-          else
-            Container(color: Colors.black),
-          Center(
-            child: Container(
-              decoration: const BoxDecoration(
-                  color: Colors.black45, shape: BoxShape.circle),
-              padding: const EdgeInsets.all(14),
-              child:
-                  const Icon(Icons.play_arrow, color: Colors.white, size: 44),
-            ),
-          ),
-        ],
-      );
-    }
     final c = _controller;
     if (c != null && _initialized) {
       return FittedBox(
@@ -548,7 +495,6 @@ class _ShortViewState extends State<_ShortView> {
         ),
       );
     }
-    // Loading: poster + spinner.
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -632,29 +578,6 @@ class _ShortViewState extends State<_ShortView> {
                   ],
                 ),
               ),
-            const Spacer(),
-            if (s.isYouTube) _youtubeChip(),
-          ],
-        ),
-      );
-
-  Widget _youtubeChip() => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.38),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: Colors.white24),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.play_circle_fill, color: Color(0xFFFF0000), size: 14),
-            SizedBox(width: 5),
-            Text('YouTube Shorts',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w700)),
           ],
         ),
       );
@@ -708,9 +631,7 @@ class _ShortViewState extends State<_ShortView> {
                     color: Colors.white,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
-                    shadows: [
-                      Shadow(color: Colors.black45, blurRadius: 3)
-                    ])),
+                    shadows: [Shadow(color: Colors.black45, blurRadius: 3)])),
           ],
         ),
       );
@@ -730,9 +651,7 @@ class _ShortViewState extends State<_ShortView> {
                       : null,
                   child: CircleAvatar(
                     radius: 17,
-                    backgroundColor: s.isYouTube
-                        ? const Color(0xFFFF0000)
-                        : (s.byCreator ? Colors.purple : blue),
+                    backgroundColor: s.byCreator ? Colors.purple : blue,
                     child: Text(
                       s.ownerName.isNotEmpty
                           ? s.ownerName[0].toUpperCase()
@@ -789,8 +708,7 @@ class _ShortViewState extends State<_ShortView> {
                         ? 'Immersive · haptics on'
                         : 'Original audio · haptics on',
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: Colors.white70, fontSize: 12),
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                 ),
               ],
@@ -815,8 +733,8 @@ class _ShortViewState extends State<_ShortView> {
               opacity: (1 - v).clamp(0.0, 1.0) * 0.5 + 0.5,
               child: Transform.scale(scale: 0.6 + v * 0.6, child: child),
             ),
-            child: const Icon(Icons.favorite,
-                color: Color(0xFFFF4D5E), size: 110),
+            child:
+                const Icon(Icons.favorite, color: Color(0xFFFF4D5E), size: 110),
           ),
         ),
       );
@@ -828,7 +746,7 @@ class _ShortViewState extends State<_ShortView> {
   }
 }
 
-/// The MR passthrough grid overlay from the design.
+/// MR passthrough grid overlay.
 class _MrGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -856,6 +774,328 @@ class _MrGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// ===========================================================================
+// Creator side — a studio: upload + a preview grid of their own shorts.
+// ===========================================================================
+class _CreatorStudio extends StatefulWidget {
+  const _CreatorStudio();
+
+  @override
+  State<_CreatorStudio> createState() => _CreatorStudioState();
+}
+
+class _CreatorStudioState extends State<_CreatorStudio>
+    with AutomaticKeepAliveClientMixin {
+  List<Short> _mine = [];
+  bool _loading = true;
+  bool _loadedOnce = false;
+  String? _error;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final me = AuthApi.currentUser?.id;
+    if (me == null) {
+      setState(() {
+        _loading = false;
+        _error = 'Sign in as a creator to use GuideVibe Studio.';
+      });
+      return;
+    }
+    if (!_loadedOnce) setState(() => _loading = true);
+    try {
+      final (list, _) = await GuideVibeApi.feed(owner: me, limit: 20);
+      if (!mounted) return;
+      setState(() {
+        _mine = list;
+        _loading = false;
+        _loadedOnce = true;
+        _error = null;
+      });
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (!_loadedOnce) _error = e.message;
+      });
+    }
+  }
+
+  Future<void> _create() async {
+    final created = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const GuideVibeUploadPage()),
+    );
+    if (created == true) _load();
+  }
+
+  void _preview(int index) {
+    final ready = _mine.where((s) => !s.isProcessing).toList();
+    final startId = _mine[index].id;
+    final startAt = ready.indexWhere((s) => s.id == startId);
+    if (startAt < 0) {
+      newSnackBar(context, title: 'Still processing — hang tight.');
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _ShortPreviewPage(shorts: ready, initialIndex: startAt),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return Scaffold(
+      backgroundColor: pageBg(context),
+      appBar: AppBar(
+        backgroundColor: cardBg(context),
+        elevation: 0,
+        title: Row(
+          children: [
+            const Icon(Icons.play_circle_fill,
+                color: Color(0xFFFF4D5E), size: 20),
+            const SizedBox(width: 8),
+            Text('GuideVibe Studio',
+                style: TextStyle(
+                    color: ink(context), fontWeight: FontWeight.bold)),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: _create,
+            icon: Icon(Icons.add, color: brandInk(context)),
+            label: Text('Create',
+                style: TextStyle(
+                    color: brandInk(context), fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+      body: _loading && !_loadedOnce
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: _error != null && _mine.isEmpty
+                  ? ListView(children: [
+                      Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Text(_error!,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: inkSoft(context))),
+                      )
+                    ])
+                  : _mine.isEmpty
+                      ? _empty()
+                      : GridView.builder(
+                          padding: const EdgeInsets.fromLTRB(14, 14, 14, 110),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            childAspectRatio: 9 / 16,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: _mine.length,
+                          itemBuilder: (context, i) => _tile(_mine[i], i),
+                        ),
+            ),
+    );
+  }
+
+  Widget _empty() => ListView(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(28, 80, 28, 28),
+            child: Column(
+              children: [
+                Icon(Icons.movie_creation_outlined,
+                    size: 54, color: inkSoft(context)),
+                const SizedBox(height: 14),
+                Text('No GuideVibe shorts yet',
+                    style: TextStyle(
+                        color: ink(context),
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                Text('Share your first vertical short — record or pick a clip.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: inkSoft(context), fontSize: 13)),
+                const SizedBox(height: 18),
+                ElevatedButton.icon(
+                  onPressed: _create,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: blue, foregroundColor: Colors.white),
+                  icon: const Icon(Icons.add_a_photo_outlined, size: 18),
+                  label: const Text('Create GuideVibe'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+
+  Widget _tile(Short s, int i) => GestureDetector(
+        onTap: () => _preview(i),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (s.absoluteThumbUrl != null)
+                Image.network(s.absoluteThumbUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (c, e, st) =>
+                        Container(color: Colors.black26))
+              else
+                Container(color: Colors.black26),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Color(0x99000000)],
+                    stops: [0.5, 1],
+                  ),
+                ),
+              ),
+              if (s.isImmersive)
+                Positioned(
+                  top: 6,
+                  left: 6,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(s.kind.toUpperCase(),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              if (s.isProcessing)
+                const Center(
+                  child: Chip(
+                    label: Text('Processing',
+                        style: TextStyle(fontSize: 10, color: Colors.white)),
+                    backgroundColor: Colors.black54,
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
+              Positioned(
+                left: 6,
+                bottom: 6,
+                child: Row(
+                  children: [
+                    const Icon(Icons.play_arrow, color: Colors.white, size: 13),
+                    const SizedBox(width: 2),
+                    Text('${s.views}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            shadows: [
+                              Shadow(color: Colors.black54, blurRadius: 2)
+                            ])),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// Fullscreen vertical pager to preview a creator's own shorts.
+class _ShortPreviewPage extends StatefulWidget {
+  final List<Short> shorts;
+  final int initialIndex;
+  const _ShortPreviewPage({required this.shorts, required this.initialIndex});
+
+  @override
+  State<_ShortPreviewPage> createState() => _ShortPreviewPageState();
+}
+
+class _ShortPreviewPageState extends State<_ShortPreviewPage> {
+  late final PageController _pager =
+      PageController(initialPage: widget.initialIndex);
+  late int _index = widget.initialIndex;
+
+  @override
+  void dispose() {
+    _pager.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _pager,
+            scrollDirection: Axis.vertical,
+            itemCount: widget.shorts.length,
+            onPageChanged: (i) {
+              Haptics.tick();
+              setState(() => _index = i);
+            },
+            itemBuilder: (context, i) => _ShortView(
+              key: ValueKey('preview_${widget.shorts[i].id}'),
+              short: widget.shorts[i],
+              active: i == _index,
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 6,
+            left: 6,
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.32),
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () => Navigator.pop(context),
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(Icons.arrow_back, color: Colors.white, size: 22),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 12,
+            left: 0,
+            right: 0,
+            child: const IgnorePointer(
+              child: Center(
+                child: Text('Preview',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        shadows: [Shadow(color: Colors.black54, blurRadius: 4)])),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Comments bottom-sheet for a short.
@@ -921,7 +1161,8 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: DraggableScrollableSheet(
         initialChildSize: 0.62,
         minChildSize: 0.4,
@@ -960,7 +1201,8 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                                 style: TextStyle(color: inkSoft(context))))
                         : ListView.builder(
                             controller: scroll,
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                            padding:
+                                const EdgeInsets.symmetric(horizontal: 14),
                             itemCount: _comments.length,
                             itemBuilder: (context, i) {
                               final c = _comments[i];

@@ -20,7 +20,11 @@ class HomeScreen extends StatefulWidget {
   _HomePageState createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomeScreen> {
+class _HomePageState extends State<HomeScreen>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   // Live catalog: city covers (internet / creator-uploaded) + latest videos.
   List<Place> places = [];
   List<VideoItem> trending = [];
@@ -95,6 +99,7 @@ class _HomePageState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // keep this tab alive across switches
     final name = AuthApi.currentUser?.name.split(' ').first ?? 'Explorer';
     return Scaffold(
       backgroundColor: pageBg(context),

@@ -6,13 +6,10 @@ import 'package:http/http.dart' as http;
 import 'api_base.dart';
 import 'auth_api.dart';
 
-/// One GuideVibe short — a creator upload or a blended YouTube Short.
+/// One GuideVibe short — a platform (creator) upload. GuideVibe is
+/// platform-only; there are no third-party/YouTube items.
 class Short {
-  /// Server id for creator shorts; `yt_<id>` for YouTube ones.
   final String id;
-
-  /// 'creator' or 'youtube'.
-  final String source;
   final int? ownerId;
   final String ownerName;
   final String ownerRole;
@@ -23,15 +20,15 @@ class Short {
   /// 'normal' | 'vr' | 'mr'.
   final String kind;
 
-  /// Relative stream URL for creator shorts (null for YouTube).
+  /// Relative stream URL for the short.
   final String? url;
-
-  /// YouTube video id for blended shorts (null for creator ones).
-  final String? ytId;
 
   int likes;
   final int views;
   bool liked;
+
+  /// 'ready' | 'processing' (only meaningful in creator studio mode).
+  final String status;
 
   /// Audio→haptics: the same {track, fine, events} contract as VideoItem.
   final List<double> hapticFine;
@@ -39,7 +36,6 @@ class Short {
 
   Short({
     required this.id,
-    required this.source,
     this.ownerId,
     required this.ownerName,
     required this.ownerRole,
@@ -48,15 +44,16 @@ class Short {
     this.thumbUrl,
     required this.kind,
     this.url,
-    this.ytId,
     this.likes = 0,
     this.views = 0,
     this.liked = false,
+    this.status = 'ready',
     this.hapticFine = const [],
     this.hapticEvents = const [],
   });
 
-  bool get isYouTube => source == 'youtube';
+  bool get isProcessing => status == 'processing';
+
   bool get isVr => kind == 'vr';
   bool get isMr => kind == 'mr';
   bool get isImmersive => kind == 'vr' || kind == 'mr';
@@ -70,7 +67,6 @@ class Short {
 
   factory Short.fromJson(Map<String, dynamic> json) => Short(
         id: '${json['id']}',
-        source: json['source'] as String? ?? 'creator',
         ownerId: json['ownerId'] as int?,
         ownerName: json['ownerName'] as String? ?? 'Traveler',
         ownerRole: json['ownerRole'] as String? ?? 'traveler',
@@ -79,10 +75,10 @@ class Short {
         thumbUrl: json['thumbUrl'] as String?,
         kind: json['kind'] as String? ?? 'normal',
         url: json['url'] as String?,
-        ytId: json['ytId'] as String?,
         likes: (json['likes'] as num?)?.toInt() ?? 0,
         views: (json['views'] as num?)?.toInt() ?? 0,
         liked: json['liked'] == true,
+        status: json['status'] as String? ?? 'ready',
         hapticFine: [
           for (final v in ((json['haptics'] as Map<String, dynamic>?)?['fine']
                   as List? ??
@@ -131,12 +127,14 @@ class GuideVibeApi {
     String city = '',
     int offset = 0,
     int limit = 10,
+    int? owner,
   }) async {
     final me = _me;
     final q = <String>[
       'offset=$offset',
       'limit=$limit',
       if (city.isNotEmpty) 'city=${Uri.encodeComponent(city)}',
+      if (owner != null) 'owner=$owner',
       if (me != null) 'userId=$me',
     ].join('&');
     final decoded = await _get('/guidevibe?$q');

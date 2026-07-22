@@ -25,7 +25,11 @@ class ItineraryPage extends StatefulWidget {
   State<ItineraryPage> createState() => _ItineraryPageState();
 }
 
-class _ItineraryPageState extends State<ItineraryPage> {
+class _ItineraryPageState extends State<ItineraryPage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
   // Chat history is private to each signed-in account — on a shared device
   // one user's conversations must never appear for another. The legacy
   // un-scoped 'ai.chats' key is intentionally abandoned (not migrated) so
@@ -381,6 +385,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // keep this tab alive across switches
     return Scaffold(
       backgroundColor: pageBg(context),
       appBar: AppBar(
