@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -271,23 +273,33 @@ class _CommunityPageState extends State<CommunityPage> {
 
   bool get isCreator => AuthApi.currentUser?.isCreator ?? false;
 
+  Timer? _feedTimer;
+
   @override
   void initState() {
     super.initState();
     _reload();
+    // Live feed: quiet refresh every 45s — new posts just appear, no
+    // manual pull needed (single cheap request, free-tier friendly).
+    _feedTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      if (mounted) _reload(silent: true);
+    });
   }
 
   @override
   void dispose() {
+    _feedTimer?.cancel();
     composer.dispose();
     super.dispose();
   }
 
-  Future<void> _reload() async {
-    setState(() {
-      loading = true;
-      error = null;
-    });
+  Future<void> _reload({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        loading = true;
+        error = null;
+      });
+    }
     try {
       final (list, more) = await CommunityApi.fetchPosts(community);
       if (!mounted) return;
@@ -394,6 +406,42 @@ class _CommunityPageState extends State<CommunityPage> {
         newSnackBar(context, title: e.message);
         _reload();
       }
+    }
+  }
+
+  /// The resharer adds/edits their comment on a reshare.
+  Future<void> _editReshareComment(CommunityPost post) async {
+    final ctl = TextEditingController(text: post.reshareComment ?? '');
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Your comment'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLength: 300,
+          maxLines: 3,
+          decoration:
+              const InputDecoration(hintText: 'Say why you are sharing this…'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (save != true || !mounted) return;
+    try {
+      await CommunityApi.setReshareComment(post.id, ctl.text.trim());
+      Haptics.medium();
+      await _reload();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
     }
   }
 
@@ -621,50 +669,100 @@ class _CommunityPageState extends State<CommunityPage> {
             children: [
               Row(
                 children: [
-                  GestureDetector(
-                    onTap: () => headId > 0
-                        ? showUserProfileDialog(context, headId)
-                        : null,
-                    child: CircleAvatar(
-                      radius: 16,
-                      backgroundColor: headCreator ? Colors.purple : blue,
-                      child: Text(
-                        headName.isNotEmpty ? headName[0].toUpperCase() : '?',
-                        style: const TextStyle(
-                            color: white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold),
+                  if (isReshare) ...[
+                    // Compact share line — "↻ Name shared this · 2h".
+                    const Icon(Icons.repeat, size: 15, color: Colors.grey),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => headId > 0
+                            ? showUserProfileDialog(context, headId)
+                            : null,
+                        child: Text.rich(
+                          TextSpan(
+                            text: headName,
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                                color: ink(context)),
+                            children: [
+                              TextSpan(
+                                text:
+                                    ' shared this · ${_timeAgo(post.createdAt)}',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w400,
+                                    color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: GestureDetector(
-                            onTap: () => headId > 0
-                                ? showUserProfileDialog(context, headId)
-                                : null,
-                            child: Text(headName,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700, fontSize: 14)),
-                          ),
+                    if (mine) ...[
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Edit comment',
+                        icon: const Icon(Icons.edit_outlined,
+                            size: 17, color: blue),
+                        onPressed: () => _editReshareComment(post),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Delete reshare',
+                        icon: const Icon(Icons.delete_outline,
+                            size: 17, color: Colors.grey),
+                        onPressed: () => _delete(post),
+                      ),
+                    ],
+                  ] else ...[
+                    GestureDetector(
+                      onTap: () => headId > 0
+                          ? showUserProfileDialog(context, headId)
+                          : null,
+                      child: CircleAvatar(
+                        radius: 16,
+                        backgroundColor: headCreator ? Colors.purple : blue,
+                        child: Text(
+                          headName.isNotEmpty ? headName[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                              color: white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold),
                         ),
-                        if (post.byCreator) ...[
-                          const SizedBox(width: 5),
-                          const Text('✦',
-                              style: TextStyle(
-                                  color: Colors.purple, fontSize: 13)),
-                        ],
-                        const SizedBox(width: 8),
-                        Text(_timeAgo(post.createdAt),
-                            style: const TextStyle(
-                                color: Colors.grey, fontSize: 11)),
-                      ],
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: GestureDetector(
+                              onTap: () => headId > 0
+                                  ? showUserProfileDialog(context, headId)
+                                  : null,
+                              child: Text(headName,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14)),
+                            ),
+                          ),
+                          if (post.byCreator) ...[
+                            const SizedBox(width: 5),
+                            const Text('✦',
+                                style: TextStyle(
+                                    color: Colors.purple, fontSize: 13)),
+                          ],
+                          const SizedBox(width: 8),
+                          Text(_timeAgo(post.createdAt),
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                  ],
                   if (post.city != null)
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -695,31 +793,21 @@ class _CommunityPageState extends State<CommunityPage> {
                     ),
                 ],
               ),
-              if (isReshare)
-                const Padding(
-                  padding: EdgeInsets.only(top: 2),
-                  child: Row(
-                    children: [
-                      Icon(Icons.repeat, size: 13, color: Colors.teal),
-                      SizedBox(width: 4),
-                      Text('reshared this',
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.teal,
-                              fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
               const SizedBox(height: 8),
+              if (isReshare && (post.reshareComment?.isNotEmpty ?? false)) ...[
+                Text(post.reshareComment!,
+                    style: const TextStyle(fontSize: 14, height: 1.45)),
+                const SizedBox(height: 10),
+              ],
               if (isReshare)
                 // The original post, embedded — tap opens it like any post.
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
                     color: pageBg(context),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(10),
                     border:
-                        Border.all(color: Colors.teal.withValues(alpha: 0.3)),
+                        Border.all(color: Colors.grey.withValues(alpha: 0.25)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -730,7 +818,7 @@ class _CommunityPageState extends State<CommunityPage> {
                         child: Row(
                           children: [
                             CircleAvatar(
-                              radius: 10,
+                              radius: 12,
                               backgroundColor:
                                   post.byCreator ? Colors.purple : blue,
                               child: Text(
@@ -739,18 +827,32 @@ class _CommunityPageState extends State<CommunityPage> {
                                     : '?',
                                 style: const TextStyle(
                                     color: white,
-                                    fontSize: 9,
+                                    fontSize: 10,
                                     fontWeight: FontWeight.bold),
                               ),
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 8),
                             Flexible(
-                              child: Text(post.authorName,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                              child: Text.rich(
+                                TextSpan(
+                                  text: post.authorName,
+                                  style: TextStyle(
                                       fontWeight: FontWeight.w700,
-                                      fontSize: 12.5)),
+                                      fontSize: 13.5,
+                                      color: ink(context)),
+                                  children: const [],
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
+                            if (post.byCreator)
+                              const Padding(
+                                padding: EdgeInsets.only(left: 4),
+                                child: Text('✦',
+                                    style: TextStyle(
+                                        color: Colors.purple, fontSize: 11)),
+                              ),
                           ],
                         ),
                       ),

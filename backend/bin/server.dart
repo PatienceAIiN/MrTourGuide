@@ -1387,6 +1387,34 @@ Future<Response> _resharePost(Request request, String id) async {
   return _json(201, {'ok': true});
 }
 
+/// The resharer adds or edits the comment on their reshare.
+Future<Response> _reshareComment(Request request, String id) async {
+  final postId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final comment = (body?['comment'] as String?)?.trim() ?? '';
+  if (postId == null) return _json(400, {'error': 'Bad post id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  if (comment.length > 300) {
+    return _json(400, {'error': 'Keep the comment under 300 characters.'});
+  }
+  final unsafe = _unsafeText(comment);
+  if (unsafe != null) return _json(400, {'error': unsafe});
+  final rows = await _db.execute(
+    Sql.named('UPDATE posts SET reshare_comment = @c '
+        'WHERE id = @id AND reshared_by_id = @u RETURNING id'),
+    parameters: {
+      'c': comment.isEmpty ? null : comment,
+      'id': postId,
+      'u': userId,
+    },
+  );
+  if (rows.isEmpty) {
+    return _json(403, {'error': 'Only the resharer can edit this.'});
+  }
+  return _json(200, {'ok': true});
+}
+
 /// A signed-in user rates a place 1-5 stars (one rating each, updatable).
 Future<Response> _ratePlace(Request request, String slug) async {
   final body = await _readJsonBody(request);
@@ -1728,7 +1756,8 @@ Future<Response> _communityPosts(Request request) async {
              COALESCE(json_agg(DISTINCT mr.emoji) FILTER (WHERE mr.emoji IS NOT NULL), '[]'::json),
              p.image_url,
              (SELECT count(*) FROM replies rp WHERE rp.post_id = p.id),
-             p.reshared_by, p.reshared_by_id, p.reshared_by_role
+             p.reshared_by, p.reshared_by_id, p.reshared_by_role,
+             p.reshare_comment
       FROM posts p
       LEFT JOIN (SELECT post_id, emoji, count(*) AS n FROM reactions
                  GROUP BY post_id, emoji) r ON r.post_id = p.id
@@ -1766,6 +1795,7 @@ Future<Response> _communityPosts(Request request) async {
           'resharedBy': r[12],
           'resharedById': r[13],
           'resharedByRole': r[14],
+          'reshareComment': r[15],
         }
     ],
     'hasMore': hasMore,
@@ -2042,7 +2072,9 @@ Future<Response> _deletePost(Request request, String id) async {
   if (postId == null) return _json(400, {'error': 'Bad post id.'});
   if (userId == null) return _json(401, {'error': 'Sign in first.'});
   final rows = await _db.execute(
-    Sql.named('DELETE FROM posts WHERE id = @p AND author_id = @u RETURNING 1'),
+    Sql.named('DELETE FROM posts WHERE id = @p AND '
+        '(CASE WHEN reshared_by_id IS NOT NULL '
+        'THEN reshared_by_id = @u ELSE author_id = @u END) RETURNING 1'),
     parameters: {'p': postId, 'u': userId},
   );
   if (rows.isEmpty) {
@@ -2314,12 +2346,17 @@ Future<String> _httpGetText(String url, {String? userAgent}) async {
 }
 
 const _mediaStopwords = {
-  'plan', 'trip', 'trips', 'itinerary', 'days', 'day', 'week', 'weekend',
-  'budget', 'cheap', 'friendly', 'wheelchair', 'accessible', 'with', 'for',
-  'and', 'the', 'a', 'an', 'in', 'of', 'to', 'my', 'me', 'add', 'more',
-  'make', 'best', 'around', 'near', 'visit', 'travel', 'tour', 'ideas',
-  'food', 'stops', 'one', 'two', 'three', 'four', 'five', 'monsoon',
-  'summer', 'winter', 'getaway', 'kids', 'family', 'solo',
+  'plan', 'plans', 'planning', 'trip', 'trips', 'itinerary', 'days', 'day',
+  'week', 'weekend', 'weeks', 'budget', 'cheap', 'friendly', 'wheelchair',
+  'wheel', 'chair', 'accessible', 'accessibility', 'disabled', 'elderly',
+  'senior', 'seniors', 'with', 'for', 'and', 'the', 'a', 'an', 'in', 'of',
+  'to', 'my', 'me', 'add', 'more', 'make', 'best', 'top', 'around', 'near',
+  'nearby', 'visit', 'visiting', 'travel', 'tour', 'tours', 'touring',
+  'ideas', 'food', 'stops', 'one', 'two', 'three', 'four', 'five', 'six',
+  'monsoon', 'summer', 'winter', 'rainy', 'getaway', 'kids', 'family',
+  'solo', 'want', 'need', 'show', 'give', 'from', 'into', 'via', 'how',
+  'what', 'where', 'when', 'place', 'places', 'city', 'cities', 'things',
+  'thing', 'see', 'must', 'guide', 'help', 'please', 'suggest',
 };
 
 /// Keeps only the meaningful terms (place names, subjects) so visuals
@@ -2330,8 +2367,11 @@ String _focusMediaQuery(String q) {
       .where((w) =>
           w.length > 2 && !_mediaStopwords.contains(w.toLowerCase()))
       .toList();
-  final focused = words.take(4).join(' ');
-  return focused.isEmpty ? q : focused;
+  final focused = words.take(3).join(' ');
+  if (focused.isEmpty) return q;
+  // Bias toward destination content: a bare place name becomes
+  // "<place> tourism" so images AND videos show the destination.
+  return words.length <= 2 ? '$focused tourism' : focused;
 }
 
 Future<Response> _searchMedia(Request request) async {
@@ -2345,26 +2385,34 @@ Future<Response> _searchMedia(Request request) async {
     return _json(200, cached.$2);
   }
 
-  // Wikimedia Commons photo search (direct upload.wikimedia.org thumbs
-  // send CORS headers, so the app can render them).
+  // Wikipedia ARTICLE lead images: searching articles (not raw files)
+  // returns landmark photos of the actual destination — no newspaper
+  // scans or unrelated files. Thumbs come from upload.wikimedia.org
+  // which sends CORS headers, so the app can render them.
   final images = <String>[];
   try {
     final body = await _httpGetText(
-        'https://commons.wikimedia.org/w/api.php?action=query&format=json'
+        'https://en.wikipedia.org/w/api.php?action=query&format=json'
         '&generator=search&gsrsearch=${Uri.encodeQueryComponent(q)}'
-        '&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url&iiurlwidth=640');
+        '&gsrlimit=10&prop=pageimages&piprop=thumbnail&pithumbsize=640');
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     final pages =
         (decoded['query']?['pages'] as Map<String, dynamic>?) ?? {};
-    for (final p in pages.values) {
-      final info = (p['imageinfo'] as List?)?.first as Map<String, dynamic>?;
-      final thumb = info?['thumburl'] as String?;
-      if (thumb != null &&
-          (thumb.endsWith('.jpg') ||
-              thumb.endsWith('.jpeg') ||
-              thumb.endsWith('.png'))) {
-        images.add(thumb);
+    final entries = pages.values.toList()
+      ..sort((a, b) =>
+          ((a['index'] as num?) ?? 99).compareTo((b['index'] as num?) ?? 99));
+    for (final p in entries) {
+      final thumb = (p['thumbnail'] as Map<String, dynamic>?)?['source']
+          as String?;
+      if (thumb == null) continue;
+      final lower = thumb.toLowerCase();
+      if (lower.contains('.pdf') ||
+          lower.contains('.djvu') ||
+          lower.contains('.tif') ||
+          lower.endsWith('.svg.png')) {
+        continue; // documents, maps and logos are not travel visuals
       }
+      images.add(thumb);
       if (images.length >= 6) break;
     }
   } catch (_) {}
@@ -3570,6 +3618,7 @@ Future<void> main() async {
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by TEXT",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_id INTEGER",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshared_by_role TEXT",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS reshare_comment TEXT",
   ]) {
     try {
       await _db.execute(ddl);
@@ -3658,6 +3707,7 @@ Future<void> main() async {
     ..post('/community/posts', _createPost)
     ..post('/community/posts/<id>/react', _react)
     ..post('/community/posts/<id>/reshare', _resharePost)
+    ..post('/community/posts/<id>/reshare-comment', _reshareComment)
     ..post('/community/posts/<id>/delete', _deletePost)
     ..get('/community/posts/<id>/replies', _replies)
     ..post('/community/posts/<id>/replies', _addReply)

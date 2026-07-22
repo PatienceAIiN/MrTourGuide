@@ -30,6 +30,9 @@ class CommunityPost {
   final String? resharedBy;
   final int? resharedById;
   final String? resharedByRole;
+
+  /// The resharer's own comment on top of the shared post.
+  final String? reshareComment;
   int replyCount;
 
   CommunityPost({
@@ -47,6 +50,7 @@ class CommunityPost {
     this.resharedBy,
     this.resharedById,
     this.resharedByRole,
+    this.reshareComment,
     this.replyCount = 0,
   });
 
@@ -158,6 +162,12 @@ class CommunityApi {
   /// Reshare a post (original author credited + notified).
   static Future<void> reshare(int postId) async {
     await _send('POST', '/community/posts/$postId/reshare', {'userId': _me});
+  }
+
+  /// Add or edit the resharer's comment on their reshare.
+  static Future<void> setReshareComment(int postId, String comment) async {
+    await _send('POST', '/community/posts/$postId/reshare-comment',
+        {'userId': _me, 'comment': comment});
   }
 
   static Future<void> addReply(int postId, String body,
