@@ -299,6 +299,7 @@ class _SingUpPageState extends State<SingUpPage> {
       color: white,
       child: TextFormField(
         autofocus: false,
+        scrollPadding: const EdgeInsets.only(bottom: 180),
         textInputAction: textInputAction,
         keyboardType: keyboardType,
         controller: controller,

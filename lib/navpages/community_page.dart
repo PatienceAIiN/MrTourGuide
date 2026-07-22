@@ -311,6 +311,7 @@ class _CommunityPageState extends State<CommunityPage> {
                 children: [
                   Expanded(
                     child: TextField(
+                      scrollPadding: const EdgeInsets.only(bottom: 180),
                       controller: composer,
                       maxLength: 1000,
                       decoration: InputDecoration(
@@ -561,17 +562,21 @@ class _CommunityPageState extends State<CommunityPage> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => _PostModal(
-        post: post,
-        onChanged: () {
-          if (mounted) setState(() {});
-        },
-        onDeletePost: () async {
-          Navigator.pop(context);
-          await _delete(post);
-        },
-        toggleReaction: _toggleReaction,
-        timeAgo: _timeAgo,
+      builder: (context) => Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: _PostModal(
+          post: post,
+          onChanged: () {
+            if (mounted) setState(() {});
+          },
+          onDeletePost: () async {
+            Navigator.pop(context);
+            await _delete(post);
+          },
+          toggleReaction: _toggleReaction,
+          timeAgo: _timeAgo,
+        ),
       ),
     );
   }
@@ -863,6 +868,7 @@ class _PostModalState extends State<_PostModal> {
                     Expanded(
                       child: TextField(
                         controller: replyCtl,
+                        scrollPadding: const EdgeInsets.only(bottom: 180),
                         maxLength: 500,
                         onSubmitted: (_) => _send(),
                         decoration: InputDecoration(

@@ -64,6 +64,11 @@ class ExperienceConfig {
   /// the feel frame by frame after processing.
   final String feelMode;
 
+  /// Creator-set location — makes state/country searches find this video.
+  final String country;
+  final String state;
+  final String cityName;
+
   const ExperienceConfig({
     this.haptics = true,
     this.sound = true,
@@ -71,6 +76,9 @@ class ExperienceConfig {
     this.kind = 'normal',
     this.autoplay = true,
     this.feelMode = 'auto',
+    this.country = '',
+    this.state = '',
+    this.cityName = '',
   });
 
   ExperienceConfig copyWith({
@@ -80,6 +88,9 @@ class ExperienceConfig {
     String? kind,
     bool? autoplay,
     String? feelMode,
+    String? country,
+    String? state,
+    String? cityName,
   }) =>
       ExperienceConfig(
         haptics: haptics ?? this.haptics,
@@ -88,6 +99,9 @@ class ExperienceConfig {
         kind: kind ?? this.kind,
         autoplay: autoplay ?? this.autoplay,
         feelMode: feelMode ?? this.feelMode,
+        country: country ?? this.country,
+        state: state ?? this.state,
+        cityName: cityName ?? this.cityName,
       );
 
   factory ExperienceConfig.fromJson(Map<String, dynamic>? json) =>
@@ -98,6 +112,9 @@ class ExperienceConfig {
         kind: json?['kind'] as String? ?? 'normal',
         autoplay: json?['autoplay'] as bool? ?? true,
         feelMode: json?['feelMode'] as String? ?? 'auto',
+        country: json?['country'] as String? ?? '',
+        state: json?['state'] as String? ?? '',
+        cityName: json?['cityName'] as String? ?? '',
       );
 
   Map<String, dynamic> toJson() => {
@@ -107,6 +124,9 @@ class ExperienceConfig {
         'kind': kind,
         'autoplay': autoplay,
         'feelMode': feelMode,
+        'country': country,
+        'state': state,
+        'cityName': cityName,
       };
 }
 
@@ -301,9 +321,14 @@ class MediaApi {
     );
   }
 
-  /// AI itinerary plan (backend → Groq with web search).
-  static Future<ItineraryResult> aiItinerary(String query) async {
-    final decoded = await _postJson('/ai/itinerary', {'query': query});
+  /// AI itinerary plan (backend → Groq with web search). Pass [history]
+  /// (prior {role, content} turns) so follow-ups revise the same plan.
+  static Future<ItineraryResult> aiItinerary(String query,
+      {List<Map<String, String>> history = const []}) async {
+    final decoded = await _postJson('/ai/itinerary', {
+      'query': query,
+      if (history.isNotEmpty) 'history': history,
+    });
     return ItineraryResult(
       plan: decoded['plan'] as String,
       places: _parsePlaces(decoded['places']),
@@ -437,6 +462,36 @@ class MediaApi {
       int videoId, ExperienceConfig config) async {
     final decoded = await _postJson('/videos/$videoId/config',
         {...config.toJson(), 'userId': AuthApi.currentUser?.id});
+    return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+  }
+
+  /// Creator: set a custom thumbnail for an owned video (compressed
+  /// server-side, like YouTube Studio).
+  static Future<VideoItem> uploadThumbnail({
+    required int videoId,
+    required String filename,
+    required Uint8List bytes,
+  }) async {
+    final uri = Uri.parse('$apiBase/videos/$videoId/thumbnail')
+        .replace(queryParameters: {
+      'filename': filename,
+      'userId': '${AuthApi.currentUser?.id ?? ''}',
+    });
+    late http.Response response;
+    try {
+      response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: bytes)
+          .timeout(const Duration(minutes: 2));
+    } catch (_) {
+      throw const AuthException('Could not upload the thumbnail.');
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw AuthException(
+          decoded['error'] as String? ?? 'Thumbnail upload failed.');
+    }
     return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
   }
 

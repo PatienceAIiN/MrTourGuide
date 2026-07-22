@@ -1361,11 +1361,27 @@ Future<Response> _aiItinerary(Request request) async {
   final query = (body?['query'] as String?)?.trim() ?? '';
   if (query.isEmpty) return _json(400, {'error': 'query required'});
 
+  // Follow-up chat: prior turns come along so the AI can revise the same
+  // plan ("add a day", "make it cheaper"). Capped hard to protect tokens.
+  final history = <Map<String, String>>[];
+  for (final h in (body?['history'] as List? ?? const [])) {
+    if (h is! Map) continue;
+    final role = h['role'] == 'assistant' ? 'assistant' : 'user';
+    var content = (h['content'] as String? ?? '').trim();
+    if (content.isEmpty) continue;
+    if (content.length > 2500) content = content.substring(0, 2500);
+    history.add({'role': role, 'content': content});
+    if (history.length >= 8) break;
+  }
+
+  // Only first turns are cacheable — follow-ups depend on the conversation.
   final cacheKey = query.toLowerCase();
-  final cached = _itineraryCache[cacheKey];
-  if (cached != null &&
-      DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
-    return _json(200, cached.$2);
+  if (history.isEmpty) {
+    final cached = _itineraryCache[cacheKey];
+    if (cached != null &&
+        DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
+      return _json(200, cached.$2);
+    }
   }
 
   try {
@@ -1379,17 +1395,24 @@ Future<Response> _aiItinerary(Request request) async {
       'messages': [
         {
           'role': 'system',
-          'content': "You are Mr.Tour Guide's AI travel planner. Draft a "
-              'concise, practical day-by-day itinerary for the request. '
-              "Format strictly: a one-line intro, then lines starting with "
-              "'Day N: <title>' each followed by 2-3 short sentences, then "
-              "a section starting with 'Getting there:' (realistic flight "
-              'and train options with typical routes), then a section '
-              "starting with 'Stay:' (hotel, homestay and budget options), "
-              "then a final section starting with 'Tips:' (best time, local "
-              'transport, accessibility notes). Max 5 days. Plain text only '
-              '— no markdown symbols.'
+          'content': "You are Mr.Tour Guide's AI travel planner and helper. "
+              'When the user asks to plan or revise a trip, draft a concise '
+              'practical day-by-day itinerary. Format strictly: a one-line '
+              "intro, then lines starting with 'Day N: <title>' each "
+              'followed by 2-3 short sentences, then a section starting '
+              "with 'Getting there:' (realistic flight and train options), "
+              "then a section starting with 'Stay:' (hotel, homestay and "
+              "budget options), then a final section starting with 'Tips:'. "
+              'Max 6 days. On follow-ups like "add a day" or "make it '
+              'cheaper", revise the previous plan from the conversation and '
+              'reply with the FULL updated plan in the same format. When '
+              'the user instead asks a question about the trip (packing, '
+              'safety, food, costs, weather, anything), answer naturally '
+              'and helpfully in a few short sentences using the '
+              'conversation context — never say you lack context. Plain '
+              'text only — no markdown symbols.'
         },
+        ...history,
         {'role': 'user', 'content': query},
       ],
       'max_tokens': 900,
@@ -1407,7 +1430,9 @@ Future<Response> _aiItinerary(Request request) async {
       'plan': plan.trim(),
       'places': await _matchPlaces(query),
     };
-    _itineraryCache[cacheKey] = (DateTime.now(), payload);
+    if (history.isEmpty) {
+      _itineraryCache[cacheKey] = (DateTime.now(), payload);
+    }
     return _json(200, payload);
   } catch (_) {
     return _json(502, {'error': 'AI planner unavailable right now.'});
@@ -1568,6 +1593,93 @@ Future<Response> _aiSearch(Request request) async {
   }
 }
 
+/// Aggregated notification inbox: new experiences, new places, and social
+/// activity (reactions + replies) on the caller's community posts.
+Future<Response> _notifications(Request request) async {
+  final since = DateTime.tryParse(request.url.queryParameters['since'] ?? '') ??
+      DateTime.now().toUtc().subtract(const Duration(days: 7));
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  final items = <Map<String, Object?>>[];
+
+  // New experiences (excluding the caller's own uploads).
+  final vids = await _db.execute(
+    Sql.named("SELECT title, city, uploaded_at FROM videos "
+        "WHERE status = 'ready' AND uploaded_at > @since "
+        '${userId != null ? 'AND (owner_id IS NULL OR owner_id != @me) ' : ''}'
+        'ORDER BY uploaded_at DESC LIMIT 10'),
+    parameters: {'since': since, if (userId != null) 'me': userId},
+  );
+  for (final r in vids) {
+    items.add({
+      'type': 'video',
+      'title': 'New experience: ${r[0]}',
+      'city': r[1],
+      'at': (r[2] as DateTime).toIso8601String(),
+    });
+  }
+
+  // New places added to the platform.
+  try {
+    final places = await _db.execute(
+      Sql.named('SELECT name, slug, created_at FROM cities '
+          'WHERE created_at > @since ORDER BY created_at DESC LIMIT 5'),
+      parameters: {'since': since},
+    );
+    for (final r in places) {
+      items.add({
+        'type': 'city',
+        'title': 'New place on Mr.TourGuide: ${r[0]}',
+        'city': r[1],
+        'at': (r[2] as DateTime).toIso8601String(),
+      });
+    }
+  } catch (_) {}
+
+  // Social: reactions + replies on my posts.
+  if (userId != null) {
+    try {
+      final reacts = await _db.execute(
+        Sql.named('SELECT u.name, r.emoji, r.created_at, p.id '
+            'FROM reactions r JOIN posts p ON p.id = r.post_id '
+            'JOIN users u ON u.id = r.user_id '
+            'WHERE p.author_id = @me AND r.user_id != @me '
+            'AND r.created_at > @since '
+            'ORDER BY r.created_at DESC LIMIT 10'),
+        parameters: {'me': userId, 'since': since},
+      );
+      for (final r in reacts) {
+        items.add({
+          'type': 'reaction',
+          'title': '${r[0]} reacted ${r[1]} to your post',
+          'postId': r[3],
+          'at': (r[2] as DateTime).toIso8601String(),
+        });
+      }
+      final reps = await _db.execute(
+        Sql.named('SELECT rp.author_name, rp.body, rp.created_at, p.id '
+            'FROM replies rp JOIN posts p ON p.id = rp.post_id '
+            'WHERE p.author_id = @me AND rp.author_id != @me '
+            'AND rp.created_at > @since '
+            'ORDER BY rp.created_at DESC LIMIT 10'),
+        parameters: {'me': userId, 'since': since},
+      );
+      for (final r in reps) {
+        var body = r[1] as String;
+        if (body.length > 60) body = '${body.substring(0, 57)}...';
+        items.add({
+          'type': 'reply',
+          'title': '${r[0]} replied: $body',
+          'postId': r[3],
+          'at': (r[2] as DateTime).toIso8601String(),
+        });
+      }
+    } catch (_) {}
+  }
+
+  items.sort((a, b) => (b['at'] as String).compareTo(a['at'] as String));
+  return _json(200, {'items': items.take(25).toList()});
+}
+
 /// What's new since a timestamp — powers the in-app "new content" toast.
 /// Excludes the caller's own uploads so creators aren't notified of
 /// themselves.
@@ -1646,16 +1758,21 @@ Future<Response> _search(Request request) async {
   if (q.isEmpty) return _json(200, {'cities': [], 'videos': []});
   final pattern = '%$q%';
 
+  // Location-aware: state/country queries ("Rajasthan", "India") match
+  // via the city's location line and each video's creator-set location.
   final cities = await _db.execute(
     Sql.named('SELECT c.slug, c.name, COUNT(v.id) FROM cities c '
         'LEFT JOIN videos v ON v.city = c.slug '
-        'WHERE c.name ILIKE @p OR c.slug ILIKE @p '
+        'WHERE c.name ILIKE @p OR c.slug ILIKE @p OR c.location ILIKE @p '
         'GROUP BY c.slug, c.name ORDER BY c.name'),
     parameters: {'p': pattern},
   );
   final videos = await _db.execute(
     Sql.named('SELECT $_videoColumns FROM videos '
-        'WHERE title ILIKE @p OR city ILIKE @p '
+        "WHERE title ILIKE @p OR city ILIKE @p "
+        "OR coalesce(config->>'state', '') ILIKE @p "
+        "OR coalesce(config->>'country', '') ILIKE @p "
+        "OR coalesce(config->>'cityName', '') ILIKE @p "
         'ORDER BY uploaded_at DESC, id DESC LIMIT 30'),
     parameters: {'p': pattern},
   );
@@ -1686,6 +1803,13 @@ Future<Response> _upload(Request request) async {
     parameters: {'city': city},
   );
   if (known.isEmpty) return _json(404, {'error': 'Unknown city: $city'});
+  const videoExts = {
+    'mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', '3gp', '3g2', 'mts', 'm2ts'
+  };
+  if (!videoExts.contains(original.split('.').last.toLowerCase())) {
+    return _json(400,
+        {'error': 'Only video files can be published (MP4, MOV, MKV...).'});
+  }
 
   // Unique stored name: <epoch-ms>_<original>.
   final stored =
@@ -1753,6 +1877,19 @@ Future<Response> _updateConfig(Request request, String id) async {
     'feelMode': const ['auto', 'perframe'].contains(body['feelMode'])
         ? body['feelMode']
         : 'auto',
+    // Creator-set location — powers state/country search.
+    'country': body['country'] is String
+        ? (body['country'] as String).trim().substring(
+            0, (body['country'] as String).trim().length.clamp(0, 60))
+        : '',
+    'state': body['state'] is String
+        ? (body['state'] as String).trim().substring(
+            0, (body['state'] as String).trim().length.clamp(0, 60))
+        : '',
+    'cityName': body['cityName'] is String
+        ? (body['cityName'] as String).trim().substring(
+            0, (body['cityName'] as String).trim().length.clamp(0, 60))
+        : '',
   };
   final rows = await _db.execute(
     Sql.named('UPDATE videos SET config = @config WHERE id = @id '
@@ -1760,6 +1897,64 @@ Future<Response> _updateConfig(Request request, String id) async {
     parameters: {'id': videoId, 'config': jsonEncode(config)},
   );
   if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
+  return _json(200, {'video': _videoRowToJson(rows.first)});
+}
+
+/// Creator sets a custom thumbnail for an owned video (like YouTube
+/// Studio). Image is compressed server-side to a 640px JPG.
+Future<Response> _uploadThumbnail(Request request, String id) async {
+  final videoId = int.tryParse(id);
+  if (videoId == null) return _json(400, {'error': 'Bad video id.'});
+  final params = request.url.queryParameters;
+  final gate = await _requireOwner(videoId, int.tryParse(params['userId'] ?? ''));
+  if (gate != null) return gate;
+
+  final original = _sanitizeFilename(params['filename'] ?? 'thumb.jpg');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'jpg', 'jpeg', 'png', 'webp'}.contains(ext)) {
+    return _json(400, {'error': 'Thumbnails must be JPG, PNG or WebP.'});
+  }
+  final bytes = <int>[];
+  await for (final chunk in request.read()) {
+    bytes.addAll(chunk);
+    if (bytes.length > _maxAvatarBytes) {
+      return _json(413, {'error': 'Thumbnails are limited to 5 MB.'});
+    }
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+
+  final cityRow = await _db.execute(
+    Sql.named('SELECT city FROM videos WHERE id = @id'),
+    parameters: {'id': videoId},
+  );
+  if (cityRow.isEmpty) return _json(404, {'error': 'Video not found.'});
+  final city = cityRow.first[0] as String;
+
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_th_$stamp.$ext');
+  await tmpIn.writeAsBytes(bytes);
+  final tmpOut = File('${Directory.systemTemp.path}/mrt_th_$stamp.jpg');
+  final result = await Process.run('ffmpeg', [
+    '-y', '-loglevel', 'error',
+    '-i', tmpIn.path,
+    '-vf', "scale='min(640,iw)':-2",
+    '-q:v', '5',
+    tmpOut.path,
+  ]);
+  await tmpIn.delete();
+  if (result.exitCode != 0 || !await tmpOut.exists()) {
+    return _json(400, {'error': 'That image could not be processed.'});
+  }
+  final thumbName = 'custthumb_${videoId}_$stamp.jpg';
+  await _storage.save(
+      city, thumbName, Stream.value(await tmpOut.readAsBytes()));
+  await tmpOut.delete();
+  final thumbUrl = '/files/$city/$thumbName';
+  final rows = await _db.execute(
+    Sql.named('UPDATE videos SET thumb_url = @t WHERE id = @id '
+        'RETURNING $_videoColumns'),
+    parameters: {'t': thumbUrl, 'id': videoId},
+  );
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
@@ -2235,6 +2430,17 @@ Future<void> main() async {
       'query TEXT NOT NULL, '
       'plan TEXT NOT NULL, '
       'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  // Notification timeline columns (no-ops when already present). Guarded:
+  // on databases where the app user doesn't own these tables the ALTER is
+  // applied manually instead — startup must never crash on it.
+  for (final table in ['cities', 'reactions']) {
+    try {
+      await _db.execute('ALTER TABLE $table ADD COLUMN IF NOT EXISTS '
+          'created_at TIMESTAMPTZ NOT NULL DEFAULT now()');
+    } catch (e) {
+      print('migration note: $table.created_at not added ($e)');
+    }
+  }
 
   final uploadsDir =
       '${File(Platform.script.toFilePath()).parent.parent.path}/uploads';
@@ -2272,6 +2478,7 @@ Future<void> main() async {
     ..get('/videos', _videos)
     ..get('/videos/trending', _trending)
     ..get('/whats-new', _whatsNew)
+    ..get('/notifications', _notifications)
     ..get('/videos/suggest', _suggest)
     ..get('/cities/<slug>/weather', _weather)
     ..get('/search', _search)
@@ -2292,6 +2499,7 @@ Future<void> main() async {
     ..post('/community/upload-image', _uploadCommunityImage)
     ..post('/upload', _upload)
     ..post('/videos/<id>/config', _updateConfig)
+    ..post('/videos/<id>/thumbnail', _uploadThumbnail)
     ..post('/videos/<id>/delete', _deleteVideo)
     ..post('/videos/<id>/rename', _renameVideo)
     ..post('/auth/change-password', _changePassword)

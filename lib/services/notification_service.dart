@@ -20,6 +20,33 @@ class WhatsNew {
   }
 }
 
+/// One row in the bell inbox. [type]: video | city | reaction | reply |
+/// update (the last is added client-side from the OTA manifest).
+class AppNotification {
+  final String type;
+  final String title;
+  final String? city;
+  final int? postId;
+  final DateTime at;
+
+  const AppNotification({
+    required this.type,
+    required this.title,
+    this.city,
+    this.postId,
+    required this.at,
+  });
+
+  factory AppNotification.fromJson(Map<String, dynamic> json) =>
+      AppNotification(
+        type: json['type'] as String? ?? 'video',
+        title: json['title'] as String? ?? '',
+        city: json['city'] as String?,
+        postId: json['postId'] as int?,
+        at: DateTime.tryParse(json['at'] as String? ?? '') ?? DateTime.now(),
+      );
+}
+
 class NotificationService {
   static const _kLastSeen = 'notify.lastSeen';
 
@@ -41,6 +68,24 @@ class NotificationService {
       await prefs.setString(
           _kLastSeen, (at ?? DateTime.now().toUtc()).toIso8601String());
     } catch (_) {}
+  }
+
+  /// Aggregated inbox for the bell modal: new experiences, new places and
+  /// social activity (reactions/replies on your posts) — last 7 days.
+  static Future<List<AppNotification>> recent() async {
+    try {
+      final since = DateTime.now().toUtc().subtract(const Duration(days: 7));
+      final me = AuthApi.currentUser?.id;
+      final decoded = await MediaApi.getJson(
+          '/notifications?since=${Uri.encodeQueryComponent(since.toIso8601String())}'
+          '${me != null ? '&userId=$me' : ''}');
+      return [
+        for (final n in decoded['items'] as List)
+          AppNotification.fromJson(n as Map<String, dynamic>)
+      ];
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// Returns new content since the device last saw the catalog, or null

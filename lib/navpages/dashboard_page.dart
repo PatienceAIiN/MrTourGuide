@@ -157,6 +157,24 @@ class _DashboardPageState extends State<DashboardPage> {
     final file = picked?.files.single;
     if (file == null || file.bytes == null) return;
     if (!mounted) return;
+    const videoExts = {
+      'mp4',
+      'mov',
+      'm4v',
+      'mkv',
+      'webm',
+      'avi',
+      '3gp',
+      '3g2',
+      'mts',
+      'm2ts'
+    };
+    final ext = file.name.split('.').last.toLowerCase();
+    if (!videoExts.contains(ext)) {
+      newSnackBar(context,
+          title: 'Only video files can be published (MP4, MOV, MKV...).');
+      return;
+    }
 
     await _uploadControlSheet(city, file.name, file.bytes!);
   }
@@ -172,6 +190,20 @@ class _DashboardPageState extends State<DashboardPage> {
     );
     var config = const ExperienceConfig();
     var busy = false;
+    Uint8List? thumbBytes;
+    String thumbName = '';
+    // Location defaults from the city's catalog line ("Jaipur, Rajasthan").
+    final cityLoc = cities
+        .firstWhere((c) => c.slug == city,
+            orElse: () => City(slug: city, name: city, videoCount: 0))
+        .location
+        .split(',');
+    final cityCtl = TextEditingController(
+        text: cityLoc.isNotEmpty ? cityLoc.first.trim() : '');
+    final stateCtl = TextEditingController(
+        text: cityLoc.length > 1 ? cityLoc[1].trim() : '');
+    final countryCtl = TextEditingController(
+        text: cityLoc.length > 2 ? cityLoc[2].trim() : 'India');
     final sizeMb = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
     await showModalBottomSheet<void>(
       context: context,
@@ -220,6 +252,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 const SizedBox(height: 14),
                 TextField(
                   controller: titleCtl,
+                  scrollPadding: const EdgeInsets.only(bottom: 200),
                   decoration: const InputDecoration(
                     labelText: 'Experience title',
                     hintText: 'e.g. Taj Mahal Sunrise',
@@ -291,6 +324,114 @@ class _DashboardPageState extends State<DashboardPage> {
                       style: TextStyle(color: Colors.grey, fontSize: 11.5),
                     ),
                   ),
+                const SizedBox(height: 16),
+                const Text('Location',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: countryCtl,
+                        scrollPadding: const EdgeInsets.only(bottom: 200),
+                        decoration: const InputDecoration(
+                            labelText: 'Country',
+                            isDense: true,
+                            border: OutlineInputBorder()),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: stateCtl,
+                        scrollPadding: const EdgeInsets.only(bottom: 200),
+                        decoration: const InputDecoration(
+                            labelText: 'State',
+                            isDense: true,
+                            border: OutlineInputBorder()),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: cityCtl,
+                        scrollPadding: const EdgeInsets.only(bottom: 200),
+                        decoration: const InputDecoration(
+                            labelText: 'City',
+                            isDense: true,
+                            border: OutlineInputBorder()),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'Searches for this state or country will surface the '
+                  'experience.',
+                  style: TextStyle(color: Colors.grey, fontSize: 11),
+                ),
+                const SizedBox(height: 16),
+                const Text('Thumbnail',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: thumbBytes != null
+                          ? Image.memory(thumbBytes!,
+                              width: 96, height: 56, fit: BoxFit.cover)
+                          : Container(
+                              width: 96,
+                              height: 56,
+                              color: Colors.grey.withValues(alpha: 0.18),
+                              child: const Icon(Icons.image_outlined,
+                                  color: Colors.grey),
+                            ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          OutlinedButton.icon(
+                            icon:
+                                const Icon(Icons.add_photo_alternate, size: 16),
+                            label: Text(thumbBytes == null
+                                ? 'Custom thumbnail'
+                                : 'Change'),
+                            onPressed: () async {
+                              final img = await FilePicker.platform.pickFiles(
+                                  type: FileType.image, withData: true);
+                              final f = img?.files.single;
+                              if (f == null || f.bytes == null) return;
+                              if (f.bytes!.length > 5 * 1024 * 1024) {
+                                newSnackBar(context,
+                                    title: 'Thumbnails are limited to 5 MB.');
+                                return;
+                              }
+                              setSheet(() {
+                                thumbBytes = f.bytes;
+                                thumbName = f.name;
+                              });
+                            },
+                          ),
+                          Text(
+                            thumbBytes == null
+                                ? 'Auto: a frame is picked from the video.'
+                                : thumbName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.waves, color: Colors.purple),
@@ -348,6 +489,11 @@ class _DashboardPageState extends State<DashboardPage> {
                     }
                     setSheet(() => busy = true);
                     setState(() => uploading = true);
+                    config = config.copyWith(
+                      country: countryCtl.text.trim(),
+                      state: stateCtl.text.trim(),
+                      cityName: cityCtl.text.trim(),
+                    );
                     try {
                       final video = await MediaApi.uploadVideo(
                         city: city,
@@ -359,6 +505,14 @@ class _DashboardPageState extends State<DashboardPage> {
                       try {
                         await MediaApi.updateConfig(video.id, config);
                       } catch (_) {}
+                      if (thumbBytes != null) {
+                        try {
+                          await MediaApi.uploadThumbnail(
+                              videoId: video.id,
+                              filename: thumbName,
+                              bytes: thumbBytes!);
+                        } catch (_) {}
+                      }
                       if (!mounted) return;
                       setState(() => uploading = false);
                       if (sheetContext.mounted) Navigator.pop(sheetContext);
@@ -524,6 +678,28 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  /// Creator swaps an owned video's thumbnail (YouTube-Studio style).
+  Future<void> _changeThumbnail(VideoItem video) async {
+    final picked = await FilePicker.platform
+        .pickFiles(type: FileType.image, withData: true);
+    final file = picked?.files.single;
+    if (file == null || file.bytes == null || !mounted) return;
+    if (file.bytes!.length > 5 * 1024 * 1024) {
+      newSnackBar(context, title: 'Thumbnails are limited to 5 MB.');
+      return;
+    }
+    try {
+      final updated = await MediaApi.uploadThumbnail(
+          videoId: video.id, filename: file.name, bytes: file.bytes!);
+      if (!mounted) return;
+      final i = videos.indexWhere((v) => v.id == updated.id);
+      if (i >= 0) setState(() => videos[i] = updated);
+      newSnackBar(context, title: 'Thumbnail updated.');
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
   Future<void> _changeCover() async {
     final city = selectedCity;
     if (city == null) return;
@@ -619,21 +795,25 @@ class _DashboardPageState extends State<DashboardPage> {
             style: TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
       ),
       // Creators publish; travelers just experience.
+      // Lifted above the floating bottom navbar so it is never hidden.
       floatingActionButton: (selectedCity == null || !isCreator)
           ? null
-          : FloatingActionButton.extended(
-              onPressed: uploading ? null : _upload,
-              backgroundColor: blue,
-              foregroundColor: white,
-              icon: uploading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          color: white, strokeWidth: 2),
-                    )
-                  : const Icon(Icons.upload),
-              label: Text(uploading ? 'Uploading...' : 'Upload video'),
+          : Padding(
+              padding: const EdgeInsets.only(bottom: 86),
+              child: FloatingActionButton.extended(
+                onPressed: uploading ? null : _upload,
+                backgroundColor: blue,
+                foregroundColor: white,
+                icon: uploading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            color: white, strokeWidth: 2),
+                      )
+                    : const Icon(Icons.upload),
+                label: Text(uploading ? 'Uploading...' : 'Upload video'),
+              ),
             ),
       body: RefreshIndicator(
         onRefresh: _loadCities,
@@ -817,6 +997,12 @@ class _DashboardPageState extends State<DashboardPage> {
                     tooltip: 'Experience settings',
                     icon: const Icon(Icons.tune, color: blue),
                     onPressed: () => _configSheet(video),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Change thumbnail',
+                    icon: const Icon(Icons.image_outlined, color: blue),
+                    onPressed: () => _changeThumbnail(video),
                   ),
                   IconButton(
                     visualDensity: VisualDensity.compact,

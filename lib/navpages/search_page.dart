@@ -345,22 +345,6 @@ class _SearchPageState extends State<SearchPage> {
         iconTheme: IconThemeData(color: ink(context)),
         title: Text('Search',
             style: TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
-        actions: [
-          // AI toggle: off = classic search, on = adds the AI overview.
-          Row(
-            children: [
-              const Icon(Icons.auto_awesome, size: 16, color: Colors.purple),
-              const SizedBox(width: 4),
-              Text('AI', style: TextStyle(color: ink(context), fontSize: 14)),
-              Switch(
-                value: aiEnabled,
-                activeThumbColor: Colors.purple,
-                onChanged: _setAi,
-              ),
-            ],
-          ),
-          const SizedBox(width: 8),
-        ],
       ),
       body: Column(
         children: [
@@ -605,9 +589,23 @@ class _SearchPageState extends State<SearchPage> {
             ),
           const SizedBox(height: 18),
         ],
-        const Text('Try searching',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-        const SizedBox(height: 10),
+        Row(
+          children: [
+            const Text('Try searching',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            const Spacer(),
+            // AI toggle: off = classic search, on = adds the AI overview.
+            const Icon(Icons.auto_awesome, size: 16, color: Colors.purple),
+            const SizedBox(width: 4),
+            Text('AI', style: TextStyle(color: ink(context), fontSize: 14)),
+            Switch(
+              value: aiEnabled,
+              activeThumbColor: Colors.purple,
+              onChanged: _setAi,
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
         Wrap(
           spacing: 8,
           runSpacing: 8,

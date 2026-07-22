@@ -218,6 +218,7 @@ class _LoginPageState extends State<LoginPage> {
       borderRadius: BorderRadius.circular(5.0),
       child: TextFormField(
         autofocus: false,
+        scrollPadding: const EdgeInsets.only(bottom: 180),
         textInputAction: textInputAction,
         keyboardType: keyboardType,
         controller: controller,

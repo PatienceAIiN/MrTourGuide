@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../constant.dart';
@@ -21,12 +24,22 @@ class ItineraryPage extends StatefulWidget {
 }
 
 class _ItineraryPageState extends State<ItineraryPage> {
+  static const _kChats = 'ai.chats';
+
   final prompt = TextEditingController();
+  final followUp = TextEditingController();
   bool planning = false;
   String? error;
   ItineraryResult? result;
   MediaSuggestions? media;
   String lastQuery = '';
+
+  /// The running conversation: {'role': 'user'|'assistant', 'content': ...}.
+  final List<Map<String, String>> chat = [];
+  String chatId = '';
+
+  /// Past conversations, saved on this device — reopen and keep asking.
+  List<Map<String, dynamic>> chatHistory = [];
 
   List<SavedItinerary> saved = [];
   bool savedLoading = false;
@@ -37,12 +50,116 @@ class _ItineraryPageState extends State<ItineraryPage> {
   void initState() {
     super.initState();
     _loadSaved();
+    _loadChatHistory();
   }
 
   @override
   void dispose() {
     prompt.dispose();
+    followUp.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadChatHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kChats);
+      if (raw == null || !mounted) return;
+      setState(() =>
+          chatHistory = (jsonDecode(raw) as List).cast<Map<String, dynamic>>());
+    } catch (_) {}
+  }
+
+  /// Persist the running conversation after every exchange (device-local —
+  /// nothing extra hits the server).
+  Future<void> _saveChat() async {
+    if (chat.isEmpty || chatId.isEmpty) return;
+    final firstUser = chat.firstWhere((m) => m['role'] == 'user',
+        orElse: () => const {'content': 'Trip plan'});
+    final session = {
+      'id': chatId,
+      'title': firstUser['content'],
+      'updatedAt': DateTime.now().toIso8601String(),
+      'messages': chat,
+    };
+    chatHistory.removeWhere((c) => c['id'] == chatId);
+    chatHistory.insert(0, session);
+    if (chatHistory.length > 20) chatHistory = chatHistory.sublist(0, 20);
+    if (mounted) setState(() {});
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kChats, jsonEncode(chatHistory));
+    } catch (_) {}
+  }
+
+  Future<void> _deleteChat(String id) async {
+    setState(() => chatHistory.removeWhere((c) => c['id'] == id));
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kChats, jsonEncode(chatHistory));
+    } catch (_) {}
+  }
+
+  /// Reopen a past conversation and keep asking follow-ups.
+  void _openChat(Map<String, dynamic> session) {
+    Haptics.light();
+    final messages = (session['messages'] as List)
+        .map((m) => Map<String, String>.from(m as Map))
+        .toList();
+    final lastAssistant = messages.lastWhere((m) => m['role'] == 'assistant',
+        orElse: () => const {'content': ''});
+    final firstUser = messages.firstWhere((m) => m['role'] == 'user',
+        orElse: () => const {'content': ''});
+    setState(() {
+      chat
+        ..clear()
+        ..addAll(messages);
+      chatId = session['id'] as String;
+      lastQuery = firstUser['content'] ?? '';
+      prompt.text = lastQuery;
+      result = ItineraryResult(plan: lastAssistant['content'] ?? '');
+      media = null;
+      error = null;
+      justSaved = false;
+    });
+    if (lastQuery.isNotEmpty) {
+      MediaApi.searchMedia(lastQuery).then((m) {
+        if (mounted) setState(() => media = m);
+      }).catchError((_) {});
+    }
+  }
+
+  /// Ask a follow-up in the same conversation — add, reduce, change anything.
+  Future<void> _askFollowUp([String? preset]) async {
+    final q = (preset ?? followUp.text).trim();
+    if (q.isEmpty || planning || result == null) return;
+    Haptics.medium();
+    followUp.clear();
+    final history = List<Map<String, String>>.from(chat);
+    setState(() {
+      planning = true;
+      error = null;
+      justSaved = false;
+    });
+    try {
+      final r = await MediaApi.aiItinerary(q, history: history);
+      if (!mounted) return;
+      chat
+        ..add({'role': 'user', 'content': q})
+        ..add({'role': 'assistant', 'content': r.plan});
+      setState(() {
+        result = r;
+        planning = false;
+      });
+      Haptics.string();
+      _saveChat();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        planning = false;
+        error = e.message;
+      });
+    }
   }
 
   Future<void> _loadSaved() async {
@@ -61,6 +178,8 @@ class _ItineraryPageState extends State<ItineraryPage> {
     if (q.isEmpty || planning) return;
     if (preset != null) prompt.text = preset;
     Haptics.medium();
+    chat.clear();
+    chatId = DateTime.now().millisecondsSinceEpoch.toString();
     setState(() {
       planning = true;
       error = null;
@@ -76,11 +195,15 @@ class _ItineraryPageState extends State<ItineraryPage> {
     try {
       final r = await MediaApi.aiItinerary(q);
       if (!mounted || lastQuery != q) return;
+      chat
+        ..add({'role': 'user', 'content': q})
+        ..add({'role': 'assistant', 'content': r.plan});
       setState(() {
         result = r;
         planning = false;
       });
       Haptics.string();
+      _saveChat();
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -142,6 +265,11 @@ class _ItineraryPageState extends State<ItineraryPage> {
   void _openSaved(SavedItinerary item) {
     Haptics.light();
     prompt.text = item.query.isEmpty ? item.title : item.query;
+    chat
+      ..clear()
+      ..add({'role': 'user', 'content': prompt.text})
+      ..add({'role': 'assistant', 'content': item.plan});
+    chatId = 'saved-${item.id}';
     setState(() {
       lastQuery = prompt.text;
       result = ItineraryResult(plan: item.plan);
@@ -230,6 +358,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
                 Expanded(
                   child: TextField(
                     controller: prompt,
+                    scrollPadding: const EdgeInsets.only(bottom: 180),
                     onSubmitted: (_) => _plan(),
                     decoration: const InputDecoration(
                       border: InputBorder.none,
@@ -272,6 +401,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
               ],
             ),
             ..._savedSection(),
+            ..._chatHistorySection(),
           ],
           if (error != null)
             Padding(
@@ -323,8 +453,10 @@ class _ItineraryPageState extends State<ItineraryPage> {
                 ],
               ),
             ),
+            if (chat.length > 2) _conversationTrail(),
             for (var i = 0; i < _sections().length; i++)
               Entrance(index: i, child: _sectionCard(_sections()[i])),
+            _followUpComposer(),
             ..._placesSection(result!.places),
             if (media?.images.isNotEmpty ?? false) ...[
               const Padding(
@@ -487,6 +619,166 @@ class _ItineraryPageState extends State<ItineraryPage> {
             ),
             trailing: const Icon(Icons.play_circle_fill, color: blue, size: 26),
             onTap: () => feelPlace(context, city),
+          ),
+        ),
+    ];
+  }
+
+  /// Breadcrumb of the conversation so far — what you asked, in order.
+  Widget _conversationTrail() {
+    final asks = [
+      for (final m in chat)
+        if (m['role'] == 'user') m['content'] ?? ''
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          for (var i = 0; i < asks.length; i++) ...[
+            if (i > 0)
+              const Icon(Icons.arrow_forward, size: 12, color: Colors.grey),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.purple
+                    .withValues(alpha: i == asks.length - 1 ? 0.16 : 0.08),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                asks[i].length > 34 ? '${asks[i].substring(0, 32)}…' : asks[i],
+                style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: i == asks.length - 1
+                        ? FontWeight.w700
+                        : FontWeight.w500,
+                    color: Colors.purple),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Continue the chat: ask to add, reduce or change anything in the plan.
+  Widget _followUpComposer() {
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 12),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [
+          Colors.purple.withValues(alpha: 0.07),
+          lightBlue.withValues(alpha: 0.09),
+        ]),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.purple.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.forum, size: 15, color: Colors.purple),
+              SizedBox(width: 6),
+              Text('Continue the chat',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                      color: Colors.purple)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: followUp,
+                  scrollPadding: const EdgeInsets.only(bottom: 200),
+                  onSubmitted: (_) => _askFollowUp(),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: InputBorder.none,
+                    hintText: 'Add, reduce or ask anything about this plan…',
+                    hintStyle: TextStyle(color: Colors.grey, fontSize: 13),
+                  ),
+                ),
+              ),
+              planning
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.purple))
+                  : IconButton(
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.send,
+                          size: 18, color: Colors.purple),
+                      onPressed: _askFollowUp,
+                    ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final t in const [
+                'Add one more day',
+                'Make it budget-friendly',
+                'Wheelchair friendly',
+                'Add food stops',
+              ])
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  labelStyle: const TextStyle(fontSize: 11.5),
+                  label: Text(t),
+                  onPressed: planning ? null : () => _askFollowUp(t),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Recent AI conversations saved on this device — tap to continue.
+  List<Widget> _chatHistorySection() {
+    if (chatHistory.isEmpty) return const [];
+    return [
+      const Padding(
+        padding: EdgeInsets.only(top: 18, bottom: 8),
+        child: Text('Recent AI chats',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+      ),
+      for (var i = 0; i < chatHistory.length && i < 8; i++)
+        Entrance(
+          index: i,
+          child: Card(
+            color: cardBg(context),
+            margin: const EdgeInsets.only(bottom: 8),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.forum, color: Colors.purple, size: 20),
+              title: Text('${chatHistory[i]['title']}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(
+                '${((chatHistory[i]['messages'] as List).length / 2).floor()} '
+                'exchange${(chatHistory[i]['messages'] as List).length > 2 ? 's' : ''}'
+                ' · ${(chatHistory[i]['updatedAt'] as String).substring(0, 10)}',
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+              trailing: IconButton(
+                tooltip: 'Delete',
+                icon: const Icon(Icons.close, size: 16, color: Colors.grey),
+                onPressed: () => _deleteChat(chatHistory[i]['id'] as String),
+              ),
+              onTap: () => _openChat(chatHistory[i]),
+            ),
           ),
         ),
     ];
