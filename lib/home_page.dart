@@ -10,6 +10,7 @@ import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/haptic_service.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
+import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/widgets/update_flow.dart';
 import 'package:mrtouride/widgets/ux.dart';
@@ -69,9 +70,11 @@ class _HomePageState extends State<HomeScreen> {
         error = null;
       });
       // Bell badge: anything new since this device last looked?
-      NotificationService.check().then((n) {
-        if (mounted && n != null) setState(() => hasUnseen = true);
-      });
+      if (SettingsService.instance.notifications) {
+        NotificationService.check().then((n) {
+          if (mounted && n != null) setState(() => hasUnseen = true);
+        });
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {

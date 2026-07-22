@@ -55,6 +55,7 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _checkNewContent() async {
+    if (!SettingsService.instance.notifications) return;
     final fresh = await NotificationService.check();
     if (fresh == null || !mounted) return;
     setState(() => hasNewContent = true);

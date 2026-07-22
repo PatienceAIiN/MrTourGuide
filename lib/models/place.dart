@@ -13,6 +13,9 @@ class Place {
   final String description;
   final double rating;
 
+  /// Number of user ratings — 0 means unrated (no stars shown).
+  final int ratingCount;
+
   /// 3D model URL for MR/VR, when available for this place.
   final String? modelUrl;
 
@@ -22,7 +25,8 @@ class Place {
     required this.location,
     required this.image,
     required this.description,
-    this.rating = 4.0,
+    this.rating = 0,
+    this.ratingCount = 0,
     this.modelUrl,
   });
 
@@ -36,6 +40,7 @@ class Place {
         image: city.absoluteCoverUrl ?? 'assets/image/card1.png',
         description: city.description,
         rating: city.rating,
+        ratingCount: city.ratingCount,
         modelUrl: city.modelUrl,
       );
 }

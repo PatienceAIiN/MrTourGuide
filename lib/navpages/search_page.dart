@@ -315,7 +315,7 @@ class _SearchPageState extends State<SearchPage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             subtitle: Text(
               '${city.location.isEmpty ? 'Experiences' : city.location}'
-              ' · ★ ${city.rating.toStringAsFixed(1)}'
+              '${city.ratingCount > 0 ? ' · ★ ${city.rating.toStringAsFixed(1)}' : ''}'
               ' · ${city.videoCount} experience'
               '${city.videoCount == 1 ? '' : 's'}',
               maxLines: 1,

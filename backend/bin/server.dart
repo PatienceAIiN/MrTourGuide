@@ -652,6 +652,7 @@ Future<Response> _adminDeleteUser(Request request, String id) async {
   final u = exists.first;
   try {
     for (final sql in [
+      'DELETE FROM place_ratings WHERE user_id = @id',
       'DELETE FROM reactions WHERE user_id = @id',
       'DELETE FROM replies WHERE author_id = @id',
       'DELETE FROM reactions WHERE post_id IN '
@@ -1082,12 +1083,18 @@ Future<Response> _cities(Request request) async {
   final join = owner == null
       ? "LEFT JOIN videos v ON v.city = c.slug AND v.status = 'ready'"
       : 'LEFT JOIN videos v ON v.city = c.slug AND v.owner_id = @owner';
+  // Ratings are user-given only: average of real stars, 0 when unrated.
   final rows = await _db.execute(
       Sql.named('SELECT c.slug, c.name, COUNT(v.id), c.cover_url, c.location, '
-          'c.description, c.rating, c.model_url FROM cities c '
+          'c.description, '
+          'COALESCE((SELECT avg(stars) FROM place_ratings pr '
+          'WHERE pr.city_slug = c.slug), 0), '
+          'c.model_url, '
+          '(SELECT count(*) FROM place_ratings pr WHERE pr.city_slug = c.slug) '
+          'FROM cities c '
           '$join '
           'GROUP BY c.slug, c.name, c.cover_url, c.location, c.description, '
-          'c.rating, c.model_url ORDER BY c.name'),
+          'c.model_url ORDER BY c.name'),
       parameters: {if (owner != null) 'owner': owner});
   return _json(200, {
     'cities': [
@@ -1099,11 +1106,129 @@ Future<Response> _cities(Request request) async {
           'coverUrl': r[3],
           'location': r[4],
           'description': r[5],
-          'rating': r[6],
+          'rating': double.parse(
+              double.parse(r[6].toString()).toStringAsFixed(2)),
           'modelUrl': r[7],
+          'ratingCount': r[8],
         }
     ]
   });
+}
+
+/// A signed-in user rates a place 1-5 stars (one rating each, updatable).
+Future<Response> _ratePlace(Request request, String slug) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final stars = body?['stars'] as int?;
+  if (userId == null) return _json(401, {'error': 'Sign in to rate.'});
+  if (stars == null || stars < 1 || stars > 5) {
+    return _json(400, {'error': 'Rating must be 1-5 stars.'});
+  }
+  final known = await _db.execute(
+    Sql.named('SELECT 1 FROM cities WHERE slug = @s'),
+    parameters: {'s': _sanitizeFilename(slug)},
+  );
+  if (known.isEmpty) return _json(404, {'error': 'Unknown place.'});
+  try {
+    await _db.execute(
+      Sql.named('INSERT INTO place_ratings (city_slug, user_id, stars) '
+          'VALUES (@c, @u, @s) '
+          'ON CONFLICT (city_slug, user_id) DO UPDATE SET stars = @s, '
+          'created_at = now()'),
+      parameters: {'c': slug, 'u': userId, 's': stars},
+    );
+  } catch (_) {
+    return _json(401, {'error': 'Sign in to rate.'});
+  }
+  final agg = await _db.execute(
+    Sql.named('SELECT COALESCE(avg(stars), 0), count(*) FROM place_ratings '
+        'WHERE city_slug = @c'),
+    parameters: {'c': slug},
+  );
+  return _json(200, {
+    'rating': double.parse(
+        double.parse(agg.first[0].toString()).toStringAsFixed(2)),
+    'ratingCount': agg.first[1],
+  });
+}
+
+/// Travel news: precautions, advisories and fresh ideas — Google News RSS
+/// parsed server-side and cached 60 min (free-tier friendly).
+final Map<String, (DateTime, Map<String, Object?>)> _newsCache = {};
+
+Future<Response> _travelNews(Request request) async {
+  const key = 'news';
+  final cached = _newsCache[key];
+  if (cached != null &&
+      DateTime.now().difference(cached.$1) < const Duration(minutes: 60)) {
+    return _json(200, cached.$2);
+  }
+  final items = <Map<String, String>>[];
+  try {
+    final xml = await _httpGetText(
+        'https://news.google.com/rss/search?q=india%20travel%20advisory%20'
+        'OR%20tourism%20safety%20OR%20new%20destination&hl=en-IN&gl=IN'
+        '&ceid=IN:en');
+    for (final m in RegExp(
+            r'<item><title>(.*?)</title><link>(.*?)</link>.*?'
+            r'<pubDate>(.*?)</pubDate>(?:.*?<source[^>]*>(.*?)</source>)?',
+            dotAll: true)
+        .allMatches(xml)) {
+      var title = m.group(1)!;
+      title = title
+          .replaceAll('<![CDATA[', '')
+          .replaceAll(']]>', '')
+          .replaceAll('&amp;', '&')
+          .replaceAll('&#39;', "'")
+          .replaceAll('&quot;', '"');
+      items.add({
+        'title': title,
+        'url': m.group(2)!,
+        'published': m.group(3) ?? '',
+        'source': m.group(4) ?? 'Google News',
+      });
+      if (items.length >= 12) break;
+    }
+  } catch (_) {}
+  final payload = <String, Object?>{'items': items};
+  if (items.isNotEmpty) _newsCache[key] = (DateTime.now(), payload);
+  return _json(200, payload);
+}
+
+/// Reverse geocoding proxy (OpenStreetMap Nominatim) — the upload sheet's
+/// "Use my location". Cached per rounded coordinate; UA identifies us.
+final Map<String, (DateTime, Map<String, Object?>)> _geoCache = {};
+
+Future<Response> _geoReverse(Request request) async {
+  final lat = double.tryParse(request.url.queryParameters['lat'] ?? '');
+  final lon = double.tryParse(request.url.queryParameters['lon'] ?? '');
+  if (lat == null || lon == null) {
+    return _json(400, {'error': 'lat and lon required'});
+  }
+  final key = '${lat.toStringAsFixed(2)},${lon.toStringAsFixed(2)}';
+  final cached = _geoCache[key];
+  if (cached != null &&
+      DateTime.now().difference(cached.$1) < const Duration(hours: 24)) {
+    return _json(200, cached.$2);
+  }
+  try {
+    final raw = await _httpGetText(
+        'https://nominatim.openstreetmap.org/reverse?format=json'
+        '&lat=$lat&lon=$lon&zoom=10&accept-language=en',
+        userAgent: 'MrTourGuide/1.0 (info@patienceai.in)');
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+    final addr = (decoded['address'] as Map<String, dynamic>?) ?? {};
+    final payload = <String, Object?>{
+      'city': addr['city'] ?? addr['town'] ?? addr['village'] ??
+          addr['county'] ?? '',
+      'state': addr['state'] ?? '',
+      'country': addr['country'] ?? '',
+    };
+    _geoCache[key] = (DateTime.now(), payload);
+    return _json(200, payload);
+  } catch (_) {
+    return _json(502, {'error': 'Could not resolve the location.'});
+  }
 }
 
 /// Creator enrolls a new place on the platform (city/monument/region).
@@ -1598,11 +1723,14 @@ Future<List<Map<String, Object?>>> _matchPlaces(String query) async {
       Sql.named("SELECT c.slug, c.name, "
           "(SELECT count(*) FROM videos v WHERE v.city = c.slug "
           "AND v.status = 'ready'), c.cover_url, c.location, c.description, "
-          'c.rating, c.model_url FROM cities c '
+          'COALESCE((SELECT avg(stars) FROM place_ratings pr '
+          'WHERE pr.city_slug = c.slug), 0), c.model_url, '
+          '(SELECT count(*) FROM place_ratings pr WHERE pr.city_slug = c.slug) '
+          'FROM cities c '
           'WHERE EXISTS (SELECT 1 FROM unnest(@words::text[]) w WHERE '
           'lower(c.name) LIKE w OR lower(c.slug) LIKE w OR '
           'lower(c.location) LIKE w OR lower(c.description) LIKE w) '
-          'ORDER BY c.rating DESC LIMIT 4'),
+          'ORDER BY 7 DESC LIMIT 4'),
       parameters: {'words': like},
     );
     return [
@@ -1614,8 +1742,10 @@ Future<List<Map<String, Object?>>> _matchPlaces(String query) async {
           'coverUrl': r[3],
           'location': r[4],
           'description': r[5],
-          'rating': r[6],
+          'rating': double.parse(
+              double.parse(r[6].toString()).toStringAsFixed(2)),
           'modelUrl': r[7],
+          'ratingCount': r[8],
         }
     ];
   } catch (_) {
@@ -2678,6 +2808,7 @@ Future<Response> _deleteAccount(Request request) async {
           '(self-service deletion)');
   try {
     for (final sql in [
+      'DELETE FROM place_ratings WHERE user_id = @id',
       'DELETE FROM reactions WHERE user_id = @id',
       'DELETE FROM replies WHERE author_id = @id',
       'DELETE FROM reactions WHERE post_id IN '
@@ -2820,6 +2951,15 @@ Future<void> main() async {
       'query TEXT NOT NULL, '
       'plan TEXT NOT NULL, '
       'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  // User place ratings — replaces hardcoded catalog ratings.
+  await _db.execute('CREATE TABLE IF NOT EXISTS place_ratings ('
+      'id SERIAL PRIMARY KEY, '
+      'city_slug TEXT NOT NULL, '
+      'user_id INTEGER NOT NULL, '
+      'stars INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5), '
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now(), '
+      'UNIQUE (city_slug, user_id))');
+
   // Security / audit trail for the admin panel.
   await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
       'id SERIAL PRIMARY KEY, '
@@ -2873,6 +3013,9 @@ Future<void> main() async {
     ..post('/auth/google', _googleAuth)
     ..get('/cities', _cities)
     ..post('/cities', _addCity)
+    ..post('/cities/<slug>/rate', _ratePlace)
+    ..get('/news', _travelNews)
+    ..get('/geo/reverse', _geoReverse)
     ..post('/cities/<city>/cover', _uploadCover)
     ..get('/videos', _videos)
     ..get('/videos/trending', _trending)

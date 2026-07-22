@@ -5,6 +5,7 @@ import 'constant.dart';
 import 'experience_player.dart';
 import 'models/place.dart';
 import 'services/auth_api.dart';
+import 'services/haptic_service.dart';
 import 'services/media_api.dart';
 import 'widgets/ux.dart';
 
@@ -20,6 +21,10 @@ class DetailScreen extends StatefulWidget {
 
 class _DetailScreenState extends State<DetailScreen> {
   List<VideoItem> videos = [];
+  late double rating = place.rating;
+  late int ratingCount = place.ratingCount;
+  int myStars = 0;
+  bool ratingBusy = false;
   List<VideoItem> suggestions = [];
   List<Place> morePlaces = [];
   CityWeather? weather;
@@ -100,6 +105,84 @@ class _DetailScreenState extends State<DetailScreen> {
         ],
       ),
     );
+  }
+
+  /// Minimal "share your experience" rater — five tappable stars.
+  Widget _rateRow() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              myStars > 0
+                  ? 'Thanks for rating!'
+                  : ratingCount == 0
+                      ? 'Be the first to rate this place'
+                      : 'Share your experience',
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: ink(context)),
+            ),
+          ),
+          if (ratingBusy)
+            const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.amber))
+          else
+            for (var i = 1; i <= 5; i++)
+              InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () => _rate(i),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: AnimatedScale(
+                    scale: myStars >= i ? 1.15 : 1,
+                    duration: const Duration(milliseconds: 180),
+                    child: Icon(
+                      myStars >= i ? Icons.star : Icons.star_border,
+                      color: Colors.amber,
+                      size: 22,
+                    ),
+                  ),
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _rate(int stars) async {
+    if (AuthApi.currentUser == null) {
+      newSnackBar(context, title: 'Sign in to rate this place.');
+      return;
+    }
+    Haptics.level(stars / 5);
+    setState(() {
+      myStars = stars;
+      ratingBusy = true;
+    });
+    try {
+      final (avg, count) = await MediaApi.ratePlace(place.citySlug, stars);
+      if (!mounted) return;
+      setState(() {
+        rating = avg;
+        ratingCount = count;
+        ratingBusy = false;
+      });
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => ratingBusy = false);
+      newSnackBar(context, title: e.message);
+    }
   }
 
   Widget _heroImage() {
@@ -215,22 +298,26 @@ class _DetailScreenState extends State<DetailScreen> {
                                           fontWeight: FontWeight.w600),
                                     ),
                                   ),
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    for (var i = 0; i < 5; i++)
-                                      Icon(
-                                          i < place.rating.round()
-                                              ? Icons.star
-                                              : Icons.star_border,
-                                          color: Colors.amber,
-                                          size: 16),
-                                    const SizedBox(width: 4),
-                                    Text(place.rating.toStringAsFixed(1),
-                                        style: const TextStyle(
-                                            color: Colors.grey, fontSize: 12)),
-                                  ],
-                                ),
+                                if (ratingCount > 0)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      for (var i = 0; i < 5; i++)
+                                        Icon(
+                                            i < rating.round()
+                                                ? Icons.star
+                                                : Icons.star_border,
+                                            color: Colors.amber,
+                                            size: 16),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                          '${rating.toStringAsFixed(1)}'
+                                          ' ($ratingCount)',
+                                          style: const TextStyle(
+                                              color: Colors.grey,
+                                              fontSize: 12)),
+                                    ],
+                                  ),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -242,6 +329,8 @@ class _DetailScreenState extends State<DetailScreen> {
                                   height: 1.5,
                                   color: ink(context)),
                             ),
+                            const SizedBox(height: 14),
+                            _rateRow(),
                           ],
                         ),
                       ),

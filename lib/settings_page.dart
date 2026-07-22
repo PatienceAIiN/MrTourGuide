@@ -7,6 +7,7 @@ import 'services/api_base.dart';
 import 'services/app_info.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
+import 'services/media_api.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
 import 'widgets/feedback_dialog.dart';
@@ -110,6 +111,16 @@ class _SettingsPageState extends State<SettingsPage> {
               onChanged: (v) => _update(() => s.autoplay = v),
             ),
           ]),
+          _section('Notifications', [
+            SwitchListTile(
+              secondary:
+                  const Icon(Icons.notifications_active, color: Colors.orange),
+              title: const Text('New content alerts'),
+              value: s.notifications,
+              activeThumbColor: blue,
+              onChanged: (v) => _update(() => s.notifications = v),
+            ),
+          ]),
           _section('Accessibility', [
             SwitchListTile(
               secondary:
@@ -137,6 +148,15 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: _checkForUpdate,
             ),
           ]),
+          _section('Account', [
+            ListTile(
+              leading: const Icon(Icons.person_remove, color: red),
+              title: const Text('Delete profile', style: TextStyle(color: red)),
+              subtitle: const Text('Permanently removes your account and data',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+              onTap: _deleteProfile,
+            ),
+          ]),
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text(
@@ -160,6 +180,45 @@ class _SettingsPageState extends State<SettingsPage> {
       newSnackBar(context, title: 'You are on the latest version.');
     } else {
       await runUpdateFlow(context, info);
+    }
+  }
+
+  /// Permanent account deletion: double confirmation, then the backend
+  /// removes the account with its posts, itineraries and uploads.
+  Future<void> _deleteProfile() async {
+    final user = AuthApi.currentUser;
+    if (user == null) {
+      newSnackBar(context, title: 'Sign in first.');
+      return;
+    }
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete your profile?',
+      message: 'This permanently deletes your account, your community posts, '
+          'saved itineraries and uploads. This cannot be undone.',
+      confirmLabel: 'Delete forever',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
+    final really = await confirmDialog(
+      context,
+      title: 'Are you absolutely sure?',
+      message: 'Your account "${user.name}" will be gone for good.',
+      confirmLabel: 'Yes, delete',
+      destructive: true,
+    );
+    if (!really || !mounted) return;
+    try {
+      await MediaApi.deleteAccount(user.id);
+      await AuthApi.signOut();
+      if (!mounted) return;
+      newSnackBar(context, title: 'Your profile has been deleted.');
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const HomePage()),
+        (route) => false,
+      );
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
     }
   }
 

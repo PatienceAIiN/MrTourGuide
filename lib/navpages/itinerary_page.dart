@@ -263,6 +263,24 @@ class _ItineraryPageState extends State<ItineraryPage> {
     }
   }
 
+  /// Wipes the current conversation and inputs — back to the clean page
+  /// with saved plans and chat history.
+  void _clearConversation() {
+    Haptics.tick();
+    prompt.clear();
+    followUp.clear();
+    chat.clear();
+    setState(() {
+      result = null;
+      media = null;
+      error = null;
+      lastQuery = '';
+      chatId = '';
+      justSaved = false;
+      planning = false;
+    });
+  }
+
   void _openSaved(SavedItinerary item) {
     Haptics.light();
     prompt.text = item.query.isEmpty ? item.title : item.query;
@@ -283,9 +301,16 @@ class _ItineraryPageState extends State<ItineraryPage> {
     }).catchError((_) {});
   }
 
+  /// Strips stray markdown and normalizes bullets so cards read cleanly.
+  String _tidy(String raw) => raw
+      .replaceAll(RegExp(r'[*_#`]+'), '')
+      .replaceAll(RegExp(r'^\s*[-•]\s*', multiLine: true), '•  ')
+      .replaceAll(RegExp(r'[ \t]{2,}'), ' ')
+      .trim();
+
   /// Splits the plain-text plan into intro / day / logistics / tips sections.
   List<MapEntry<String, String>> _sections() {
-    final text = result?.plan ?? '';
+    final text = _tidy(result?.plan ?? '');
     final lines = text.split('\n');
     final sections = <MapEntry<String, String>>[];
     var title = '';
@@ -315,6 +340,10 @@ class _ItineraryPageState extends State<ItineraryPage> {
       }
     }
     push();
+    // A short plan with no headers still deserves a proper day card.
+    if (sections.length == 1 && sections.first.key.isEmpty) {
+      return [MapEntry('Day 1', sections.first.value)];
+    }
     return sections;
   }
 
@@ -343,6 +372,14 @@ class _ItineraryPageState extends State<ItineraryPage> {
                     color: ink(context), fontWeight: FontWeight.bold)),
           ],
         ),
+        actions: [
+          if (result != null || prompt.text.isNotEmpty)
+            IconButton(
+              tooltip: 'Clear conversation',
+              icon: Icon(Icons.close, color: ink(context)),
+              onPressed: _clearConversation,
+            ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
@@ -615,7 +652,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             subtitle: Text(
               '${city.location.isEmpty ? 'Experiences' : city.location}'
-              ' · ★ ${city.rating.toStringAsFixed(1)}'
+              '${city.ratingCount > 0 ? ' · ★ ${city.rating.toStringAsFixed(1)}' : ''}'
               ' · ${city.videoCount} experience'
               '${city.videoCount == 1 ? '' : 's'}',
               maxLines: 1,

@@ -225,26 +225,9 @@ class _MyPageState extends State<MyPage> {
               child: Column(
                 children: [
                   ListTile(
-                    leading: const Icon(Icons.video_library, color: blue),
-                    title: const Text('Open Experience Dashboard'),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => widget.onSelectTab?.call(1),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
                     leading: const Icon(Icons.logout, color: red),
                     title: const Text('Sign out', style: TextStyle(color: red)),
                     onTap: _signOut,
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.person_remove, color: red),
-                    title: const Text('Delete profile',
-                        style: TextStyle(color: red)),
-                    subtitle: const Text(
-                        'Permanently removes your account and data',
-                        style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                    onTap: _deleteProfile,
                   ),
                 ],
               ),
@@ -326,43 +309,6 @@ class _MyPageState extends State<MyPage> {
       MaterialPageRoute(builder: (context) => const HomePage()),
       (route) => false,
     );
-  }
-
-  /// Permanent account deletion: double confirmation, then the backend
-  /// removes the account with its posts, saved itineraries and uploads.
-  Future<void> _deleteProfile() async {
-    final user = AuthApi.currentUser;
-    if (user == null) return;
-    final ok = await confirmDialog(
-      context,
-      title: 'Delete your profile?',
-      message: 'This permanently deletes your account, your community posts, '
-          'saved itineraries and uploads. This cannot be undone.',
-      confirmLabel: 'Delete forever',
-      destructive: true,
-    );
-    if (!ok || !mounted) return;
-    // Second, explicit confirmation for an irreversible action.
-    final really = await confirmDialog(
-      context,
-      title: 'Are you absolutely sure?',
-      message: 'Your account "${user.name}" will be gone for good.',
-      confirmLabel: 'Yes, delete',
-      destructive: true,
-    );
-    if (!really || !mounted) return;
-    try {
-      await MediaApi.deleteAccount(user.id);
-      await AuthApi.signOut();
-      if (!mounted) return;
-      newSnackBar(context, title: 'Your profile has been deleted.');
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const HomePage()),
-        (route) => false,
-      );
-    } on AuthException catch (e) {
-      if (mounted) newSnackBar(context, title: e.message);
-    }
   }
 
   /// One-line teaser of what's inside a saved plan: first day titles.

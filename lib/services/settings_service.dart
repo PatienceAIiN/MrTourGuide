@@ -17,6 +17,7 @@ class SettingsService extends ChangeNotifier {
   static const _kAutoplay = 'settings.autoplay';
   static const _kReduceMotion = 'settings.reduceMotion';
   static const _kUiHaptics = 'settings.uiHaptics';
+  static const _kNotifications = 'settings.notifications';
   static const _kDarkMode = 'settings.darkMode';
 
   bool haptics = true;
@@ -26,6 +27,9 @@ class SettingsService extends ChangeNotifier {
 
   /// Touch feedback on UI interactions (buttons, cards, nav).
   bool uiHaptics = true;
+
+  /// New-content notifications (toast + bell badge polling).
+  bool notifications = true;
 
   /// Dark theme for the whole app.
   bool darkMode = false;
@@ -47,6 +51,7 @@ class SettingsService extends ChangeNotifier {
       autoplay = prefs.getBool(_kAutoplay) ?? true;
       reduceMotion = prefs.getBool(_kReduceMotion) ?? false;
       uiHaptics = prefs.getBool(_kUiHaptics) ?? true;
+      notifications = prefs.getBool(_kNotifications) ?? true;
       darkMode = prefs.getBool(_kDarkMode) ?? false;
     } catch (_) {
       // Defaults are fine if prefs are unavailable (e.g. tests).
@@ -65,6 +70,7 @@ class SettingsService extends ChangeNotifier {
       await prefs.setBool(_kAutoplay, autoplay);
       await prefs.setBool(_kReduceMotion, reduceMotion);
       await prefs.setBool(_kUiHaptics, uiHaptics);
+      await prefs.setBool(_kNotifications, notifications);
       await prefs.setBool(_kDarkMode, darkMode);
     } catch (_) {}
   }

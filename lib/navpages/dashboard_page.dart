@@ -5,10 +5,12 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:video_player/video_player.dart';
 
 import '../constant.dart';
 import '../experience_player.dart';
+import '../news_webview.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/media_api.dart';
@@ -33,6 +35,7 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   List<City> cities = [];
+  List<NewsItem> news = [];
   String? selectedCity;
   final List<VideoItem> videos = [];
   bool hasMore = false;
@@ -53,6 +56,10 @@ class _DashboardPageState extends State<DashboardPage> {
   void initState() {
     super.initState();
     _loadCities();
+    // Travel news: precautions, advisories, fresh ideas (server-cached 1h).
+    MediaApi.fetchNews().then((items) {
+      if (mounted) setState(() => news = items);
+    }).catchError((_) {});
   }
 
   @override
@@ -152,12 +159,16 @@ class _DashboardPageState extends State<DashboardPage> {
     final city = selectedCity;
     if (city == null || uploading) return;
 
+    // Mobile streams straight from disk (large videos never sit in RAM);
+    // web needs the bytes.
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.video,
-      withData: true, // needed on web to get the bytes
+      withData: kIsWeb,
     );
     final file = picked?.files.single;
-    if (file == null || file.bytes == null) return;
+    if (file == null || (kIsWeb ? file.bytes == null : file.path == null)) {
+      return;
+    }
     if (!mounted) return;
     const videoExts = {
       'mp4',
@@ -177,21 +188,55 @@ class _DashboardPageState extends State<DashboardPage> {
           title: 'Only video files can be published (MP4, MOV, MKV...).');
       return;
     }
+    if (file.size > 95 * 1024 * 1024) {
+      newSnackBar(context,
+          title: 'Videos over 95 MB cannot pass the CDN yet — please trim '
+              'or compress and try again.');
+      return;
+    }
 
-    await _uploadControlSheet(city, file.name, file.bytes!);
+    await _uploadControlSheet(city, file.name,
+        bytes: file.bytes, path: file.path, sizeBytes: file.size);
+  }
+
+  /// GPS → (country, state, city) via the backend's reverse geocoder.
+  /// Every value stays editable — auto-fill, correct manually.
+  Future<(String, String, String)?> _fetchDeviceLocation() async {
+    if (kIsWeb) return null;
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return null;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.low, timeLimit: Duration(seconds: 10)),
+      );
+      return await MediaApi.geoReverse(pos.latitude, pos.longitude);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// True when the picked video is an immersive capture: VR/MR needs an
   /// equirectangular 360° frame, which is (about) twice as wide as tall.
-  Future<bool> _probeImmersive(Uint8List bytes) async {
+  Future<bool> _probeImmersive({Uint8List? bytes, String? path}) async {
     if (kIsWeb) return true; // probing needs a file; web is dev-only
     File? tmp;
     VideoPlayerController? probe;
     try {
-      tmp = File('${Directory.systemTemp.path}/'
-          'mrt_probe_${DateTime.now().millisecondsSinceEpoch}.mp4');
-      await tmp.writeAsBytes(bytes);
-      probe = VideoPlayerController.file(tmp);
+      var target = path;
+      if (target == null) {
+        tmp = File('${Directory.systemTemp.path}/'
+            'mrt_probe_${DateTime.now().millisecondsSinceEpoch}.mp4');
+        await tmp.writeAsBytes(bytes!);
+        target = tmp.path;
+      }
+      probe = VideoPlayerController.file(File(target));
       await probe.initialize().timeout(const Duration(seconds: 12));
       final size = probe.value.size;
       if (size.width <= 0 || size.height <= 0) return false;
@@ -237,7 +282,12 @@ class _DashboardPageState extends State<DashboardPage> {
   /// mapping (auto ML track or per-frame fine-tuning), feel intensity and
   /// playback defaults.
   Future<void> _uploadControlSheet(
-      String city, String filename, Uint8List bytes) async {
+    String city,
+    String filename, {
+    Uint8List? bytes,
+    String? path,
+    required int sizeBytes,
+  }) async {
     final titleCtl = TextEditingController(
       text: filename.replaceAll(RegExp(r'\.[^.]+$'), '').replaceAll('_', ' '),
     );
@@ -259,7 +309,8 @@ class _DashboardPageState extends State<DashboardPage> {
         text: cityLoc.length > 1 ? cityLoc[1].trim() : '');
     final countryCtl = TextEditingController(
         text: cityLoc.length > 2 ? cityLoc[2].trim() : 'India');
-    final sizeMb = (bytes.length / (1024 * 1024)).toStringAsFixed(1);
+    final sizeMb = (sizeBytes / (1024 * 1024)).toStringAsFixed(1);
+    var locating = false;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -341,7 +392,8 @@ class _DashboardPageState extends State<DashboardPage> {
                       // Gate VR/MR behind a real 360° compatibility check.
                       if (immersiveOk == null) {
                         setSheet(() => probing = true);
-                        immersiveOk = await _probeImmersive(bytes);
+                        immersiveOk =
+                            await _probeImmersive(bytes: bytes, path: path);
                         setSheet(() => probing = false);
                       }
                       if (immersiveOk != true) {
@@ -410,9 +462,46 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                   ),
                 const SizedBox(height: 16),
-                const Text('Location',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                Row(
+                  children: [
+                    const Text('Location',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13)),
+                    const Spacer(),
+                    locating
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : TextButton.icon(
+                            style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact),
+                            icon: const Icon(Icons.my_location, size: 14),
+                            label: const Text('Use my location',
+                                style: TextStyle(fontSize: 11.5)),
+                            onPressed: () async {
+                              setSheet(() => locating = true);
+                              final loc = await _fetchDeviceLocation();
+                              setSheet(() => locating = false);
+                              if (loc == null) {
+                                if (context.mounted) {
+                                  newSnackBar(context,
+                                      title: 'Could not get your location — '
+                                          'fill it in manually.');
+                                }
+                                return;
+                              }
+                              setSheet(() {
+                                if (loc.$1.isNotEmpty) {
+                                  countryCtl.text = loc.$1;
+                                }
+                                if (loc.$2.isNotEmpty) stateCtl.text = loc.$2;
+                                if (loc.$3.isNotEmpty) cityCtl.text = loc.$3;
+                              });
+                            },
+                          ),
+                  ],
+                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -585,6 +674,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         title: title,
                         filename: filename,
                         bytes: bytes,
+                        filePath: path,
                       );
                       // Apply the creator's control settings right away.
                       try {
@@ -917,6 +1007,60 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  Widget _newsCard(NewsItem item) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () {
+        Haptics.light();
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) =>
+                NewsWebViewPage(title: item.source, url: item.url),
+          ),
+        );
+      },
+      child: Container(
+        width: 230,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: cardBg(context),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.teal.withValues(alpha: 0.25)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(item.title,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12.5,
+                      height: 1.35)),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.public, size: 11, color: Colors.grey),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(item.source,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          const TextStyle(fontSize: 10.5, color: Colors.grey)),
+                ),
+                const Icon(Icons.chevron_right, size: 14, color: Colors.teal),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String _cityName(String slug) => cities
       .firstWhere((c) => c.slug == slug,
           orElse: () => City(slug: slug, name: slug, videoCount: 0))
@@ -1045,6 +1189,43 @@ class _DashboardPageState extends State<DashboardPage> {
                       ],
                     ),
                   ),
+                  if (news.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.newspaper,
+                              size: 17, color: Colors.teal),
+                          const SizedBox(width: 6),
+                          Text('Travel news & precautions',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14.5,
+                                  color: ink(context))),
+                          const Spacer(),
+                          const Row(
+                            children: [
+                              Icon(Icons.shield, size: 12, color: Colors.green),
+                              SizedBox(width: 3),
+                              Text('Ad-free reader',
+                                  style: TextStyle(
+                                      fontSize: 10.5, color: Colors.green)),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      height: 116,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: news.length,
+                        separatorBuilder: (c, i) => const SizedBox(width: 10),
+                        itemBuilder: (context, i) => _newsCard(news[i]),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   const SizedBox(height: 16),
                   // Video list
                   if (videos.isEmpty && !loadingVideos)

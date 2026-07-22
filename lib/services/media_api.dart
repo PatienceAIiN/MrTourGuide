@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -20,6 +21,9 @@ class City {
   /// 3D model (.glb URL) for the MR/VR view, when a creator has provided one.
   final String? modelUrl;
 
+  /// How many users have rated this place (0 = show no stars yet).
+  final int ratingCount;
+
   const City({
     required this.slug,
     required this.name,
@@ -27,8 +31,9 @@ class City {
     this.coverUrl,
     this.location = '',
     this.description = '',
-    this.rating = 4.5,
+    this.rating = 0,
     this.modelUrl,
+    this.ratingCount = 0,
   });
 
   /// Absolute cover URL (creator uploads are backend-relative).
@@ -39,13 +44,14 @@ class City {
   }
 
   factory City.fromJson(Map<String, dynamic> json) => City(
+        ratingCount: json['ratingCount'] as int? ?? 0,
         slug: json['slug'] as String,
         name: json['name'] as String,
         videoCount: json['videoCount'] as int,
         coverUrl: json['coverUrl'] as String?,
         location: json['location'] as String? ?? '',
         description: json['description'] as String? ?? '',
-        rating: (json['rating'] as num?)?.toDouble() ?? 4.5,
+        rating: (json['rating'] as num?)?.toDouble() ?? 0,
         modelUrl: json['modelUrl'] as String?,
       );
 }
@@ -256,6 +262,27 @@ class SavedItinerary {
       );
 }
 
+/// Travel news headline (advisories, precautions, new destinations).
+class NewsItem {
+  final String title;
+  final String url;
+  final String source;
+  final String published;
+  const NewsItem({
+    required this.title,
+    required this.url,
+    required this.source,
+    required this.published,
+  });
+
+  factory NewsItem.fromJson(Map<String, dynamic> json) => NewsItem(
+        title: json['title'] as String? ?? '',
+        url: json['url'] as String? ?? '',
+        source: json['source'] as String? ?? '',
+        published: json['published'] as String? ?? '',
+      );
+}
+
 class YtSuggestion {
   final String title;
   final String thumbnail;
@@ -442,7 +469,8 @@ class MediaApi {
     required String city,
     required String title,
     required String filename,
-    required Uint8List bytes,
+    Uint8List? bytes,
+    String? filePath,
   }) async {
     final uri = Uri.parse('$apiBase/upload').replace(queryParameters: {
       'city': city,
@@ -452,11 +480,27 @@ class MediaApi {
     });
     late http.Response response;
     try {
-      response = await http
-          .post(uri,
-              headers: {'Content-Type': 'application/octet-stream'},
-              body: bytes)
-          .timeout(const Duration(minutes: 5));
+      if (filePath != null) {
+        // Stream from disk — large phone videos never sit in RAM.
+        final file = File(filePath);
+        final req = http.StreamedRequest('POST', uri)
+          ..headers['Content-Type'] = 'application/octet-stream'
+          ..contentLength = await file.length();
+        file.openRead().listen(
+              req.sink.add,
+              onDone: req.sink.close,
+              onError: (Object e) => req.sink.close(),
+              cancelOnError: true,
+            );
+        final streamed = await req.send().timeout(const Duration(minutes: 15));
+        response = await http.Response.fromStream(streamed);
+      } else {
+        response = await http
+            .post(uri,
+                headers: {'Content-Type': 'application/octet-stream'},
+                body: bytes)
+            .timeout(const Duration(minutes: 15));
+      }
     } catch (_) {
       throw const AuthException(
           'Cannot reach the media server. Is the backend running on port 8080?');
@@ -474,6 +518,37 @@ class MediaApi {
     final decoded = await _postJson('/videos/$videoId/config',
         {...config.toJson(), 'userId': AuthApi.currentUser?.id});
     return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+  }
+
+  /// Rate a place 1-5 stars (one per user; re-rating updates it).
+  /// Returns the fresh average + count.
+  static Future<(double, int)> ratePlace(String slug, int stars) async {
+    final decoded = await _postJson('/cities/$slug/rate',
+        {'userId': AuthApi.currentUser?.id, 'stars': stars});
+    return (
+      (decoded['rating'] as num).toDouble(),
+      decoded['ratingCount'] as int
+    );
+  }
+
+  /// Travel news: precautions, advisories and fresh ideas (server-cached).
+  static Future<List<NewsItem>> fetchNews() async {
+    final decoded = await _get('/news');
+    return [
+      for (final n in decoded['items'] as List)
+        NewsItem.fromJson(n as Map<String, dynamic>)
+    ];
+  }
+
+  /// Reverse geocode device coordinates → country/state/city.
+  static Future<(String, String, String)> geoReverse(
+      double lat, double lon) async {
+    final decoded = await _get('/geo/reverse?lat=$lat&lon=$lon');
+    return (
+      decoded['country'] as String? ?? '',
+      decoded['state'] as String? ?? '',
+      decoded['city'] as String? ?? '',
+    );
   }
 
   /// Creator enrolls a new place on the platform.
