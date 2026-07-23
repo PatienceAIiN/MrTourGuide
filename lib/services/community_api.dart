@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import 'api_base.dart';
 import 'auth_api.dart';
+import 'transfer_service.dart';
 
 /// One attachment on a post: a compressed image or an inline-playable video.
 class PostMedia {
@@ -263,7 +264,8 @@ class CommunityApi {
   /// Uploads a post video (client cap 25 MB) as a stream so a clip never
   /// sits fully in memory. The backend serves it immediately and re-encodes
   /// it to 720p in the background under the same URL.
-  static Future<PostMedia> uploadVideo(String filePath) async {
+  static Future<PostMedia> uploadVideo(String filePath,
+      {void Function(double progress)? onProgress}) async {
     final me = _me;
     if (me == null) throw const AuthException('Sign in to attach videos.');
     final file = File(filePath);
@@ -271,35 +273,34 @@ class CommunityApi {
     if (size > 25 * 1024 * 1024) {
       throw const AuthException('Post videos are limited to 25 MB.');
     }
+    final url = Uri.parse('$apiBase/community/upload-video').replace(
+        queryParameters: {
+          'userId': '$me',
+          'filename': filePath.split('/').last,
+        }).toString();
     try {
-      final req = http.StreamedRequest(
-          'POST',
-          Uri.parse('$apiBase/community/upload-video').replace(
-              queryParameters: {
-                'userId': '$me',
-                'filename': filePath.split('/').last,
-              }));
-      req.headers['Content-Type'] = 'application/octet-stream';
-      req.contentLength = size;
-      file.openRead().listen(req.sink.add,
-          onDone: req.sink.close, onError: req.sink.addError);
-      final streamed = await req.send().timeout(const Duration(minutes: 4));
-      final body = await streamed.stream.bytesToString();
+      // Background upload: continues on app-switch with shade progress.
+      final body = await TransferService.uploadBinary(
+        filePath: filePath,
+        url: url,
+        displayName: 'Community video upload',
+        onProgress: onProgress,
+      );
       final decoded = jsonDecode(body) as Map<String, dynamic>;
-      if (streamed.statusCode != 201) {
-        throw AuthException(
-            decoded['error'] as String? ?? 'Video upload failed.');
-      }
       return PostMedia(
         type: 'video',
         url: decoded['videoUrl'] as String,
         thumb: decoded['thumbUrl'] as String?,
       );
-    } on AuthException {
-      rethrow;
+    } on TransferException catch (e) {
+      String msg = 'Video upload failed — please try again.';
+      try {
+        final d = jsonDecode(e.body ?? '') as Map<String, dynamic>;
+        if (d['error'] is String) msg = d['error'] as String;
+      } catch (_) {}
+      throw AuthException(msg);
     } catch (_) {
-      throw const AuthException(
-          'Video upload failed — check your internet and try again.');
+      throw const AuthException('Video upload failed — please try again.');
     }
   }
 

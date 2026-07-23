@@ -2,8 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 
+import 'transfer_service.dart';
 import 'update_service.dart';
 
 /// In-app OTA delivery: downloads the new APK inside the app (with live
@@ -23,66 +23,42 @@ class UpdateInstaller {
     return dir;
   }
 
-  /// Streams the APK to the app cache, reporting 0.0 → 1.0 via [onProgress].
-  /// Returns the downloaded file path. Throws [UpdateDownloadException] on
-  /// any failure (never leaves a partial file behind).
+  /// Downloads the new APK in the BACKGROUND (survives the user switching
+  /// apps or leaving the app — via the OS transfer service, with shade
+  /// progress), reporting 0.0 → 1.0 via [onProgress]. The file is then placed
+  /// in the installer-shared directory. Throws [UpdateDownloadException] on
+  /// failure.
   static Future<String> download(
     UpdateInfo info,
     void Function(double progress) onProgress, {
     bool Function()? isCancelled,
   }) async {
-    final path = '${await _downloadDir()}/$_fileName';
-    final file = File(path);
-    if (await file.exists()) await file.delete(); // clean stale builds
-
-    final client = http.Client();
-    IOSink? sink;
+    final destPath = '${await _downloadDir()}/$_fileName';
+    final dest = File(destPath);
+    if (await dest.exists()) await dest.delete(); // clean stale builds
     try {
-      final response = await client
-          .send(http.Request('GET', Uri.parse(info.absoluteApkUrl)))
-          .timeout(const Duration(seconds: 30));
-      if (response.statusCode != 200) {
-        throw const UpdateDownloadException(
-            'Update server did not return the app package.');
-      }
-      final total = response.contentLength ?? 0;
-      var received = 0;
-      sink = file.openWrite();
-      await for (final chunk in response.stream) {
-        if (isCancelled?.call() ?? false) {
-          throw const UpdateDownloadException('Download cancelled.');
-        }
-        sink.add(chunk);
-        received += chunk.length;
-        if (total > 0) onProgress(received / total);
-      }
-      await sink.flush();
-      await sink.close();
-      sink = null;
-      if (total > 0 && received < total) {
-        throw const UpdateDownloadException('Download ended early.');
+      final downloaded = await TransferService.downloadToFile(
+        url: info.absoluteApkUrl,
+        filename: _fileName,
+        displayName: 'Mr.Tour Guide update',
+        onProgress: onProgress,
+      );
+      // Place it where the installer's FileProvider can read it.
+      if (downloaded != destPath) {
+        await File(downloaded).copy(destPath);
+        try {
+          await File(downloaded).delete();
+        } catch (_) {}
       }
       onProgress(1);
-      return path;
-    } on UpdateDownloadException {
-      await _cleanup(sink, file);
-      rethrow;
-    } catch (_) {
-      await _cleanup(sink, file);
+      return destPath;
+    } on TransferException {
+      try {
+        if (await dest.exists()) await dest.delete();
+      } catch (_) {}
       throw const UpdateDownloadException(
           'Download failed — check your connection and try again.');
-    } finally {
-      client.close();
     }
-  }
-
-  static Future<void> _cleanup(IOSink? sink, File file) async {
-    try {
-      await sink?.close();
-    } catch (_) {}
-    try {
-      if (await file.exists()) await file.delete();
-    } catch (_) {}
   }
 
   /// Opens the system package installer for the downloaded build. Android

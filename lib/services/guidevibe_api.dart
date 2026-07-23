@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import 'api_base.dart';
 import 'auth_api.dart';
+import 'transfer_service.dart';
 
 /// One GuideVibe short — a platform (creator) upload. GuideVibe is
 /// platform-only; there are no third-party/YouTube items.
@@ -196,6 +197,7 @@ class GuideVibeApi {
     String kind = 'normal',
     String? musicUrl,
     double musicStart = 0,
+    void Function(double progress)? onProgress,
   }) async {
     final me = _me;
     if (me == null) throw const AuthException('Sign in to post a GuideVibe.');
@@ -204,36 +206,37 @@ class GuideVibeApi {
     if (size > 80 * 1024 * 1024) {
       throw const AuthException('GuideVibe clips are limited to 80 MB.');
     }
+    final url = Uri.parse('$apiBase/guidevibe/upload').replace(queryParameters: {
+      'userId': '$me',
+      'filename': filePath.split('/').last,
+      'caption': caption,
+      if (city.isNotEmpty) 'city': city,
+      'kind': kind,
+      if (musicUrl != null && musicUrl.isNotEmpty) 'musicUrl': musicUrl,
+      if (musicUrl != null && musicUrl.isNotEmpty)
+        'musicStart': musicStart.toStringAsFixed(1),
+    }).toString();
     try {
-      final req = http.StreamedRequest(
-        'POST',
-        Uri.parse('$apiBase/guidevibe/upload').replace(queryParameters: {
-          'userId': '$me',
-          'filename': filePath.split('/').last,
-          'caption': caption,
-          if (city.isNotEmpty) 'city': city,
-          'kind': kind,
-          if (musicUrl != null && musicUrl.isNotEmpty) 'musicUrl': musicUrl,
-          if (musicUrl != null && musicUrl.isNotEmpty)
-            'musicStart': musicStart.toStringAsFixed(1),
-        }),
+      // Background upload: survives app-switch, shows shade progress, and
+      // reports progress to the caller for an in-app bar.
+      final body = await TransferService.uploadBinary(
+        filePath: filePath,
+        url: url,
+        displayName: 'GuideVibe upload',
+        onProgress: onProgress,
       );
-      req.headers['Content-Type'] = 'application/octet-stream';
-      req.contentLength = size;
-      file.openRead().listen(req.sink.add,
-          onDone: req.sink.close, onError: req.sink.addError);
-      final streamed = await req.send().timeout(const Duration(minutes: 6));
-      final body = await streamed.stream.bytesToString();
       final decoded = jsonDecode(body) as Map<String, dynamic>;
-      if (streamed.statusCode != 201) {
-        throw AuthException(decoded['error'] as String? ?? 'Upload failed.');
-      }
       return Short.fromJson(decoded['short'] as Map<String, dynamic>);
-    } on AuthException {
-      rethrow;
+    } on TransferException catch (e) {
+      String msg = 'GuideVibe upload failed — please try again.';
+      try {
+        final d = jsonDecode(e.body ?? '') as Map<String, dynamic>;
+        if (d['error'] is String) msg = d['error'] as String;
+      } catch (_) {}
+      throw AuthException(msg);
     } catch (_) {
       throw const AuthException(
-          'GuideVibe upload failed — check your internet and try again.');
+          'GuideVibe upload failed — please try again.');
     }
   }
 

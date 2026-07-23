@@ -36,6 +36,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
   // Optional soundtrack (royalty-free / Creative-Commons).
   MusicTrack? _music;
   double _musicStart = 0;
+  double _uploadProgress = 0;
 
   @override
   void initState() {
@@ -130,7 +131,10 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
       newSnackBar(context, title: 'Sign in to post.');
       return;
     }
-    setState(() => _uploading = true);
+    setState(() {
+      _uploading = true;
+      _uploadProgress = 0;
+    });
     try {
       await GuideVibeApi.upload(
         filePath: _path!,
@@ -139,6 +143,9 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         kind: _kind,
         musicUrl: _music?.audio,
         musicStart: _musicStart,
+        onProgress: (p) {
+          if (mounted) setState(() => _uploadProgress = p);
+        },
       );
       if (!mounted) return;
       Haptics.medium();
@@ -214,7 +221,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
           _hapticsCard(),
           const SizedBox(height: 22),
           _uploading
-              ? const Center(child: CircularProgressIndicator())
+              ? _uploadingButton()
               : ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: blue,
@@ -352,6 +359,53 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Upload button in progress: a real-time completion bar + percent. The
+  /// upload keeps running in the background if the app is switched away.
+  Widget _uploadingButton() {
+    final pct = (_uploadProgress * 100).round();
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: blue,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Uploading…',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14)),
+              Text('$pct%',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: _uploadProgress <= 0 ? null : _uploadProgress,
+              minHeight: 6,
+              backgroundColor: Colors.white24,
+              valueColor: const AlwaysStoppedAnimation(Color(0xFF3CEBFF)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text('You can switch apps — it keeps uploading in the '
+              'background.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70, fontSize: 11)),
+        ],
       ),
     );
   }

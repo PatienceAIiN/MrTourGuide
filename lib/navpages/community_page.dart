@@ -271,6 +271,7 @@ class _CommunityPageState extends State<CommunityPage>
   bool hasMore = false;
   bool loading = true;
   bool posting = false;
+  double _postProgress = 0; // video upload progress while posting
   String? error;
   final composer = TextEditingController();
 
@@ -350,12 +351,18 @@ class _CommunityPageState extends State<CommunityPage>
       newSnackBar(context, title: 'Sign in to post.');
       return;
     }
-    setState(() => posting = true);
+    setState(() {
+      posting = true;
+      _postProgress = 0;
+    });
     try {
       final media = <PostMedia>[];
       for (final a in attached) {
         if (a.isVideo) {
-          media.add(await CommunityApi.uploadVideo(a.path!));
+          media.add(await CommunityApi.uploadVideo(a.path!,
+              onProgress: (p) {
+            if (mounted) setState(() => _postProgress = p);
+          }));
         } else {
           final url =
               await CommunityApi.uploadImage(a.name ?? 'photo.png', a.bytes!);
@@ -620,10 +627,19 @@ class _CommunityPageState extends State<CommunityPage>
                       ),
                       posting
                           ? SizedBox(
-                              width: 22,
+                              width: _postProgress > 0 ? 40 : 22,
                               height: 22,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: brandInk(context)))
+                              child: _postProgress > 0
+                                  ? Center(
+                                      child: Text(
+                                          '${(_postProgress * 100).round()}%',
+                                          style: TextStyle(
+                                              color: brandInk(context),
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700)))
+                                  : CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: brandInk(context)))
                           : IconButton(
                               icon: Icon(Icons.send_rounded,
                                   color: brandInk(context)),
@@ -631,6 +647,22 @@ class _CommunityPageState extends State<CommunityPage>
                             ),
                     ],
                   ),
+                  // Live upload bar while a video posts (keeps going if you
+                  // switch apps).
+                  if (posting && _postProgress > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: LinearProgressIndicator(
+                          value: _postProgress,
+                          minHeight: 4,
+                          backgroundColor: Colors.grey.withValues(alpha: 0.2),
+                          valueColor:
+                              AlwaysStoppedAnimation(brandInk(context)),
+                        ),
+                      ),
+                    ),
                   if (attached.isNotEmpty)
                     SizedBox(
                       height: 56,
