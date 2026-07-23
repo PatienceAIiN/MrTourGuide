@@ -29,6 +29,7 @@ class _MainPageState extends State<MainPage> {
   late final PageController _pageController;
   int currentIndex = 0;
   bool hasNewContent = false;
+  bool hasCommunityUnread = false;
   Timer? _newContentTimer;
 
   // Ordered so swipes travel in sequence: Home → Studio → Planner →
@@ -60,6 +61,12 @@ class _MainPageState extends State<MainPage> {
 
   Future<void> _checkNewContent() async {
     if (!SettingsService.instance.notifications) return;
+    // Unread dot for the Community tab (stays until the tab is opened).
+    NotificationService.unreadStatus().then((st) {
+      if (mounted && currentIndex != 3) {
+        setState(() => hasCommunityUnread = st.community);
+      }
+    });
     final fresh = await NotificationService.check();
     if (fresh == null || !mounted) return;
     setState(() => hasNewContent = true);
@@ -86,6 +93,10 @@ class _MainPageState extends State<MainPage> {
     if (index == 1 && hasNewContent) {
       NotificationService.markSeen();
       setState(() => hasNewContent = false);
+    }
+    if (index == 3 && hasCommunityUnread) {
+      NotificationService.markCommunityOpened();
+      setState(() => hasCommunityUnread = false);
     }
     final reduce = SettingsService.instance.reduceMotion;
     if (reduce) {
@@ -129,6 +140,10 @@ class _MainPageState extends State<MainPage> {
             if (i != currentIndex) {
               Haptics.tick();
               TabEvents.changed.value = i;
+              if (i == 3 && hasCommunityUnread) {
+                NotificationService.markCommunityOpened();
+                hasCommunityUnread = false;
+              }
               setState(() => currentIndex = i);
             }
           },
@@ -157,13 +172,20 @@ class _MainPageState extends State<MainPage> {
                 badge: hasNewContent),
             const NavEntry(
                 icon: Icons.route_rounded, label: 'Planner', tabIndex: 2),
-            const NavEntry(
-                icon: Icons.forum_rounded, label: 'Community', tabIndex: 3),
-            const NavEntry(
-                icon: Icons.play_circle_outline_rounded,
-                label: 'GuideVibe',
-                tabIndex: 4,
-                color: Color(0xFFFF4D5E)),
+            // GuideVibe sits centre-stage for travelers, right after the
+            // planner. Creators reach it inside Studio (Catalog ⇄ GuideVibe),
+            // so their bar skips it.
+            if (!(AuthApi.currentUser?.isCreator ?? false))
+              const NavEntry(
+                  icon: Icons.play_circle_outline_rounded,
+                  label: 'GuideVibe',
+                  tabIndex: 4,
+                  color: Color(0xFFFF4D5E)),
+            NavEntry(
+                icon: Icons.forum_rounded,
+                label: 'Community',
+                tabIndex: 3,
+                badge: hasCommunityUnread),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',

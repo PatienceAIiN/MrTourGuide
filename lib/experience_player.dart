@@ -282,7 +282,6 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
         ),
         actions: [
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.purple),
             onPressed: () => Navigator.pop(context),
             child: const Text('Got it'),
           ),

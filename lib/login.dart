@@ -143,20 +143,24 @@ class _LoginPageState extends State<LoginPage> {
                               ? const Center(
                                   child: CircularProgressIndicator(color: blue),
                                 )
-                              : MaterialButton(
-                                  minWidth: double.infinity,
+                              : FilledButton(
                                   onPressed: _signIn,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  color: blue,
-                                  child: const Padding(
-                                    padding: EdgeInsets.fromLTRB(0, 15, 0, 15),
-                                    child: Text(
-                                      'Sign In',
-                                      style: TextStyle(color: white),
+                                  // Same pill as the welcome screen's
+                                  // primary button — one look everywhere.
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Theme.of(context).brightness ==
+                                    Brightness.dark
+                                ? const Color(0xFF0E5163)
+                                : const Color(0xFF052933),
+                                    foregroundColor: Colors.white,
+                                    minimumSize:
+                                        const Size(double.infinity, 60),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(50),
                                     ),
                                   ),
+                                  child: const Text('Sign In',
+                                      style: TextStyle(fontSize: 18)),
                                 ),
                         ),
                         Padding(
@@ -169,46 +173,60 @@ class _LoginPageState extends State<LoginPage> {
                       ],
                     ),
                   ),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        "Don't have an account? ",
-                        style: TextStyle(color: ink(context)),
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => const SingUpPage(),
-                            ),
-                          );
-                        },
-                        child: Text(
-                          'Sign Up',
-                          style: TextStyle(
-                            color: brandInk(context),
+                  // Footer — everything on ONE horizontal line, pinned to
+                  // the bottom like the welcome screen's product line.
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16, bottom: 6),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            "Don't have an account? ",
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 13, color: inkSoft(context)),
                           ),
                         ),
-                      ),
-                      Text('·', style: TextStyle(color: ink(context))),
-                      TextButton(
-                        onPressed: () async {
-                          final ok = await showForgotPasswordFlow(context);
-                          if (ok && mounted) {
-                            // ignore: use_build_context_synchronously
-                            newSnackBar(context,
-                                title: 'Password changed — sign in with '
-                                    'your new password.');
-                          }
-                        },
-                        child: Text(
-                          'Forgot password?',
-                          style: TextStyle(color: brandInk(context)),
+                        GestureDetector(
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const SingUpPage(),
+                              ),
+                            );
+                          },
+                          child: Text(
+                            'Create account',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: brandInk(context)),
+                          ),
                         ),
-                      ),
-                    ],
+                        Text('  ·  ',
+                            style: TextStyle(
+                                fontSize: 13, color: inkSoft(context))),
+                        GestureDetector(
+                          onTap: () async {
+                            final ok = await showForgotPasswordFlow(context);
+                            if (ok && mounted) {
+                              // ignore: use_build_context_synchronously
+                              newSnackBar(context,
+                                  title: 'Password changed — sign in with '
+                                      'your new password.');
+                            }
+                          },
+                          child: Text(
+                            'Forgot password?',
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: brandInk(context)),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -227,27 +245,28 @@ class _LoginPageState extends State<LoginPage> {
     required bool obscureText,
     Widget? suffixIcon,
   }) {
-    return Material(
-      elevation: 2,
-      shadowColor: black,
-      color: white,
-      borderRadius: BorderRadius.circular(5.0),
-      child: TextFormField(
-        autofocus: false,
-        scrollPadding: const EdgeInsets.only(bottom: 180),
-        textInputAction: textInputAction,
-        keyboardType: keyboardType,
-        controller: controller,
-        cursorColor: black,
-        style: const TextStyle(color: black),
-        obscureText: obscureText,
-        decoration: InputDecoration(
-          labelText: labelText,
-          labelStyle: const TextStyle(color: black),
-          contentPadding: const EdgeInsets.all(8),
-          border: InputBorder.none,
-          suffixIcon: suffixIcon,
+    // Soft rounded filled field — the same visual language as the rest of
+    // the app (cards, search bar), and readable in both themes.
+    return TextFormField(
+      autofocus: false,
+      scrollPadding: const EdgeInsets.only(bottom: 180),
+      textInputAction: textInputAction,
+      keyboardType: keyboardType,
+      controller: controller,
+      obscureText: obscureText,
+      decoration: InputDecoration(
+        labelText: labelText,
+        filled: true,
+        fillColor: Theme.of(context).brightness == Brightness.dark
+            ? Colors.white10
+            : black.withValues(alpha: 0.05),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(28),
+          borderSide: BorderSide.none,
         ),
+        suffixIcon: suffixIcon,
       ),
     );
   }

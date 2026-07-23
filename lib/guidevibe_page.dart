@@ -896,30 +896,18 @@ class _CreatorStudioState extends State<_CreatorStudio>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    // No header bar — this page lives under the Studio switch, which already
+    // labels it. Create matches the Catalog tab's "Upload video" FAB so every
+    // Studio tab shares one UI language.
     return Scaffold(
       backgroundColor: pageBg(context),
-      appBar: AppBar(
-        backgroundColor: cardBg(context),
-        elevation: 0,
-        title: Row(
-          children: [
-            const Icon(Icons.play_circle_fill,
-                color: Color(0xFFFF4D5E), size: 20),
-            const SizedBox(width: 8),
-            Text('GuideVibe Studio',
-                style: TextStyle(
-                    color: ink(context), fontWeight: FontWeight.bold)),
-          ],
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(bottom: 86),
+        child: FloatingActionButton.extended(
+          onPressed: _create,
+          icon: const Icon(Icons.add),
+          label: const Text('Create'),
         ),
-        actions: [
-          TextButton.icon(
-            onPressed: _create,
-            icon: Icon(Icons.add, color: brandInk(context)),
-            label: Text('Create',
-                style: TextStyle(
-                    color: brandInk(context), fontWeight: FontWeight.w800)),
-          ),
-        ],
       ),
       body: _loading && !_loadedOnce
           ? const Center(child: CircularProgressIndicator())
@@ -1126,7 +1114,9 @@ class _CreatorStudioState extends State<_CreatorStudio>
     );
     if (save != true || !mounted) return;
     try {
-      await GuideVibeApi.updateShort(s.id, caption: ctl.text.trim());
+      await showBusyWhile(
+          context, GuideVibeApi.updateShort(s.id, caption: ctl.text.trim()),
+          label: 'Saving…');
       Haptics.medium();
       await _load();
     } on AuthException catch (e) {
@@ -1144,7 +1134,8 @@ class _CreatorStudioState extends State<_CreatorStudio>
     );
     if (!ok) return;
     try {
-      await GuideVibeApi.deleteShort(s.id);
+      await showBusyWhile(context, GuideVibeApi.deleteShort(s.id),
+          label: 'Deleting…');
       if (mounted) setState(() => _mine.removeWhere((x) => x.id == s.id));
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);

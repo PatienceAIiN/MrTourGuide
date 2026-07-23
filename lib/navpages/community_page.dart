@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
@@ -78,7 +79,8 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
                           radius: 34,
                           backgroundColor: accent,
                           backgroundImage: p['avatarUrl'] != null
-                              ? NetworkImage('$apiBase${p['avatarUrl']}')
+                              ? CachedNetworkImageProvider(
+                                  '$apiBase${p['avatarUrl']}')
                               : null,
                           child: p['avatarUrl'] == null
                               ? Text(
@@ -495,25 +497,10 @@ class _CommunityPageState extends State<CommunityPage>
     );
     if (save != true || !mounted) return;
     try {
-      await CommunityApi.setReshareComment(post.id, ctl.text.trim());
+      await showBusyWhile(
+          context, CommunityApi.setReshareComment(post.id, ctl.text.trim()),
+          label: 'Saving…');
       Haptics.medium();
-      await _reload();
-    } on AuthException catch (e) {
-      if (mounted) newSnackBar(context, title: e.message);
-    }
-  }
-
-  Future<void> _reshare(CommunityPost post) async {
-    if (AuthApi.currentUser == null) {
-      newSnackBar(context, title: 'Sign in to reshare.');
-      return;
-    }
-    Haptics.medium();
-    try {
-      await CommunityApi.reshare(post.id);
-      if (!mounted) return;
-      newSnackBar(context,
-          title: 'Reshared — ${post.authorName} gets the credit.');
       await _reload();
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
@@ -530,7 +517,8 @@ class _CommunityPageState extends State<CommunityPage>
     );
     if (!ok) return;
     try {
-      await CommunityApi.deletePost(post.id);
+      await showBusyWhile(context, CommunityApi.deletePost(post.id),
+          label: 'Deleting…');
       if (mounted) setState(() => posts.removeWhere((p) => p.id == post.id));
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
@@ -891,14 +879,9 @@ class _CommunityPageState extends State<CommunityPage>
                           style: TextStyle(
                               fontSize: 10.5, color: brandInk(context))),
                     ),
-                  if (!mine)
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      tooltip: 'Reshare',
-                      icon: const Icon(Icons.repeat,
-                          size: 18, color: Colors.teal),
-                      onPressed: () => _reshare(post),
-                    ),
+                  // Reshare is retired — its slot holds delete, shown ONLY to
+                  // the post's author. Nobody (creators included) can delete
+                  // someone else's post.
                   if (mine)
                     IconButton(
                       visualDensity: VisualDensity.compact,
@@ -1548,7 +1531,8 @@ class _PostModalState extends State<_PostModal> {
     );
     if (!ok) return;
     try {
-      await CommunityApi.deleteReply(reply.id);
+      await showBusyWhile(context, CommunityApi.deleteReply(reply.id),
+          label: 'Deleting…');
       await _load();
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);

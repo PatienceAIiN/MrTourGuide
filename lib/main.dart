@@ -42,6 +42,44 @@ void main() async {
             borderRadius: BorderRadius.circular(20),
           ),
         ),
+        // One design language app-wide (light): the welcome screen's pill
+        // buttons (deep-teal primary), soft rounded filled inputs, and the
+        // same 16px cards everywhere.
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF052933),
+            foregroundColor: Colors.white,
+            shape: const StadiumBorder(),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF052933),
+            foregroundColor: Colors.white,
+            shape: const StadiumBorder(),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(shape: const StadiumBorder()),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF1E319D)),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.black.withValues(alpha: 0.05),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide.none,
+          ),
+        ),
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: Color(0xFF052933),
+          foregroundColor: Colors.white,
+        ),
         pageTransitionsTheme: const PageTransitionsTheme(
           builders: {
             TargetPlatform.android: CupertinoPageTransitionsBuilder(),
@@ -64,6 +102,48 @@ void main() async {
         ),
         scaffoldBackgroundColor: const Color(0xFF101012),
         splashFactory: InkSparkle.splashFactory,
+        // Same pill language, teal lifted for contrast on the dark scaffold.
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF0E5163),
+            foregroundColor: Colors.white,
+            shape: const StadiumBorder(),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF0E5163),
+            foregroundColor: Colors.white,
+            shape: const StadiumBorder(),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(shape: const StadiumBorder()),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF9DB2FF)),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white10,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide.none,
+          ),
+        ),
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: Color(0xFF0E5163),
+          foregroundColor: Colors.white,
+        ),
+        cardTheme: const CardThemeData(
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+          ),
+        ),
         pageTransitionsTheme: const PageTransitionsTheme(
           builders: {
             TargetPlatform.android: CupertinoPageTransitionsBuilder(),

@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -69,7 +70,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 radius: 24,
                 backgroundColor: blue,
                 backgroundImage: AuthApi.currentUser?.avatarUrl != null
-                    ? NetworkImage('$apiBase${AuthApi.currentUser!.avatarUrl}')
+                    ? CachedNetworkImageProvider(
+                        '$apiBase${AuthApi.currentUser!.avatarUrl}')
                     : null,
                 child: AuthApi.currentUser?.avatarUrl == null
                     ? Text(

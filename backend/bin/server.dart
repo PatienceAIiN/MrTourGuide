@@ -3733,6 +3733,8 @@ Future<Response> _deletePost(Request request, String id) async {
   final userId = body?['userId'] as int?;
   if (postId == null) return _json(400, {'error': 'Bad post id.'});
   if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  // Strictly owner-only: authors delete their own posts (resharers their own
+  // reshares). No moderation override — creators included.
   final rows = await _db.execute(
     Sql.named('DELETE FROM posts WHERE id = @p AND '
         '(CASE WHEN reshared_by_id IS NOT NULL '
@@ -5617,6 +5619,33 @@ Future<void> main() async {
       } catch (e2) {
         print('DB reconnect failed: $e2');
       }
+    }
+  });
+
+  // App-update push: each shipped build redeploys this server, so on boot we
+  // announce the manifest's build to every device ONCE (activity_logs
+  // remembers what was already announced — restarts don't re-push).
+  Future(() async {
+    try {
+      final manifest = await _versionManifest();
+      final build = manifest['buildNumber'];
+      final version = manifest['version'];
+      if (build == null) return;
+      final announced = await _db.execute(
+        Sql.named('SELECT 1 FROM activity_logs WHERE action = @a '
+            'AND detail = @d LIMIT 1'),
+        parameters: {'a': 'update-announced', 'd': 'build $build'},
+      );
+      if (announced.isNotEmpty) return;
+      _logActivity('system', 'update-announced', 'build $build');
+      _sendPush(
+        await _tokensFor(),
+        'Update available — v$version',
+        '${manifest['notes'] ?? 'A new version of Mr.Tour Guide is ready.'}',
+        data: {'type': 'update'},
+      );
+    } catch (e) {
+      print('update announce skipped: $e');
     }
   });
 }

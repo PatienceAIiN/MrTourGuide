@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -546,7 +547,7 @@ class _SearchPageState extends State<SearchPage>
                     radius: 16,
                     backgroundColor: u.role == 'creator' ? Colors.purple : blue,
                     backgroundImage: u.avatarUrl != null
-                        ? NetworkImage('$apiBase${u.avatarUrl}')
+                        ? CachedNetworkImageProvider('$apiBase${u.avatarUrl}')
                         : null,
                     child: u.avatarUrl == null
                         ? Text(

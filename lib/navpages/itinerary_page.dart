@@ -283,7 +283,9 @@ class _ItineraryPageState extends State<ItineraryPage>
     );
     if (!ok) return;
     try {
-      await MediaApi.deleteItinerary(id: item.id, userId: user.id);
+      await showBusyWhile(
+          context, MediaApi.deleteItinerary(id: item.id, userId: user.id),
+          label: 'Deleting…');
       if (mounted) setState(() => saved.removeWhere((s) => s.id == item.id));
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);

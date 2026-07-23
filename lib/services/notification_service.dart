@@ -70,6 +70,53 @@ class NotificationService {
     } catch (_) {}
   }
 
+  static const _kCommunityOpened = 'notify.communityOpened';
+
+  /// Call when the Community tab is opened — clears its unread dot.
+  static Future<void> markCommunityOpened() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _kCommunityOpened, DateTime.now().toUtc().toIso8601String());
+    } catch (_) {}
+  }
+
+  /// Unread state for the bell + the Community tab in ONE inbox fetch.
+  /// A dot stays on until its surface is opened (persisted per device), then
+  /// clears — and only returns when something genuinely newer arrives.
+  static Future<({bool bell, bool community})> unreadStatus() async {
+    try {
+      final items = await recent();
+      final prefs = await SharedPreferences.getInstance();
+      DateTime? seen(String key) {
+        final raw = prefs.getString(key);
+        return raw == null ? null : DateTime.tryParse(raw);
+      }
+
+      // First run: baseline both markers to now so a fresh install doesn't
+      // light up for week-old content.
+      var bellSeen = seen(_kLastSeen);
+      if (bellSeen == null) {
+        await markSeen();
+        bellSeen = DateTime.now().toUtc();
+      }
+      var commSeen = seen(_kCommunityOpened);
+      if (commSeen == null) {
+        await markCommunityOpened();
+        commSeen = DateTime.now().toUtc();
+      }
+
+      const commTypes = {'community', 'reply', 'reaction', 'reshare'};
+      return (
+        bell: items.any((n) => n.at.isAfter(bellSeen!)),
+        community: items.any(
+            (n) => commTypes.contains(n.type) && n.at.isAfter(commSeen!)),
+      );
+    } catch (_) {
+      return (bell: false, community: false);
+    }
+  }
+
   /// Aggregated inbox for the bell modal: new experiences, new places and
   /// social activity (reactions/replies on your posts) — last 7 days.
   static Future<List<AppNotification>> recent() async {

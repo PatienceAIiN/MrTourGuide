@@ -203,8 +203,8 @@ class GuideVibeApi {
     if (me == null) throw const AuthException('Sign in to post a GuideVibe.');
     final file = File(filePath);
     final size = await file.length();
-    if (size > 80 * 1024 * 1024) {
-      throw const AuthException('GuideVibe clips are limited to 80 MB.');
+    if (size > 20 * 1024 * 1024) {
+      throw const AuthException('GuideVibe clips are limited to 20 MB.');
     }
     final url = Uri.parse('$apiBase/guidevibe/upload').replace(queryParameters: {
       'userId': '$me',

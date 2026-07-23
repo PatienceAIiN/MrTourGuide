@@ -248,20 +248,22 @@ class _SingUpPageState extends State<SingUpPage> {
                       ? const Center(
                           child: CircularProgressIndicator(color: blue),
                         )
-                      : MaterialButton(
-                          minWidth: double.infinity,
+                      : FilledButton(
                           onPressed: _signUp,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          color: blue,
-                          child: const Padding(
-                            padding: EdgeInsets.fromLTRB(0, 15, 0, 15),
-                            child: Text(
-                              'Sign Up',
-                              style: TextStyle(color: white),
+                          // Same pill as the welcome screen's primary button.
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Theme.of(context).brightness ==
+                                    Brightness.dark
+                                ? const Color(0xFF0E5163)
+                                : const Color(0xFF052933),
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(double.infinity, 60),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(50),
                             ),
                           ),
+                          child: const Text('Sign Up',
+                              style: TextStyle(fontSize: 18)),
                         ),
                 ),
                 Padding(
@@ -287,27 +289,28 @@ class _SingUpPageState extends State<SingUpPage> {
     required bool obscureText,
     Widget? suffixIcon,
   }) {
-    return Material(
-      elevation: 2.0,
-      shadowColor: black,
-      borderRadius: BorderRadius.circular(5.0),
-      color: white,
-      child: TextFormField(
-        autofocus: false,
-        scrollPadding: const EdgeInsets.only(bottom: 180),
-        textInputAction: textInputAction,
-        keyboardType: keyboardType,
-        controller: controller,
-        cursorColor: black,
-        style: const TextStyle(color: black),
-        obscureText: obscureText,
-        decoration: InputDecoration(
-          labelText: labelText,
-          labelStyle: const TextStyle(color: black),
-          contentPadding: const EdgeInsets.all(8),
-          border: InputBorder.none,
-          suffixIcon: suffixIcon,
+    // Soft rounded filled field — identical to the login screen so both
+    // auth pages share one visual language, readable in both themes.
+    return TextFormField(
+      autofocus: false,
+      scrollPadding: const EdgeInsets.only(bottom: 180),
+      textInputAction: textInputAction,
+      keyboardType: keyboardType,
+      controller: controller,
+      obscureText: obscureText,
+      decoration: InputDecoration(
+        labelText: labelText,
+        filled: true,
+        fillColor: Theme.of(context).brightness == Brightness.dark
+            ? Colors.white10
+            : black.withValues(alpha: 0.05),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(28),
+          borderSide: BorderSide.none,
         ),
+        suffixIcon: suffixIcon,
       ),
     );
   }

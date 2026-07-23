@@ -32,6 +32,28 @@ class LocalNotifs {
           }
         },
       );
+      // Create the channels EXPLICITLY. Background FCM messages target
+      // 'mrtouride_default'; if that channel doesn't exist yet Android drops
+      // them silently — this is why pushes never showed on devices that had
+      // not displayed a local notification first.
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await android?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'mrtouride_default',
+          'Mr.TourGuide',
+          description: 'Updates and alerts',
+          importance: Importance.high,
+        ),
+      );
+      await android?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          'mrtouride_progress',
+          'Downloads',
+          description: 'Update download progress',
+          importance: Importance.low,
+        ),
+      );
       _ready = true;
     } catch (_) {}
   }

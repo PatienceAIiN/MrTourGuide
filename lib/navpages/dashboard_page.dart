@@ -11,6 +11,7 @@ import 'package:video_player/video_player.dart';
 import '../constant.dart';
 import '../experience_player.dart';
 import '../fine_tune_page.dart';
+import '../guidevibe_page.dart';
 import '../services/auth_api.dart';
 import '../services/haptic_service.dart';
 import '../services/image_tools.dart';
@@ -314,12 +315,24 @@ class _DashboardPageState extends State<DashboardPage>
                     'upload with country/state/city \u2014 location '
                     'searches then surface your experience.'),
             row(
+                Icons.play_circle_outline_rounded,
+                const Color(0xFFFF4D5E),
+                'GuideVibe shorts',
+                'Vertical short clips, max 1 minute and 20 MB (MP4, MOV or '
+                    'WebM). Add a caption, city, VR/MR tag and an optional '
+                    'music clip \u2014 we mux it in, build the feel track '
+                    'and publish to the swipe feed. Find GuideVibe in the '
+                    'switch above (My uploads \u00b7 Catalog \u00b7 '
+                    'GuideVibe).'),
+            row(
                 Icons.lock_clock,
                 Colors.grey,
                 'Limits',
-                'Uploads are video-only, max 95 MB for now, and process in '
-                    'under a minute. Your uploads stay yours \u2014 only '
-                    'you can rename, configure, fine-tune or delete them.'),
+                'Experience uploads are video-only, max 95 MB; community '
+                    'post videos up to 80 MB; GuideVibe shorts up to 20 MB '
+                    'and 1 minute. Processing takes under a minute. Your '
+                    'uploads stay yours \u2014 only you can rename, '
+                    'configure, fine-tune or delete them.'),
           ],
         ),
       ),
@@ -454,7 +467,6 @@ class _DashboardPageState extends State<DashboardPage>
           ),
           actions: [
             FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.purple),
               onPressed: () => Navigator.pop(context),
               child: const Text('Got it'),
             ),
@@ -1296,7 +1308,9 @@ class _DashboardPageState extends State<DashboardPage>
     );
     if (title == null || title.isEmpty || title == video.title) return;
     try {
-      final updated = await MediaApi.renameVideo(video.id, title);
+      final updated = await showBusyWhile(
+          context, MediaApi.renameVideo(video.id, title),
+          label: 'Saving…');
       if (!mounted) return;
       final i = videos.indexWhere((v) => v.id == updated.id);
       if (i >= 0) setState(() => videos[i] = updated);
@@ -1316,7 +1330,8 @@ class _DashboardPageState extends State<DashboardPage>
     );
     if (!ok) return;
     try {
-      await MediaApi.deleteVideo(video.id);
+      await showBusyWhile(context, MediaApi.deleteVideo(video.id),
+          label: 'Deleting…');
       if (!mounted) return;
       newSnackBar(context, title: 'Deleted "${video.title}".');
       await _loadCities();
@@ -1359,10 +1374,56 @@ class _DashboardPageState extends State<DashboardPage>
     return '${(bytes / 1024).toStringAsFixed(0)} KB';
   }
 
+  /// My uploads ⇄ Catalog (⇄ GuideVibe for creators). Selecting GuideVibe
+  /// swaps the whole studio body for the GuideVibe creator page — this
+  /// replaces the old navbar entry for creators.
+  Widget _studioSwitch(bool isCreator) {
+    return SegmentedButton<String>(
+      segments: [
+        const ButtonSegment(
+            value: 'mine',
+            icon: Icon(Icons.video_settings, size: 17),
+            label: Text('My uploads')),
+        const ButtonSegment(
+            value: 'catalog',
+            icon: Icon(Icons.public, size: 17),
+            label: Text('Catalog')),
+        if (isCreator)
+          const ButtonSegment(
+              value: 'guidevibe',
+              icon: Icon(Icons.play_circle_outline_rounded, size: 17),
+              label: Text('GuideVibe')),
+      ],
+      selected: {studioFeed},
+      onSelectionChanged: (s) {
+        setState(() => studioFeed = s.first);
+        if (s.first != 'guidevibe') _reloadVideos();
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context); // keep this tab alive across switches
     final isCreator = AuthApi.currentUser?.isCreator ?? false;
+    // GuideVibe mode: the creator GuideVibe studio, embedded as-is.
+    if (isCreator && studioFeed == 'guidevibe') {
+      return Scaffold(
+        backgroundColor: pageBg(context),
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: _studioSwitch(isCreator),
+              ),
+              Expanded(child: GuideVibePage(onSelectTab: widget.onSelectTab)),
+            ],
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: pageBg(context),
       appBar: AppBar(
@@ -1391,8 +1452,6 @@ class _DashboardPageState extends State<DashboardPage>
               padding: const EdgeInsets.only(bottom: 86),
               child: FloatingActionButton.extended(
                 onPressed: uploading ? null : _upload,
-                backgroundColor: blue,
-                foregroundColor: white,
                 icon: uploading
                     ? const SizedBox(
                         width: 18,
@@ -1421,23 +1480,7 @@ class _DashboardPageState extends State<DashboardPage>
                       ),
                     ),
                   if (AuthApi.currentUser != null) ...[
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(
-                            value: 'mine',
-                            icon: Icon(Icons.video_settings, size: 17),
-                            label: Text('My uploads')),
-                        ButtonSegment(
-                            value: 'catalog',
-                            icon: Icon(Icons.public, size: 17),
-                            label: Text('Catalog')),
-                      ],
-                      selected: {studioFeed},
-                      onSelectionChanged: (s) {
-                        setState(() => studioFeed = s.first);
-                        _reloadVideos();
-                      },
-                    ),
+                    _studioSwitch(isCreator),
                     const SizedBox(height: 12),
                   ],
                   // City selector

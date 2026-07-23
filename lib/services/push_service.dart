@@ -3,6 +3,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'auth_api.dart';
+import 'local_notifs.dart';
 import 'media_api.dart';
 import 'settings_service.dart';
 
@@ -22,12 +23,23 @@ class PushService {
         _ready = true;
       }
       if (!SettingsService.instance.notifications) return;
+      // Make sure the notification channels exist BEFORE any push arrives —
+      // Android silently drops FCM messages aimed at a missing channel.
+      await LocalNotifs.init();
       final messaging = FirebaseMessaging.instance;
       await messaging.requestPermission();
       final token = await messaging.getToken();
       if (token != null) await _register(token);
       // Keep the backend current when FCM rotates the token.
       FirebaseMessaging.instance.onTokenRefresh.listen(_register);
+      // Foreground pushes don't display by default on Android — mirror them
+      // to a local notification so the user is notified while in the app too.
+      FirebaseMessaging.onMessage.listen((message) {
+        final n = message.notification;
+        if (n != null && SettingsService.instance.notifications) {
+          LocalNotifs.show(n.title ?? 'Mr.Tour Guide', n.body ?? '');
+        }
+      });
     } catch (_) {
       // Push is a bonus — never let it break the app.
     }

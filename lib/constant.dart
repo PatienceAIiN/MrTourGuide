@@ -22,6 +22,52 @@ newSnackBar(BuildContext context, {title}) {
   );
 }
 
+/// Shows a blocking spinner overlay (e.g. "Deleting…", "Saving…",
+/// "Publishing…") while [future] runs, then dismisses it — so every
+/// create/update/delete gives immediate feedback. Errors propagate to the
+/// caller's own try/catch unchanged.
+Future<T> showBusyWhile<T>(
+  BuildContext context,
+  Future<T> future, {
+  String label = 'Working…',
+}) async {
+  final nav = Navigator.of(context, rootNavigator: true);
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    barrierColor: Colors.black.withOpacity(0.35),
+    builder: (ctx) => Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+        decoration: BoxDecoration(
+          color: cardBg(ctx),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2.4, color: brandInk(ctx)),
+            ),
+            const SizedBox(width: 14),
+            Text(label,
+                style:
+                    TextStyle(color: ink(ctx), fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    ),
+  );
+  try {
+    return await future;
+  } finally {
+    if (nav.canPop()) nav.pop();
+  }
+}
+
 /// Theme-aware surfaces (light/dark).
 Color pageBg(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark

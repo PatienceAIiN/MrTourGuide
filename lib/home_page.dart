@@ -114,12 +114,14 @@ class _HomePageState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  /// Light poll: is there anything new (content, GuideVibe, activity) since
-  /// this device last opened the bell? Drives the badge dot.
+  /// Light poll: is there anything new (content, GuideVibe, community,
+  /// activity) since this device last OPENED the bell? The dot persists
+  /// across sessions until the inbox is read, then stays off until
+  /// something genuinely newer arrives.
   Future<void> _refreshUnseen() async {
     try {
-      final n = await NotificationService.check();
-      if (mounted && n != null) setState(() => hasUnseen = true);
+      final st = await NotificationService.unreadStatus();
+      if (mounted) setState(() => hasUnseen = st.bell);
     } catch (_) {}
   }
 
@@ -209,30 +211,12 @@ class _HomePageState extends State<HomeScreen>
                             const SizedBox(width: 8),
                             const WavingHand(size: 26),
                             const Spacer(),
-                            // Notifications bell — right of the greeting.
-                            Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Notifications',
-                                  icon: Icon(Icons.notifications_none_rounded,
-                                      color: ink(context)),
-                                  onPressed: _openNotifications,
-                                ),
-                                if (hasUnseen)
-                                  Positioned(
-                                    right: 8,
-                                    top: 8,
-                                    child: Container(
-                                      width: 9,
-                                      height: 9,
-                                      decoration: const BoxDecoration(
-                                        color: Color(0xFF3CEBFF),
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                  ),
-                              ],
+                            // Notifications bell — nudged past the content
+                            // padding so it sits in the card's top-right
+                            // corner, beside the greeting.
+                            Transform.translate(
+                              offset: const Offset(12, 0),
+                              child: _bellButton(context),
                             ),
                           ],
                         ),
@@ -385,6 +369,39 @@ class _HomePageState extends State<HomeScreen>
           ),
         ),
       ),
+    );
+  }
+
+  /// Notifications bell — embedded in the header card beside the greeting,
+  /// flush with the right content edge (no IconButton slop, so it lines up
+  /// with the search field below). The dot stays until the inbox is read.
+  Widget _bellButton(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        IconButton(
+          tooltip: 'Notifications',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 34, height: 40),
+          alignment: Alignment.centerRight,
+          icon: Icon(Icons.notifications_none_rounded,
+              size: 26, color: ink(context)),
+          onPressed: _openNotifications,
+        ),
+        if (hasUnseen)
+          Positioned(
+            right: 0,
+            top: 7,
+            child: Container(
+              width: 9,
+              height: 9,
+              decoration: const BoxDecoration(
+                color: Color(0xFF3CEBFF),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+      ],
     );
   }
 

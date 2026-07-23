@@ -15,30 +15,34 @@ String _timeAgo(DateTime t) {
 }
 
 /// The notifications inbox — a bottom-sheet popup shared by the navbar bell.
-/// Aggregates social activity, new content and app updates; tapping an item
-/// redirects to the right place. Marks everything seen on open.
+/// Opens INSTANTLY (no awaiting the network first); the items stream in via a
+/// FutureBuilder inside the sheet. Marks everything seen on open.
 Future<void> showNotificationsSheet(
   BuildContext context, {
   void Function(int tabIndex)? onSelectTab,
 }) async {
   Haptics.tick();
   NotificationService.markSeen();
-  final results = await Future.wait([
+
+  // Kick the fetches off now; the sheet renders immediately and fills in.
+  final load = Future.wait<Object?>([
     NotificationService.recent(),
     UpdateService.check(),
-  ]);
-  final items = List<AppNotification>.from(results[0] as List<AppNotification>);
-  final update = results[1] as UpdateInfo?;
-  if (update != null && update.isNewer) {
-    items.insert(
-        0,
-        AppNotification(
-          type: 'update',
-          title: 'App update v${update.version}: ${update.notes}',
-          at: DateTime.now(),
-        ));
-  }
-  if (!context.mounted) return;
+  ]).then((results) {
+    final items =
+        List<AppNotification>.from(results[0] as List<AppNotification>);
+    final update = results[1] as UpdateInfo?;
+    if (update != null && update.isNewer) {
+      items.insert(
+          0,
+          AppNotification(
+            type: 'update',
+            title: 'App update v${update.version}: ${update.notes}',
+            at: DateTime.now(),
+          ));
+    }
+    return items;
+  });
 
   void openTarget(AppNotification n) {
     Haptics.light();
@@ -47,6 +51,7 @@ Future<void> showNotificationsSheet(
       case 'reply':
       case 'reshare':
       case 'follow':
+      case 'community':
         onSelectTab?.call(3); // Community
       case 'guidevibe':
         onSelectTab?.call(4); // GuideVibe feed
@@ -94,70 +99,93 @@ Future<void> showNotificationsSheet(
             ],
           ),
           const SizedBox(height: 10),
-          if (items.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(20),
-              child: Center(
-                child: Text("You're all caught up — nothing new this week.",
-                    style: TextStyle(color: Colors.grey, fontSize: 13)),
-              ),
-            )
-          else
-            Flexible(
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final n in items)
-                    Card(
-                      color: pageBg(context),
-                      margin: const EdgeInsets.only(bottom: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      child: ListTile(
-                        dense: true,
-                        leading: CircleAvatar(
-                          radius: 16,
-                          backgroundColor: switch (n.type) {
-                            'reaction' => Colors.pink,
-                            'reply' => Colors.teal,
-                            'city' => Colors.purple,
-                            'update' => Colors.indigo,
-                            'guidevibe' => const Color(0xFFFF4D5E),
-                            'follow' => Colors.green,
-                            _ => blue,
-                          },
-                          child: Icon(
-                            switch (n.type) {
-                              'reaction' => Icons.favorite,
-                              'reply' => Icons.chat_bubble,
-                              'city' => Icons.location_city,
-                              'update' => Icons.system_update,
-                              'guidevibe' => Icons.play_circle_fill,
-                              'follow' => Icons.person_add,
-                              _ => Icons.fiber_new,
-                            },
-                            color: white,
-                            size: 16,
-                          ),
-                        ),
-                        title: Text(n.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600, fontSize: 13)),
-                        subtitle: Text(_timeAgo(n.at),
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.grey)),
-                        trailing: const Icon(Icons.chevron_right, color: blue),
-                        onTap: () {
-                          Navigator.pop(context);
-                          openTarget(n);
-                        },
-                      ),
+          FutureBuilder<List<AppNotification>>(
+            future: load,
+            builder: (context, snap) {
+              if (!snap.hasData) {
+                // Instant open: a light placeholder while items stream in.
+                return const Padding(
+                  padding: EdgeInsets.all(28),
+                  child: Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
                     ),
-                ],
-              ),
-            ),
+                  ),
+                );
+              }
+              final items = snap.data!;
+              if (items.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(
+                    child: Text(
+                        "You're all caught up — nothing new this week.",
+                        style: TextStyle(color: Colors.grey, fontSize: 13)),
+                  ),
+                );
+              }
+              return Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final n in items)
+                      Card(
+                        color: pageBg(context),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        child: ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            radius: 16,
+                            backgroundColor: switch (n.type) {
+                              'reaction' => Colors.pink,
+                              'reply' => Colors.teal,
+                              'city' => Colors.purple,
+                              'update' => Colors.indigo,
+                              'guidevibe' => const Color(0xFFFF4D5E),
+                              'follow' => Colors.green,
+                              'community' => Colors.orange,
+                              _ => blue,
+                            },
+                            child: Icon(
+                              switch (n.type) {
+                                'reaction' => Icons.favorite,
+                                'reply' => Icons.chat_bubble,
+                                'city' => Icons.location_city,
+                                'update' => Icons.system_update,
+                                'guidevibe' => Icons.play_circle_fill,
+                                'follow' => Icons.person_add,
+                                'community' => Icons.forum,
+                                _ => Icons.fiber_new,
+                              },
+                              color: white,
+                              size: 16,
+                            ),
+                          ),
+                          title: Text(n.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600, fontSize: 13)),
+                          subtitle: Text(_timeAgo(n.at),
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.grey)),
+                          trailing:
+                              const Icon(Icons.chevron_right, color: blue),
+                          onTap: () {
+                            Navigator.pop(context);
+                            openTarget(n);
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
         ],
       ),
     ),

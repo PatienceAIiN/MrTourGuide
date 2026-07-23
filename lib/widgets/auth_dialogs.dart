@@ -282,14 +282,15 @@ class GoogleButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
-        minimumSize: const Size(double.infinity, 50),
+        minimumSize: const Size(double.infinity, 56),
         // Theme-aware: black-on-dark was invisible in dark mode.
         side: BorderSide(
             color: Theme.of(context).brightness == Brightness.dark
                 ? Colors.white24
                 : Colors.black26),
         foregroundColor: ink(context),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        // Same pill as the welcome screen's Login button.
+        shape: const StadiumBorder(),
       ),
       onPressed: onPressed,
       icon: const Text('G',

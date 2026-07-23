@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -122,10 +123,15 @@ class _MyPageState extends State<MyPage> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
+                        // Disk-cached: shows instantly from the local copy
+                        // on every app open (refreshes silently if changed).
                         me['coverUrl'] != null
-                            ? Image.network('$apiBase${me['coverUrl']}',
+                            ? CachedNetworkImage(
+                                imageUrl: '$apiBase${me['coverUrl']}',
                                 fit: BoxFit.cover,
-                                errorBuilder: (c, e, s) => _coverFallback())
+                                fadeInDuration:
+                                    const Duration(milliseconds: 120),
+                                errorWidget: (c, u, e) => _coverFallback())
                             : _coverFallback(),
                         if (user != null)
                           Positioned(
@@ -158,7 +164,8 @@ class _MyPageState extends State<MyPage> {
                               radius: 32,
                               backgroundColor: blue,
                               backgroundImage: user?.avatarUrl != null
-                                  ? NetworkImage('$apiBase${user!.avatarUrl}')
+                                  ? CachedNetworkImageProvider(
+                                      '$apiBase${user!.avatarUrl}')
                                   : null,
                               child: user?.avatarUrl == null
                                   ? Text(
@@ -441,12 +448,12 @@ class _MyPageState extends State<MyPage> {
     );
     if (save != true || !mounted) return;
     try {
-      await MediaApi.updateProfile(
+      await showBusyWhile(context, MediaApi.updateProfile(
         username: usernameCtl.text.trim(),
         instagram: igCtl.text.trim(),
         phone: phoneCtl.text.trim(),
         privacy: privacy,
-      );
+      ), label: 'Saving…');
       Haptics.medium();
       if (!mounted) return;
       newSnackBar(context, title: 'Profile saved.');
@@ -504,7 +511,8 @@ class _MyPageState extends State<MyPage> {
     );
     if (about == null || !mounted) return;
     try {
-      await MediaApi.updateAbout(about);
+      await showBusyWhile(context, MediaApi.updateAbout(about),
+          label: 'Saving…');
       if (!mounted) return;
       setState(() => AuthApi.currentUser?.about = about);
       newSnackBar(context, title: 'Bio saved.');
@@ -537,7 +545,8 @@ class _MyPageState extends State<MyPage> {
     );
     if (!really || !mounted) return;
     try {
-      await MediaApi.deleteAccount(user.id);
+      await showBusyWhile(context, MediaApi.deleteAccount(user.id),
+          label: 'Deleting account…');
       await AuthApi.signOut();
       if (!mounted) return;
       newSnackBar(context, title: 'Your account has been deleted.');
@@ -1019,7 +1028,9 @@ class _MyPageState extends State<MyPage> {
     );
     if (!ok || !mounted) return;
     try {
-      await MediaApi.deleteItinerary(id: item.id, userId: user.id);
+      await showBusyWhile(
+          context, MediaApi.deleteItinerary(id: item.id, userId: user.id),
+          label: 'Deleting…');
       if (mounted) {
         setState(() => itineraries.removeWhere((s) => s.id == item.id));
       }

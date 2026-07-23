@@ -118,7 +118,8 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Future<void> _deleteComment(PlaceComment c) async {
     try {
-      await MediaApi.deletePlaceComment(c.id);
+      await showBusyWhile(context, MediaApi.deletePlaceComment(c.id),
+          label: 'Deleting…');
       if (mounted) setState(() => comments.removeWhere((x) => x.id == c.id));
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
@@ -176,7 +177,6 @@ class _DetailScreenState extends State<DetailScreen> {
         ),
         actions: [
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.purple),
             onPressed: () => Navigator.pop(context),
             child: const Text('Got it'),
           ),

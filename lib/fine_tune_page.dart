@@ -94,7 +94,9 @@ class _FineTunePageState extends State<FineTunePage> {
     if (saving) return;
     setState(() => saving = true);
     try {
-      await MediaApi.updateHaptics(widget.video.id, track);
+      await showBusyWhile(
+          context, MediaApi.updateHaptics(widget.video.id, track),
+          label: 'Saving…');
       Haptics.string();
       if (!mounted) return;
       setState(() {

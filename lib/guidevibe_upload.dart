@@ -68,7 +68,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     try {
       final x = await ImagePicker().pickVideo(
         source: ImageSource.camera,
-        maxDuration: const Duration(seconds: 90),
+        maxDuration: const Duration(seconds: 60),
       );
       if (x != null) _setVideo(x.path);
     } catch (_) {
@@ -78,9 +78,9 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
 
   Future<void> _setVideo(String path) async {
     final size = await File(path).length();
-    if (size > 80 * 1024 * 1024) {
+    if (size > 20 * 1024 * 1024) {
       if (mounted) {
-        newSnackBar(context, title: 'GuideVibe clips are limited to 80 MB.');
+        newSnackBar(context, title: 'GuideVibe clips are limited to 20 MB.');
       }
       return;
     }
@@ -94,6 +94,15 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     } catch (_) {}
     if (!mounted) {
       c.dispose();
+      return;
+    }
+    // Enforce the 1-minute limit up front (a little slack for rounding).
+    if (c.value.duration > const Duration(seconds: 62)) {
+      c.dispose();
+      if (mounted) {
+        newSnackBar(context,
+            title: 'GuideVibe clips must be 1 minute or less.');
+      }
       return;
     }
     setState(() {
