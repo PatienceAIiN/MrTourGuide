@@ -76,23 +76,25 @@ class R2Storage implements MediaStorage {
 
   @override
   Future<int> save(String city, String filename, Stream<List<int>> bytes) async {
-    // Buffer (upload caps are enforced by the callers).
-    final data = <int>[];
-    await for (final chunk in bytes) {
-      data.addAll(chunk);
-      if (data.length > _maxUploadBytes) {
-        throw const FormatException('File too large.');
+    // Stream straight to the on-disk cache — no giant in-memory buffer. The old
+    // path accumulated the whole file into a growable List<int> (~8 bytes/elem,
+    // so an 80 MB upload ballooned to ~640 MB of RAM and OOM-killed the small
+    // container). Caches first so the file is immediately servable and the
+    // caller returns right away.
+    final size = await cache.save(city, filename, bytes);
+    // The R2 push (slow leg) runs in the background. SigV4 needs the full
+    // payload to sign, so read the cached file back as a COMPACT Uint8List
+    // rather than re-buffering the stream as a List<int>.
+    Future(() async {
+      try {
+        final file = await cache.open(city, filename);
+        if (file == null) return;
+        await _put('$city/$filename', await file.readAsBytes());
+      } catch (e) {
+        print('R2 put failed (served from cache) for $city/$filename: $e');
       }
-    }
-    // Write the local cache FIRST (fast, on-disk) so the file is immediately
-    // servable and the caller can return right away. The R2 upload (the slow
-    // VM→Cloudflare leg) runs in the background — otherwise big uploads sit at
-    // ~95% for the whole R2 push and time out.
-    await cache.save(city, filename, Stream.value(data));
-    _put('$city/$filename', data).catchError((Object e) {
-      print('R2 put failed (served from cache) for $city/$filename: $e');
     });
-    return data.length;
+    return size;
   }
 
   @override
@@ -361,6 +363,24 @@ Future<Command?> _redis() async {
     _redisCmd = null;
   }
   return _redisCmd;
+}
+
+/// Drops cached responses for a route family so a fresh write shows instantly
+/// instead of waiting out the TTL. Uses SCAN (non-blocking) and never throws.
+Future<void> _cacheBust(String pathPrefix) async {
+  final cmd = await _redis();
+  if (cmd == null) return;
+  try {
+    var cursor = '0';
+    do {
+      final res = await cmd.send_object(
+              ['SCAN', cursor, 'MATCH', 'resp:/api/$pathPrefix*', 'COUNT', '200'])
+          as List;
+      cursor = '${res[0]}';
+      final keys = (res[1] as List).map((e) => '$e').toList();
+      if (keys.isNotEmpty) await cmd.send_object(['DEL', ...keys]);
+    } while (cursor != '0');
+  } catch (_) {}
 }
 
 /// Redis-backed response cache to keep Neon calls *super low*: hot catalog/feed
@@ -2738,7 +2758,8 @@ Map<String, Object?> _shortRowToJson(List<dynamic> row, {bool liked = false}) =>
       'url': '/files/guidevibe/${row[6]}',
     };
 
-const _maxShortBytes = 80 * 1024 * 1024; // hard cap per short (80 MB raw)
+const _maxShortBytes = 20 * 1024 * 1024; // hard cap per short (20 MB raw)
+const _maxShortSeconds = 60; // GuideVibe clips: 1 minute max
 
 /// Streams a URL to disk with a hard byte cap + timeout. Returns true on a
 /// complete, within-cap download. Used to fetch the chosen soundtrack.
@@ -2873,7 +2894,7 @@ Future<Response> _uploadShort(Request request) async {
       if (size > _maxShortBytes) {
         await sink.close();
         await tmpIn.delete();
-        return _json(413, {'error': 'GuideVibe clips are limited to 80 MB.'});
+        return _json(413, {'error': 'GuideVibe clips are limited to 20 MB.'});
       }
       sink.add(chunk);
     }
@@ -2887,6 +2908,25 @@ Future<Response> _uploadShort(Request request) async {
       await tmpIn.delete();
     } catch (_) {}
     return _json(400, {'error': 'Empty upload body.'});
+  }
+
+  // Enforce the 1-minute limit (safety net — the app also checks before
+  // uploading). ffprobe reads only the container metadata, so it's cheap.
+  try {
+    final probe = await Process.run('ffprobe', [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      tmpIn.path,
+    ]);
+    final dur = double.tryParse('${probe.stdout}'.trim()) ?? 0;
+    if (dur > _maxShortSeconds + 5) {
+      await tmpIn.delete();
+      return _json(400,
+          {'error': 'GuideVibe clips must be 1 minute or less.'});
+    }
+  } catch (_) {
+    // If ffprobe is unavailable/fails, don't block the upload on the guard.
   }
 
   final finalName = 'gv_$stamp.mp4';
@@ -2942,6 +2982,8 @@ Future<Response> _uploadShort(Request request) async {
             Sql.named('UPDATE shorts SET thumb_url = @t WHERE id = @id'),
             parameters: {'t': '/files/guidevibe/$thumbName', 'id': shortId},
           );
+          // Fresh thumbnail ready → drop cached feeds so it shows immediately.
+          await _cacheBust('guidevibe');
         }
       } catch (_) {} finally {
         try {
@@ -3232,6 +3274,7 @@ Future<Response> _updateShort(Request request, String id) async {
         'kind = COALESCE(@kind, kind) WHERE id = @s'),
     parameters: {'cap': caption, 'kind': kind, 's': shortId},
   );
+  await _cacheBust('guidevibe');
   return _json(200, {'ok': true});
 }
 
@@ -3254,6 +3297,7 @@ Future<Response> _deleteShort(Request request, String id) async {
   await _db.execute(Sql.named('DELETE FROM short_comments WHERE short_id = @s'),
       parameters: {'s': shortId});
   _logActivity('user:$userId', 'guidevibe-delete', 'short #$shortId');
+  await _cacheBust('guidevibe');
   return _json(200, {'ok': true});
 }
 
@@ -5221,8 +5265,12 @@ Future<Connection> _openDb() async {
     final userInfo = u.userInfo.split(':');
     final ssl = u.queryParameters['sslmode'] != 'disable';
     // A single long-lived session should talk to Neon's DIRECT endpoint, not
-    // the connection pooler — strip "-pooler" from the host if present.
-    final host = u.host.replaceFirst('-pooler.', '.');
+    // Neon wants its DIRECT endpoint for a long-lived session (strip
+    // "-pooler"); Supabase, by contrast, is reached VIA its pooler, so only
+    // rewrite Neon hosts.
+    final host = u.host.contains('neon.tech')
+        ? u.host.replaceFirst('-pooler.', '.')
+        : u.host;
     print('DB: connecting to $host/${u.path.replaceFirst('/', '')} '
         '(ssl: $ssl)');
     final conn = await Connection.open(
@@ -5236,9 +5284,11 @@ Future<Connection> _openDb() async {
       settings: ConnectionSettings(
           sslMode: ssl ? SslMode.require : SslMode.disable),
     );
-    // Neon's neondb_owner ships with an empty search_path — pin it so the
-    // app's unqualified queries resolve against public.
-    await conn.execute('SET search_path TO public');
+    // Managed roles can ship an empty/non-public search_path; pin it to the
+    // app's schema. DB_SCHEMA lets us isolate into e.g. "mrtouride" when the
+    // Postgres database is shared with another app (Supabase).
+    await conn.execute(
+        'SET search_path TO ${Platform.environment['DB_SCHEMA'] ?? 'public'}');
     return conn;
   }
   print('DB: connecting to local Postgres (unix socket)');
