@@ -363,6 +363,68 @@ Future<Command?> _redis() async {
   return _redisCmd;
 }
 
+/// Redis-backed response cache to keep Neon calls *super low*: hot catalog/feed
+/// GETs are served from the in-container Redis for a few seconds/minutes instead
+/// of re-querying Postgres on every screen load. Keys include the full query
+/// string (so per-user feeds stay separated); writes/POSTs are never cached and
+/// expire quickly so freshness stays acceptable. Falls straight through when
+/// Redis is unavailable.
+Middleware _redisCache() {
+  // path (without the /api prefix) -> TTL seconds
+  const ttls = <String, int>{
+    'cities': 300,
+    'videos': 120,
+    'videos/trending': 180,
+    'videos/suggest': 300,
+    'guidevibe': 45,
+    'search': 180,
+    'search/media': 600,
+    'news': 600,
+    'whats-new': 45,
+    'notifications': 30,
+  };
+  return (Handler inner) {
+    return (Request request) async {
+      if (request.method != 'GET') return inner(request);
+      var path = request.url.path;
+      if (path.startsWith('api/')) path = path.substring(4);
+      var ttl = ttls[path];
+      ttl ??= path.endsWith('/weather')
+          ? 900
+          : (path.endsWith('/rating') || path.endsWith('/comments') ? 30 : null);
+      if (ttl == null) return inner(request);
+
+      final cmd = await _redis();
+      if (cmd == null) return inner(request);
+
+      final key = 'resp:${request.requestedUri.path}?${request.requestedUri.query}';
+      try {
+        final hit = await cmd.send_object(['GET', key]);
+        if (hit != null) {
+          final body = hit is String ? hit : utf8.decode(hit as List<int>);
+          return Response.ok(body, headers: {
+            'content-type': 'application/json',
+            'x-cache': 'HIT',
+          });
+        }
+      } catch (_) {}
+
+      final response = await inner(request);
+      if (response.statusCode == 200) {
+        try {
+          final body = await response.readAsString();
+          cmd.send_object(['SET', key, body, 'EX', '$ttl']).catchError(
+              (Object _) => null);
+          return response.change(headers: {'x-cache': 'MISS'}, body: body);
+        } catch (_) {
+          return response;
+        }
+      }
+      return response;
+    };
+  };
+}
+
 /// Short edge-cache for anonymous catalog GETs — Cloudflare absorbs bursts
 /// so the free-tier VM stays cool. Personalized requests stay uncached.
 Middleware _edgeCache() {
@@ -5443,6 +5505,7 @@ Future<void> main() async {
       .addMiddleware(logRequests())
       .addMiddleware(_rateLimit())
       .addMiddleware(_edgeCache())
+      .addMiddleware(_redisCache())
       .addMiddleware(_cors())
       .addHandler(cascade.handler);
 
