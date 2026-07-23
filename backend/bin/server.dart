@@ -2613,6 +2613,81 @@ Map<String, Object?> _shortRowToJson(List<dynamic> row, {bool liked = false}) =>
 
 const _maxShortBytes = 80 * 1024 * 1024; // hard cap per short (80 MB raw)
 
+/// Streams a URL to disk with a hard byte cap + timeout. Returns true on a
+/// complete, within-cap download. Used to fetch the chosen soundtrack.
+Future<bool> _downloadCapped(String url, File dest,
+    {required int maxBytes, required Duration timeout}) async {
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+  try {
+    final req = await client.getUrl(Uri.parse(url));
+    final res = await req.close().timeout(timeout);
+    if (res.statusCode != 200) return false;
+    final sink = dest.openWrite();
+    var n = 0;
+    var ok = true;
+    await for (final chunk in res.timeout(timeout)) {
+      n += chunk.length;
+      if (n > maxBytes) {
+        ok = false;
+        break;
+      }
+      sink.add(chunk);
+    }
+    await sink.close();
+    return ok && n > 0;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Music search via Deezer's public API (no key) — Hindi/Bollywood + global
+/// catalog. Returns official 30-second preview clips (the perfect length for
+/// short GuideVibe clips). Cached per query for 30 min.
+final Map<String, (DateTime, List<Map<String, Object?>>)> _musicCache = {};
+
+Future<Response> _musicSearch(Request request) async {
+  final q = (request.url.queryParameters['q'] ?? '').trim();
+  final key = q.toLowerCase();
+  final cached = _musicCache[key];
+  if (cached != null &&
+      DateTime.now().difference(cached.$1) < const Duration(minutes: 30)) {
+    return _json(200, {'items': cached.$2});
+  }
+  // Empty query → a popular Hindi + global starter set.
+  final query = q.isEmpty ? 'top hits' : q;
+  final uri = Uri.https('api.deezer.com', '/search',
+      {'q': query, 'limit': '30', 'order': 'RANKING'});
+  try {
+    final text = await _httpGetText(uri.toString())
+        .timeout(const Duration(seconds: 12));
+    final decoded = jsonDecode(text) as Map<String, dynamic>;
+    final results = (decoded['data'] as List?) ?? const [];
+    final items = <Map<String, Object?>>[
+      for (final t in results)
+        if (t is Map &&
+            t['preview'] is String &&
+            (t['preview'] as String).isNotEmpty)
+          {
+            'id': '${t['id']}',
+            'title': t['title_short'] ?? t['title'] ?? 'Untitled',
+            'artist': (t['artist'] is Map ? t['artist']['name'] : null) ??
+                'Unknown artist',
+            // Deezer previews are ~30s clips.
+            'duration': 30,
+            'audio': t['preview'],
+            'image': (t['album'] is Map
+                    ? (t['album']['cover_medium'] ?? t['album']['cover'])
+                    : null) ??
+                '',
+          }
+    ];
+    _musicCache[key] = (DateTime.now(), items);
+    return _json(200, {'items': items});
+  } catch (_) {
+    return _json(502, {'error': 'Music search is unavailable right now.'});
+  }
+}
+
 /// One short is transcoded at a time — the free-tier VM can't run parallel
 /// ffmpeg passes.
 Future<void> _shortQueue = Future.value();
@@ -2640,6 +2715,21 @@ Future<Response> _uploadShort(Request request) async {
   final kind = const ['normal', 'vr', 'mr'].contains(params['kind'])
       ? params['kind']!
       : 'normal';
+  // Optional soundtrack (Deezer preview clip). Only https Deezer preview-CDN
+  // URLs are accepted — prevents the server being turned into a fetch proxy
+  // (SSRF).
+  final musicUrlRaw = (params['musicUrl'] ?? '').trim();
+  final musicUri = Uri.tryParse(musicUrlRaw);
+  final musicHost = musicUri?.host.toLowerCase() ?? '';
+  final musicOk = musicUrlRaw.isNotEmpty &&
+      musicUri != null &&
+      musicUri.scheme == 'https' &&
+      (musicHost.contains('dzcdn.net') ||
+          musicHost.contains('deezer') ||
+          musicHost.contains('jamendo'));
+  final musicUrl = musicOk ? musicUrlRaw : null;
+  final musicStart =
+      (double.tryParse(params['musicStart'] ?? '0') ?? 0).clamp(0, 3600);
   final original = _sanitizeFilename(params['filename'] ?? 'short.mp4');
   final ext = original.split('.').last.toLowerCase();
   if (!{'mp4', 'mov', 'm4v', 'webm', '3gp'}.contains(ext)) {
@@ -2723,30 +2813,57 @@ Future<Response> _uploadShort(Request request) async {
   // Queue transcode + haptics; overwrite the same storage key when smaller.
   _shortQueue = _shortQueue.then((_) async {
     final tmpOut = File('${Directory.systemTemp.path}/mrt_shortc_$stamp.mp4');
+    final tmpMusic = File('${Directory.systemTemp.path}/mrt_gvmusic_$stamp.mp3');
+    var haveMusic = false;
     try {
-      final r = await Process.run('ffmpeg', [
-        '-y', '-loglevel', 'error',
-        '-i', tmpIn.path,
-        '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+      // Fetch the chosen soundtrack (size-capped) before transcoding.
+      if (musicUrl != null) {
+        try {
+          haveMusic = await _downloadCapped(musicUrl, tmpMusic,
+              maxBytes: 20 * 1024 * 1024,
+              timeout: const Duration(seconds: 40));
+        } catch (_) {
+          haveMusic = false;
+        }
+      }
+
+      final ffArgs = <String>['-y', '-loglevel', 'error', '-i', tmpIn.path];
+      if (haveMusic) {
+        // Seek into the track to the creator-chosen start, then let
+        // -shortest trim it to the clip length. The music REPLACES the
+        // original audio, so the audio→haptics feel follows the song.
+        ffArgs.addAll(['-ss', musicStart.toStringAsFixed(1), '-i', tmpMusic.path]);
+      }
+      ffArgs.addAll(['-vf', "scale='trunc(min(720,iw)/2)*2':-2"]);
+      if (haveMusic) {
+        ffArgs.addAll(['-map', '0:v:0', '-map', '1:a:0', '-shortest']);
+      }
+      ffArgs.addAll([
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
-        '-c:a', 'aac', '-b:a', '96k',
+        '-c:a', 'aac', '-b:a', haveMusic ? '128k' : '96k',
         '-movflags', '+faststart',
         tmpOut.path,
-      ]).timeout(const Duration(minutes: 8));
+      ]);
+      final r = await Process.run('ffmpeg', ffArgs)
+          .timeout(const Duration(minutes: 8));
       var analyzePath = tmpIn.path;
       if (r.exitCode == 0 && await tmpOut.exists()) {
         final outSize = await tmpOut.length();
-        if (outSize > 0 && outSize < size) {
+        // With music we always keep the muxed output; otherwise only when it
+        // actually shrank.
+        if (outSize > 0 && (haveMusic || outSize < size)) {
           await _storage.save('guidevibe', finalName, tmpOut.openRead());
           analyzePath = tmpOut.path;
           await _db.execute(
             Sql.named('UPDATE shorts SET size_bytes = @s WHERE id = @id'),
             parameters: {'s': outSize, 'id': shortId},
           );
-          print('guidevibe short: $size -> $outSize bytes ($finalName)');
+          print('guidevibe short: $size -> $outSize bytes ($finalName)'
+              '${haveMusic ? ' +music' : ''}');
         }
       }
-      // Audio -> haptics (same {track, fine, events} contract).
+      // Audio -> haptics (same {track, fine, events} contract) — on the
+      // muxed file when music was added, so the feel matches the song.
       final (fine, events) = await _audioEnergyAnalysis(analyzePath);
       final track = <double>[];
       for (var i = 0; i + 3 < fine.length; i += 4) {
@@ -2784,7 +2901,7 @@ Future<Response> _uploadShort(Request request) async {
         );
       } catch (_) {}
     } finally {
-      for (final f in [tmpIn, tmpOut]) {
+      for (final f in [tmpIn, tmpOut, tmpMusic]) {
         try {
           if (await f.exists()) await f.delete();
         } catch (_) {}
@@ -5139,6 +5256,7 @@ Future<void> main() async {
     ..post('/community/upload-video', _uploadCommunityVideo)
     ..get('/post/<id>', _publicPost)
     ..get('/guidevibe', _guidevibeFeed)
+    ..get('/music/search', _musicSearch)
     ..post('/guidevibe/upload', _uploadShort)
     ..post('/guidevibe/<id>/like', _likeShort)
     ..post('/guidevibe/<id>/view', _viewShort)

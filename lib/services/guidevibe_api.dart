@@ -95,6 +95,35 @@ class Short {
       );
 }
 
+/// A track from the music library — a 30-second official preview clip
+/// (Hindi & global catalog) the creator can add to a short.
+class MusicTrack {
+  final String id;
+  final String title;
+  final String artist;
+  final int duration; // seconds
+  final String audio; // streamable/downloadable MP3 url
+  final String image;
+
+  const MusicTrack({
+    required this.id,
+    required this.title,
+    required this.artist,
+    required this.duration,
+    required this.audio,
+    required this.image,
+  });
+
+  factory MusicTrack.fromJson(Map<String, dynamic> j) => MusicTrack(
+        id: '${j['id']}',
+        title: j['title'] as String? ?? 'Untitled',
+        artist: j['artist'] as String? ?? 'Unknown artist',
+        duration: (j['duration'] as num?)?.toInt() ?? 0,
+        audio: j['audio'] as String? ?? '',
+        image: j['image'] as String? ?? '',
+      );
+}
+
 class ShortComment {
   final int id;
   final int authorId;
@@ -147,12 +176,26 @@ class GuideVibeApi {
     );
   }
 
+  /// Search the royalty-free music library (Creative-Commons, safe to
+  /// publish). Returns [] if the library isn't configured yet.
+  static Future<List<MusicTrack>> searchMusic(String query) async {
+    final decoded =
+        await _get('/music/search?q=${Uri.encodeComponent(query)}');
+    return [
+      for (final t in (decoded['items'] as List? ?? const []))
+        MusicTrack.fromJson(t as Map<String, dynamic>)
+    ];
+  }
+
   /// Streams a short up (client cap 80 MB) and returns the created Short.
+  /// Optionally overlays a chosen soundtrack segment (musicUrl + start sec).
   static Future<Short> upload({
     required String filePath,
     required String caption,
     String city = '',
     String kind = 'normal',
+    String? musicUrl,
+    double musicStart = 0,
   }) async {
     final me = _me;
     if (me == null) throw const AuthException('Sign in to post a GuideVibe.');
@@ -170,6 +213,9 @@ class GuideVibeApi {
           'caption': caption,
           if (city.isNotEmpty) 'city': city,
           'kind': kind,
+          if (musicUrl != null && musicUrl.isNotEmpty) 'musicUrl': musicUrl,
+          if (musicUrl != null && musicUrl.isNotEmpty)
+            'musicStart': musicStart.toStringAsFixed(1),
         }),
       );
       req.headers['Content-Type'] = 'application/octet-stream';

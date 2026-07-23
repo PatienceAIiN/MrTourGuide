@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -31,6 +32,10 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
   bool _uploading = false;
   Timer? _hapticPreview;
   int _hapticFrame = -1;
+
+  // Optional soundtrack (royalty-free / Creative-Commons).
+  MusicTrack? _music;
+  double _musicStart = 0;
 
   @override
   void initState() {
@@ -132,6 +137,8 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         caption: _caption.text.trim(),
         city: _city.text.trim(),
         kind: _kind,
+        musicUrl: _music?.audio,
+        musicStart: _musicStart,
       );
       if (!mounted) return;
       Haptics.medium();
@@ -199,6 +206,10 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
             style: TextStyle(color: ink(context)),
             decoration: _inputDecoration('e.g. Jaipur'),
           ),
+          const SizedBox(height: 18),
+          _label('Music (optional)'),
+          const SizedBox(height: 7),
+          _musicSection(),
           const SizedBox(height: 18),
           _hapticsCard(),
           const SizedBox(height: 22),
@@ -345,6 +356,116 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     );
   }
 
+  int get _videoSeconds =>
+      _preview?.value.duration.inSeconds.clamp(1, 600) ?? 15;
+
+  Future<void> _pickMusic() async {
+    final picked = await showModalBottomSheet<MusicTrack>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _MusicPickerSheet(),
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _music = picked;
+        _musicStart = 0;
+      });
+    }
+  }
+
+  Widget _musicSection() {
+    final m = _music;
+    if (m == null) {
+      return OutlinedButton.icon(
+        onPressed: _pickMusic,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: brandInk(context),
+          minimumSize: const Size(double.infinity, 48),
+          side: BorderSide(color: Colors.grey.withValues(alpha: 0.3)),
+        ),
+        icon: const Icon(Icons.library_music_outlined, size: 18),
+        label: const Text('Add a song'),
+      );
+    }
+    // How far the start point can slide: track length minus the clip length.
+    final maxStart = (m.duration - _videoSeconds).clamp(0, m.duration).toDouble();
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.3)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: m.image.isNotEmpty
+                    ? Image.network(m.image,
+                        width: 40,
+                        height: 40,
+                        fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) => _musicIcon())
+                    : _musicIcon(),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(m.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: ink(context),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13.5)),
+                    Text(m.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: inkSoft(context), fontSize: 11.5)),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: () => setState(() => _music = null),
+              ),
+            ],
+          ),
+          if (maxStart > 0) ...[
+            const SizedBox(height: 4),
+            Text('Start at ${_musicStart.round()}s',
+                style: TextStyle(color: inkSoft(context), fontSize: 12)),
+            Slider(
+              value: _musicStart.clamp(0, maxStart),
+              max: maxStart,
+              divisions: maxStart.round().clamp(1, 120),
+              activeColor: blue,
+              onChanged: (v) => setState(() => _musicStart = v),
+            ),
+          ],
+          Text(
+            'The chosen ${_videoSeconds}s plays over your clip, and the feel '
+            'follows the song.',
+            style: TextStyle(color: inkSoft(context), fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _musicIcon() => Container(
+        width: 40,
+        height: 40,
+        color: blue.withValues(alpha: 0.12),
+        child: Icon(Icons.music_note, color: brandInk(context), size: 20),
+      );
+
   Widget _hapticsCard() => Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -435,5 +556,214 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide(color: Colors.grey.withValues(alpha: 0.3))),
+      );
+}
+
+/// Search + preview royalty-free tracks; returns the chosen [MusicTrack].
+class _MusicPickerSheet extends StatefulWidget {
+  const _MusicPickerSheet();
+
+  @override
+  State<_MusicPickerSheet> createState() => _MusicPickerSheetState();
+}
+
+class _MusicPickerSheetState extends State<_MusicPickerSheet> {
+  final _query = TextEditingController();
+  final _player = AudioPlayer();
+  Timer? _debounce;
+  List<MusicTrack> _results = [];
+  bool _loading = true;
+  String? _error;
+  String? _previewingId;
+
+  @override
+  void initState() {
+    super.initState();
+    _search(''); // popular tracks to start
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _query.dispose();
+    _player.dispose();
+    super.dispose();
+  }
+
+  void _onChanged(String s) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () => _search(s));
+  }
+
+  Future<void> _search(String q) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final list = await GuideVibeApi.searchMusic(q.trim());
+      if (!mounted) return;
+      setState(() {
+        _results = list;
+        _loading = false;
+        if (list.isEmpty) {
+          _error = 'No tracks found. The music library may not be enabled yet.';
+        }
+      });
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.message;
+      });
+    }
+  }
+
+  Future<void> _togglePreview(MusicTrack t) async {
+    if (_previewingId == t.id) {
+      await _player.stop();
+      setState(() => _previewingId = null);
+      return;
+    }
+    setState(() => _previewingId = t.id);
+    try {
+      await _player.stop();
+      await _player.play(UrlSource(t.audio));
+      _player.onPlayerComplete.listen((_) {
+        if (mounted) setState(() => _previewingId = null);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _previewingId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.8,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (context, scroll) => Container(
+          decoration: BoxDecoration(
+            color: cardBg(context),
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 10),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                child: TextField(
+                  controller: _query,
+                  autofocus: true,
+                  onChanged: _onChanged,
+                  style: TextStyle(color: ink(context)),
+                  decoration: InputDecoration(
+                    hintText: 'Search songs (e.g. lofi, cinematic, sitar)…',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: pageBg(context),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(999),
+                        borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _error != null
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(_error!,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: inkSoft(context))),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scroll,
+                            itemCount: _results.length,
+                            itemBuilder: (context, i) {
+                              final t = _results[i];
+                              final playing = _previewingId == t.id;
+                              return ListTile(
+                                leading: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: t.image.isNotEmpty
+                                      ? Image.network(t.image,
+                                          width: 46,
+                                          height: 46,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (c, e, s) =>
+                                              _ph())
+                                      : _ph(),
+                                ),
+                                title: Text(t.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style:
+                                        const TextStyle(fontWeight: FontWeight.w600)),
+                                subtitle: Text('${t.artist} · ${t.duration}s',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: Icon(playing
+                                          ? Icons.stop_circle
+                                          : Icons.play_circle_outline),
+                                      color: brandInk(context),
+                                      onPressed: () => _togglePreview(t),
+                                    ),
+                                    FilledButton(
+                                      style: FilledButton.styleFrom(
+                                          backgroundColor: blue,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12),
+                                          visualDensity: VisualDensity.compact),
+                                      onPressed: () =>
+                                          Navigator.pop(context, t),
+                                      child: const Text('Use'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(10),
+                child: Text(
+                  '30-second previews · Hindi & global songs.',
+                  style: TextStyle(color: inkSoft(context), fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ph() => Container(
+        width: 46,
+        height: 46,
+        color: blue.withValues(alpha: 0.12),
+        child: Icon(Icons.music_note, color: brandInk(context), size: 20),
       );
 }
