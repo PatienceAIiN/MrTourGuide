@@ -1,23 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- MrTouride app icon: location pin + feel waves on brand gradient -->
+  <!-- Mr.Tour Guide: light, motto-focused — "feel places from home".
+       A location pin radiating feel/haptic ripples on a soft light field. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#052933"/>
+      <stop offset="0" stop-color="#F2F6FF"/>
+      <stop offset="1" stop-color="#DCE7FF"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D53D8"/>
       <stop offset="1" stop-color="#1E319D"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <!-- Feel waves (haptics) -->
-  <g stroke="#9C6BFF" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.9">
-    <path d="M 96 300 q 20 -34 0 -68"/>
-    <path d="M 416 300 q -20 -34 0 -68"/>
-  </g>
-  <g stroke="#7B4FE0" stroke-width="18" stroke-linecap="round" fill="none" opacity="0.55">
-    <path d="M 56 316 q 32 -50 0 -100"/>
-    <path d="M 456 316 q -32 -50 0 -100"/>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <!-- Feel ripples (haptics) radiating outward -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M 150 232 q -34 24 0 68" stroke="#1E319D" stroke-width="20" opacity="0.30"/>
+    <path d="M 362 232 q 34 24 0 68" stroke="#1E319D" stroke-width="20" opacity="0.30"/>
+    <path d="M 112 214 q -52 42 0 104" stroke="#3CC9FF" stroke-width="18" opacity="0.55"/>
+    <path d="M 400 214 q 52 42 0 104" stroke="#3CC9FF" stroke-width="18" opacity="0.55"/>
   </g>
   <!-- Location pin -->
-  <path fill="#3CEBFF" d="M256 96c-62 0-112 50-112 112 0 84 112 208 112 208s112-124 112-208c0-62-50-112-112-112z"/>
-  <!-- Play triangle inside the pin (experiences) -->
-  <path fill="#052933" d="M226 158l84 50-84 50z"/>
+  <path fill="url(#pin)" d="M256 104c-66 0-119 53-119 119 0 89 119 205 119 205s119-116 119-205c0-66-53-119-119-119z"/>
+  <!-- Inner dot: a soft "world" -->
+  <circle cx="256" cy="220" r="46" fill="#F2F6FF"/>
+  <circle cx="256" cy="220" r="20" fill="#3CC9FF"/>
 </svg>

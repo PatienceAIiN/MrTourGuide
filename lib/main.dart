@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
-import 'package:lottie/lottie.dart';
 import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/login.dart';
 import 'package:mrtouride/navpages/main_page.dart';
@@ -11,6 +10,7 @@ import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/signup.dart';
+import 'package:mrtouride/widgets/ux.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
@@ -95,6 +95,17 @@ class _HomePageState extends State<HomePage> {
   int coverIndex = 0;
   Timer? _flip;
 
+  // Short changing phrases above the buttons — type in, slide + fade out.
+  static const _welcomePhrases = [
+    'Feel the world.',
+    'Go anywhere.',
+    'Touch the journey.',
+    'Travel by feel.',
+    'Anywhere, together.',
+  ];
+  int _phraseIndex = 0;
+  Timer? _phraseTimer;
+
   @override
   void initState() {
     super.initState();
@@ -121,11 +132,18 @@ class _HomePageState extends State<HomePage> {
         }
       });
     }).catchError((_) {});
+    _phraseTimer = Timer.periodic(const Duration(milliseconds: 2600), (_) {
+      if (mounted) {
+        setState(() =>
+            _phraseIndex = (_phraseIndex + 1) % _welcomePhrases.length);
+      }
+    });
   }
 
   @override
   void dispose() {
     _flip?.cancel();
+    _phraseTimer?.cancel();
     super.dispose();
   }
 
@@ -209,10 +227,33 @@ class _HomePageState extends State<HomePage> {
                             ))
                       ],
                     ),
-                    Container(
-                      height: 30,
-                      child: Lottie.network(
-                          'https://assets4.lottiefiles.com/packages/lf20_ayf54mdk.json'),
+                    // Short changing phrase: types in, then slides + fades to
+                    // the next — a lively, network-free welcome accent.
+                    SizedBox(
+                      height: 40,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 450),
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: const Offset(0, 0.4),
+                              end: Offset.zero,
+                            ).animate(animation),
+                            child: child,
+                          ),
+                        ),
+                        child: TypewriterText(
+                          _welcomePhrases[_phraseIndex],
+                          key: ValueKey(_phraseIndex),
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: blue,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ),
                     ),
                     Column(
                       children: <Widget>[

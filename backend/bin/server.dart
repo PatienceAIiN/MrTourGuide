@@ -3659,7 +3659,12 @@ Future<Response> _aiItinerary(Request request) async {
               'safety, food, costs, weather, anything), answer naturally '
               'and helpfully in a few short sentences using the '
               'conversation context — never say you lack context. Plain '
-              'text only — no markdown symbols.'
+              'text only — no markdown symbols. '
+              'SCOPE: you ONLY help with travel, destinations, and using the '
+              'Mr.Tour Guide app. You must REFUSE anything else — do not write '
+              'or debug code, do essays/homework, math, or discuss unrelated '
+              'topics. If asked, reply in one line: "I can only help with '
+              'travel planning and the Mr.Tour Guide app." Never output code.'
         },
         ...history,
         {'role': 'user', 'content': query},
@@ -3855,7 +3860,12 @@ Future<Response> _aiSearch(Request request) async {
                   '"Stay:" (hotel + homestay with typical budgets), '
                   '"Best time:" (season/months), "Tips:" (1-2 practical '
                   'notes). Keep it tight. No markdown, no bullet characters, '
-                  'no headings other than those exact labels.'
+                  'no headings other than those exact labels. '
+                  'SCOPE: only travel, destinations, and the Mr.Tour Guide '
+                  'app. Refuse everything else — never write or debug code, '
+                  'do homework/math, or discuss unrelated topics. If the '
+                  'query is off-topic, reply with exactly: "I can only help '
+                  'with travel and the Mr.Tour Guide app."'
         },
         {'role': 'user', 'content': query},
       ],

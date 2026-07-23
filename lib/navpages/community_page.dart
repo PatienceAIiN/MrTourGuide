@@ -322,7 +322,9 @@ class _CommunityPageState extends State<CommunityPage>
       if (!mounted) return;
       setState(() {
         loading = false;
-        error = e.message;
+        // A background/silent tick that fails keeps the current feed — the
+        // banner only shows on a visible (manual/first) load.
+        if (!silent) error = e.message;
       });
     }
   }

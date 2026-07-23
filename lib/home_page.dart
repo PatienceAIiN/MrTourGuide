@@ -21,7 +21,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomeScreen>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   @override
   bool get wantKeepAlive => true;
 
@@ -43,22 +43,38 @@ class _HomePageState extends State<HomeScreen>
   Timer? _phraseTimer;
   Timer? _syncTimer;
 
+  bool _loadedOnce = false;
+
   @override
   void initState() {
     super.initState();
-    _load();
+    WidgetsBinding.instance.addObserver(this);
+    _load(initial: true);
     _loadNews();
     _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
       if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
     });
-    // Quiet resync: fresh places and trending with no manual refresh.
+    // Quiet resync: fresh places and trending with no manual refresh, and
+    // never a failure banner — a background tick that fails just keeps the
+    // data we already have.
     _syncTimer = Timer.periodic(const Duration(seconds: 60), (_) {
       if (mounted) _load();
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Screen back on / app foregrounded → quietly refresh so any stale
+    // "offline" state clears the moment connectivity is back.
+    if (state == AppLifecycleState.resumed && mounted) {
+      _load();
+      _loadNews();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _phraseTimer?.cancel();
     _syncTimer?.cancel();
     super.dispose();
@@ -75,7 +91,7 @@ class _HomePageState extends State<HomeScreen>
     } catch (_) {}
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool initial = false}) async {
     try {
       final results = await Future.wait([
         MediaApi.fetchCities(),
@@ -86,13 +102,17 @@ class _HomePageState extends State<HomeScreen>
         places = [for (final c in results[0] as List<City>) Place.fromCity(c)];
         trending = results[1] as List<VideoItem>;
         loading = false;
+        _loadedOnce = true;
         error = null;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         loading = false;
-        error = 'Could not sync — check your internet.';
+        // Only surface the banner on a cold load with nothing to show —
+        // background/resume ticks that fail keep the data already on screen
+        // (screen-off, doze, app-switch all just retry quietly).
+        if (!_loadedOnce) error = 'Could not sync — check your internet.';
       });
     }
   }
