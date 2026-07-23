@@ -6,9 +6,11 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:googleapis_auth/auth_io.dart' as gauth;
 import 'package:postgres/postgres.dart';
+import 'package:redis/redis.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
+import 'package:shelf_static/shelf_static.dart';
 
 /// Local backend for MrTouride.
 ///
@@ -28,7 +30,8 @@ import 'package:shelf_router/shelf_router.dart';
 ///
 ///   GET  /health                                    -> {ok: true}
 
-const _port = 8080;
+/// Render / Cloud Run inject the port to bind on; default 8080 locally.
+int get _port => int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
 const _pbkdf2Rounds = 50000;
 const _maxUploadBytes = 500 * 1024 * 1024; // 500 MB
 
@@ -296,6 +299,29 @@ Middleware _rateLimit() {
           request.url.path.contains('upload-image');
       final key = isUpload ? 'u:$ip' : ip;
       final limit = isUpload ? 10 : 120;
+
+      // Prefer a shared Redis counter (survives restarts / multiple
+      // instances); fall back to the in-memory window if Redis is absent
+      // or errors — rate limiting must never take the API down.
+      final cmd = await _redis();
+      if (cmd != null) {
+        try {
+          final rkey = 'rl:$key';
+          final raw = await cmd.send_object(['INCR', rkey]);
+          final count = raw is int ? raw : int.tryParse('$raw') ?? 0;
+          if (count == 1) {
+            await cmd.send_object(['EXPIRE', rkey, '60']);
+          }
+          if (count > limit) {
+            return _json(
+                429, {'error': 'Too many requests — slow down a little.'});
+          }
+          return inner(request);
+        } catch (_) {
+          // Redis hiccup — degrade to the in-memory limiter below.
+        }
+      }
+
       final now = DateTime.now().millisecondsSinceEpoch;
       final windowStart = now - 60000;
       final list = _hits.putIfAbsent(key, () => [])
@@ -307,6 +333,34 @@ Middleware _rateLimit() {
       return inner(request);
     };
   };
+}
+
+// Lazily-connected Redis (Render Key Value). Tried once; on any failure we
+// stay on the in-memory limiter for the process lifetime. Never throws.
+Command? _redisCmd;
+bool _redisTried = false;
+Future<Command?> _redis() async {
+  if (_redisTried) return _redisCmd;
+  _redisTried = true;
+  final url = Platform.environment['REDIS_URL'];
+  if (url == null || url.isEmpty) return null;
+  try {
+    final u = Uri.parse(url);
+    final cmd = await RedisConnection()
+        .connect(u.host, u.hasPort ? u.port : 6379)
+        .timeout(const Duration(seconds: 5));
+    final pass =
+        u.userInfo.contains(':') ? u.userInfo.split(':').last : u.userInfo;
+    if (pass.isNotEmpty) {
+      await cmd.send_object(['AUTH', pass]);
+    }
+    _redisCmd = cmd;
+    print('Redis: connected (${u.host})');
+  } catch (e) {
+    print('Redis: unavailable, using in-memory rate limit ($e)');
+    _redisCmd = null;
+  }
+  return _redisCmd;
 }
 
 /// Short edge-cache for anonymous catalog GETs — Cloudflare absorbs bursts
@@ -5093,17 +5147,20 @@ Future<Response> _serveFile(Request request, String city, String name) async {
 /// Postgres), connects there over TLS; otherwise falls back to the local
 /// Postgres unix socket. Use Neon's DIRECT endpoint (no "-pooler") — the
 /// server holds one long-lived session.
-Future<Connection> _openDb() {
+Future<Connection> _openDb() async {
   final url = Platform.environment['DATABASE_URL'];
   if (url != null && url.isNotEmpty) {
     final u = Uri.parse(url);
     final userInfo = u.userInfo.split(':');
     final ssl = u.queryParameters['sslmode'] != 'disable';
-    print('DB: connecting to ${u.host}/${u.path.replaceFirst('/', '')} '
+    // A single long-lived session should talk to Neon's DIRECT endpoint, not
+    // the connection pooler — strip "-pooler" from the host if present.
+    final host = u.host.replaceFirst('-pooler.', '.');
+    print('DB: connecting to $host/${u.path.replaceFirst('/', '')} '
         '(ssl: $ssl)');
-    return Connection.open(
+    final conn = await Connection.open(
       Endpoint(
-        host: u.host,
+        host: host,
         port: u.hasPort ? u.port : 5432,
         database: u.path.replaceFirst('/', ''),
         username: Uri.decodeComponent(userInfo[0]),
@@ -5112,9 +5169,13 @@ Future<Connection> _openDb() {
       settings: ConnectionSettings(
           sslMode: ssl ? SslMode.require : SslMode.disable),
     );
+    // Neon's neondb_owner ships with an empty search_path — pin it so the
+    // app's unqualified queries resolve against public.
+    await conn.execute('SET search_path TO public');
+    return conn;
   }
   print('DB: connecting to local Postgres (unix socket)');
-  return Connection.open(
+  final conn = await Connection.open(
     Endpoint(
       host: '/var/run/postgresql/.s.PGSQL.5432',
       database: 'mrtouride',
@@ -5123,6 +5184,8 @@ Future<Connection> _openDb() {
     ),
     settings: ConnectionSettings(sslMode: SslMode.disable),
   );
+  await conn.execute('SET search_path TO public');
+  return conn;
 }
 
 Future<void> main() async {
@@ -5356,13 +5419,43 @@ Future<void> main() async {
     ..get('/apk', _apk)
     ..get('/files/<city>/<name>', _serveFile);
 
+  // On the VM, nginx maps /api/* → backend (prefix stripped), /admin → backend
+  // and serves the landing statically. On Render there is no nginx, so this
+  // one service replicates all three: the router is reachable both under /api
+  // (what the app + landing call) and at the root (/admin, /health, /files…),
+  // and the built landing is served as static files for everything else.
+  final apiMount = Router()..mount('/api/', router.call);
+
+  final landingDir = '$_backendDir/web/landing';
+  final cascade = Directory(landingDir).existsSync()
+      ? Cascade()
+          .add(createStaticHandler(landingDir, defaultDocument: 'index.html'))
+          .add(apiMount.call)
+          .add(router.call)
+      : Cascade().add(apiMount.call).add(router.call);
+
   final handler = const Pipeline()
       .addMiddleware(logRequests())
       .addMiddleware(_rateLimit())
       .addMiddleware(_edgeCache())
       .addMiddleware(_cors())
-      .addHandler(router.call);
+      .addHandler(cascade.handler);
 
-  final server = await shelf_io.serve(handler, InternetAddress.loopbackIPv4, _port);
+  final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
   print('MrTouride backend listening on http://${server.address.host}:${server.port}');
+
+  // Keep the Neon connection warm (its free compute auto-suspends after a few
+  // idle minutes) and self-heal a dropped session by reconnecting.
+  Timer.periodic(const Duration(minutes: 4), (_) async {
+    try {
+      await _db.execute('SELECT 1');
+    } catch (e) {
+      print('DB keep-alive failed, reconnecting: $e');
+      try {
+        _db = await _openDb();
+      } catch (e2) {
+        print('DB reconnect failed: $e2');
+      }
+    }
+  });
 }

@@ -14,8 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/bin/server /app/bin/server
 COPY --from=build /runtime/ /
+# OTA version manifest (read from _backendDir=/app) + the built landing site
+# (served as static files at / when present).
+COPY --from=build /app/app_version.json /app/app_version.json
+COPY --from=build /app/web /app/web
 WORKDIR /app
-# Cloud Run injects PORT; uploads dir is ephemeral on Cloud Run — use R2 in prod.
+# Render/Cloud Run inject PORT; uploads dir is ephemeral — R2 is the durable store.
 ENV PORT=8080
 EXPOSE 8080
 CMD ["/app/bin/server"]
