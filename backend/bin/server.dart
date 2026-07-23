@@ -693,11 +693,16 @@ String? _fcmProject;
 
 Future<gauth.AutoRefreshingAuthClient?> _fcm() async {
   if (_fcmClient != null) return _fcmClient;
-  final path = Platform.environment['FCM_SERVICE_ACCOUNT'];
-  if (path == null || !File(path).existsSync()) return null;
+  final env = Platform.environment['FCM_SERVICE_ACCOUNT'];
+  if (env == null || env.isEmpty) return null;
+  // Accept either the inline service-account JSON (Render env var) or a path
+  // to a JSON file on disk (the VM setup).
+  final raw = env.trimLeft().startsWith('{')
+      ? env
+      : (File(env).existsSync() ? await File(env).readAsString() : null);
+  if (raw == null) return null;
   try {
-    final json = jsonDecode(await File(path).readAsString())
-        as Map<String, dynamic>;
+    final json = jsonDecode(raw) as Map<String, dynamic>;
     _fcmProject = json['project_id'] as String?;
     final creds = gauth.ServiceAccountCredentials.fromJson(json);
     _fcmClient = await gauth.clientViaServiceAccount(
