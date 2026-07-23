@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:mrtouride/ar_view.dart';
 import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/guidevibe_page.dart';
 import 'package:mrtouride/home_page.dart';
@@ -19,7 +18,6 @@ import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 import 'package:mrtouride/widgets/content_toast.dart';
-import 'package:mrtouride/widgets/notifications_sheet.dart';
 import 'package:mrtouride/widgets/update_flow.dart';
 
 class MainPage extends StatefulWidget {
@@ -159,15 +157,6 @@ class _MainPageState extends State<MainPage> {
                 badge: hasNewContent),
             const NavEntry(
                 icon: Icons.route_rounded, label: 'Planner', tabIndex: 2),
-            NavEntry(
-              icon: Icons.view_in_ar_rounded,
-              label: 'MR/VR',
-              color: Colors.purple,
-              action: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const ArViewPage()),
-              ),
-            ),
             const NavEntry(
                 icon: Icons.forum_rounded, label: 'Community', tabIndex: 3),
             const NavEntry(
@@ -175,15 +164,6 @@ class _MainPageState extends State<MainPage> {
                 label: 'GuideVibe',
                 tabIndex: 4,
                 color: Color(0xFFFF4D5E)),
-            NavEntry(
-              icon: Icons.notifications_none_rounded,
-              label: 'Alerts',
-              badge: hasNewContent,
-              action: () async {
-                await showNotificationsSheet(context, onSelectTab: onTap);
-                if (mounted) setState(() => hasNewContent = false);
-              },
-            ),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',

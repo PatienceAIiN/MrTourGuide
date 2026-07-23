@@ -9,6 +9,8 @@ import 'package:mrtouride/models/place.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/location_service.dart';
 import 'package:mrtouride/services/media_api.dart';
+import 'package:mrtouride/services/notification_service.dart';
+import 'package:mrtouride/widgets/notifications_sheet.dart';
 import 'package:mrtouride/widgets/news_section.dart';
 import 'package:mrtouride/widgets/ux.dart';
 
@@ -30,6 +32,7 @@ class _HomePageState extends State<HomeScreen>
   List<VideoItem> trending = [];
   bool loading = true;
   String? error;
+  bool hasUnseen = false;
   List<NewsItem> news = [];
 
   // Rotating headline below the greeting.
@@ -51,7 +54,9 @@ class _HomePageState extends State<HomeScreen>
     WidgetsBinding.instance.addObserver(this);
     _load(initial: true);
     _loadNews();
-    _phraseTimer = Timer.periodic(const Duration(milliseconds: 3500), (_) {
+    _refreshUnseen();
+    // Slower, calmer headline cadence.
+    _phraseTimer = Timer.periodic(const Duration(milliseconds: 5500), (_) {
       if (mounted) setState(() => _phrase = (_phrase + 1) % _phrases.length);
     });
     // Quiet resync: fresh places and trending with no manual refresh, and
@@ -69,6 +74,7 @@ class _HomePageState extends State<HomeScreen>
     if (state == AppLifecycleState.resumed && mounted) {
       _load();
       _loadNews();
+      _refreshUnseen();
     }
   }
 
@@ -89,6 +95,20 @@ class _HomePageState extends State<HomeScreen>
       final items = await MediaApi.fetchNews(country: country, city: city);
       if (mounted) setState(() => news = items);
     } catch (_) {}
+  }
+
+  /// Light poll: is there anything new (content, GuideVibe, activity) since
+  /// this device last opened the bell? Drives the badge dot.
+  Future<void> _refreshUnseen() async {
+    try {
+      final n = await NotificationService.check();
+      if (mounted && n != null) setState(() => hasUnseen = true);
+    } catch (_) {}
+  }
+
+  Future<void> _openNotifications() async {
+    await showNotificationsSheet(context, onSelectTab: widget.onSelectTab);
+    if (mounted) setState(() => hasUnseen = false);
   }
 
   Future<void> _load({bool initial = false}) async {
@@ -171,6 +191,32 @@ class _HomePageState extends State<HomeScreen>
                             ),
                             const SizedBox(width: 8),
                             const WavingHand(size: 26),
+                            const Spacer(),
+                            // Notifications bell — right of the greeting.
+                            Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Notifications',
+                                  icon: Icon(Icons.notifications_none_rounded,
+                                      color: ink(context)),
+                                  onPressed: _openNotifications,
+                                ),
+                                if (hasUnseen)
+                                  Positioned(
+                                    right: 8,
+                                    top: 8,
+                                    child: Container(
+                                      width: 9,
+                                      height: 9,
+                                      decoration: const BoxDecoration(
+                                        color: Color(0xFF3CEBFF),
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ],
                         ),
                       ),
@@ -180,7 +226,7 @@ class _HomePageState extends State<HomeScreen>
                         child: SizedBox(
                           height: 72,
                           child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 450),
+                            duration: const Duration(milliseconds: 650),
                             switchInCurve: Curves.easeOutCubic,
                             switchOutCurve: Curves.easeInCubic,
                             transitionBuilder: (child, animation) =>
@@ -188,20 +234,23 @@ class _HomePageState extends State<HomeScreen>
                               opacity: animation,
                               child: SlideTransition(
                                 position: Tween<Offset>(
-                                  begin: const Offset(0, 0.35),
+                                  begin: const Offset(0, 0.2),
                                   end: Offset.zero,
                                 ).animate(animation),
                                 child: child,
                               ),
                             ),
-                            child: TypewriterText(
-                              _phrases[_phrase],
+                            child: Align(
+                              alignment: Alignment.centerLeft,
                               key: ValueKey(_phrase),
-                              style: TextStyle(
-                                  color: ink(context),
-                                  fontSize: 28,
-                                  height: 1.2,
-                                  fontWeight: FontWeight.bold),
+                              child: Text(
+                                _phrases[_phrase],
+                                style: TextStyle(
+                                    color: ink(context),
+                                    fontSize: 26,
+                                    height: 1.25,
+                                    fontWeight: FontWeight.bold),
+                              ),
                             ),
                           ),
                         ),

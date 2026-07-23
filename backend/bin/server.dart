@@ -4052,8 +4052,45 @@ Future<Response> _notifications(Request request) async {
     }
   } catch (_) {}
 
-  // Social: reactions + replies on my posts.
+  // New GuideVibe shorts (excluding the caller's own).
+  try {
+    final shorts = await _db.execute(
+      Sql.named("SELECT owner_name, caption, created_at FROM shorts "
+          "WHERE status = 'ready' AND created_at > @since "
+          '${userId != null ? 'AND owner_id != @me ' : ''}'
+          'ORDER BY created_at DESC LIMIT 10'),
+      parameters: {'since': since, if (userId != null) 'me': userId},
+    );
+    for (final r in shorts) {
+      final cap = (r[1] as String?)?.trim() ?? '';
+      items.add({
+        'type': 'guidevibe',
+        'title': cap.isEmpty
+            ? 'New GuideVibe from ${r[0]}'
+            : 'New GuideVibe: ${cap.length > 50 ? '${cap.substring(0, 47)}...' : cap}',
+        'at': (r[2] as DateTime).toIso8601String(),
+      });
+    }
+  } catch (_) {}
+
+  // Social: reactions + replies + new followers.
   if (userId != null) {
+    try {
+      final follows = await _db.execute(
+        Sql.named('SELECT u.name, f.created_at FROM follows f '
+            'JOIN users u ON u.id = f.follower_id '
+            'WHERE f.followee_id = @me AND f.created_at > @since '
+            'ORDER BY f.created_at DESC LIMIT 10'),
+        parameters: {'me': userId, 'since': since},
+      );
+      for (final r in follows) {
+        items.add({
+          'type': 'follow',
+          'title': '${r[0]} started following you',
+          'at': (r[1] as DateTime).toIso8601String(),
+        });
+      }
+    } catch (_) {}
     try {
       final reacts = await _db.execute(
         Sql.named('SELECT u.name, r.emoji, r.created_at, p.id '
@@ -4114,8 +4151,20 @@ Future<Response> _whatsNew(Request request) async {
       if (userId != null) 'me': userId,
     },
   );
+  // Also count fresh GuideVibe shorts so the badge/toast fires for them.
+  var shortsCount = 0;
+  try {
+    final s = await _db.execute(
+      Sql.named("SELECT count(*) FROM shorts WHERE status = 'ready' "
+          'AND created_at > @since '
+          '${userId != null ? 'AND owner_id != @me' : ''}'),
+      parameters: {'since': since, if (userId != null) 'me': userId},
+    );
+    shortsCount = (s.first[0] as int?) ?? 0;
+  } catch (_) {}
   return _json(200, {
-    'count': rows.length,
+    'count': rows.length + shortsCount,
+    'shorts': shortsCount,
     'videos': [for (final r in rows) _videoRowToJson(r)],
   });
 }

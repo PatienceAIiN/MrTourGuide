@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'constant.dart';
+import 'ar_view.dart';
 import 'main.dart';
 import 'services/api_base.dart';
 import 'services/app_info.dart';
@@ -170,6 +171,20 @@ class _SettingsPageState extends State<SettingsPage> {
                           'and updates.');
                 }
               },
+            ),
+          ]),
+          _section('Immersive', [
+            ListTile(
+              leading:
+                  const Icon(Icons.view_in_ar_rounded, color: Colors.purple),
+              title: const Text('MR / VR mode'),
+              subtitle: const Text('Step inside places in mixed / virtual '
+                  'reality'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ArViewPage()),
+              ),
             ),
           ]),
           _section('Accessibility', [

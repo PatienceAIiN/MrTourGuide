@@ -10,7 +10,6 @@ import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/signup.dart';
-import 'package:mrtouride/widgets/ux.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
@@ -95,13 +94,16 @@ class _HomePageState extends State<HomePage> {
   int coverIndex = 0;
   Timer? _flip;
 
-  // Short changing phrases above the buttons — type in, slide + fade out.
+  // The animated headline cycles slowly through short 2-3 word phrases.
   static const _welcomePhrases = [
-    'Feel the world.',
-    'Go anywhere.',
-    'Touch the journey.',
-    'Travel by feel.',
-    'Anywhere, together.',
+    'Exploring Together',
+    'Feel the World',
+    'Go Anywhere',
+    'Touch the Journey',
+    'Travel by Feel',
+    'Anywhere, Together',
+    'Windows to the World',
+    'Feel Every Place',
   ];
   int _phraseIndex = 0;
   Timer? _phraseTimer;
@@ -132,7 +134,8 @@ class _HomePageState extends State<HomePage> {
         }
       });
     }).catchError((_) {});
-    _phraseTimer = Timer.periodic(const Duration(milliseconds: 2600), (_) {
+    // Slow, calm cadence between phrases.
+    _phraseTimer = Timer.periodic(const Duration(milliseconds: 4500), (_) {
       if (mounted) {
         setState(() =>
             _phraseIndex = (_phraseIndex + 1) % _welcomePhrases.length);
@@ -206,54 +209,51 @@ class _HomePageState extends State<HomePage> {
                     _flipCarousel(MediaQuery.of(context).size.height / 2.5),
                     Column(
                       children: <Widget>[
-                        Text(
-                          "Exploring Together",
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontFamily: 'Inter',
-                            fontSize: 30,
-                          ),
-                        ),
+                        // Animated headline: cycles slowly through short
+                        // phrases with a gentle slide + fade.
                         SizedBox(
-                          height: 20,
+                          height: 44,
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 700),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            transitionBuilder: (child, animation) =>
+                                FadeTransition(
+                              opacity: animation,
+                              child: SlideTransition(
+                                position: Tween<Offset>(
+                                  begin: const Offset(0, 0.25),
+                                  end: Offset.zero,
+                                ).animate(animation),
+                                child: child,
+                              ),
+                            ),
+                            child: Text(
+                              _welcomePhrases[_phraseIndex],
+                              key: ValueKey(_phraseIndex),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontFamily: 'Inter',
+                                fontSize: 30,
+                                color: ink(context),
+                              ),
+                            ),
+                          ),
                         ),
+                        const SizedBox(height: 14),
+                        // Single line summarizing the whole idea.
                         Text(
-                            "Feel the world from home — video, MR/VR and "
-                            "real-feel haptics, built for everyone.",
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.grey[700],
-                              fontSize: 15,
-                            ))
+                          "Feel the world from home — for everyone.",
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.grey[700],
+                            fontSize: 14.5,
+                          ),
+                        ),
                       ],
-                    ),
-                    // Short changing phrase: types in, then slides + fades to
-                    // the next — a lively, network-free welcome accent.
-                    SizedBox(
-                      height: 40,
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 450),
-                        transitionBuilder: (child, animation) => FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0, 0.4),
-                              end: Offset.zero,
-                            ).animate(animation),
-                            child: child,
-                          ),
-                        ),
-                        child: TypewriterText(
-                          _welcomePhrases[_phraseIndex],
-                          key: ValueKey(_phraseIndex),
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            color: blue,
-                            letterSpacing: 0.3,
-                          ),
-                        ),
-                      ),
                     ),
                     Column(
                       children: <Widget>[
@@ -297,10 +297,10 @@ class _HomePageState extends State<HomePage> {
                             ),
                           ),
                         ),
-                        SizedBox(height: 18),
-                        _ProductLine(),
                       ],
-                    )
+                    ),
+                    // Footer pinned to the bottom of the screen.
+                    const _ProductLine(),
                   ],
                 ),
               ),

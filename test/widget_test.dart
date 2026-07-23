@@ -108,21 +108,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     // Merged navbar: tabs + global actions in one scrollable, centered bar.
-    // (Alerts sits before Settings; feedback/updates/log out live inside it.)
+    // (MR/VR and notifications live elsewhere — Settings and the Home bell.)
     expect(find.text('Home'), findsOneWidget);
     expect(find.text('Explore'), findsOneWidget);
-    expect(find.text('MR/VR'), findsOneWidget);
+    expect(find.text('Planner'), findsOneWidget);
     expect(
       find.descendant(
         of: find.byType(AppBottomNav),
         matching: find.text('GuideVibe'),
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(
-        of: find.byType(AppBottomNav),
-        matching: find.text('Alerts'),
       ),
       findsOneWidget,
     );

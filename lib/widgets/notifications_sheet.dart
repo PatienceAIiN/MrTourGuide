@@ -48,6 +48,8 @@ Future<void> showNotificationsSheet(
       case 'reshare':
       case 'follow':
         onSelectTab?.call(3); // Community
+      case 'guidevibe':
+        onSelectTab?.call(4); // GuideVibe feed
       case 'update':
         UpdateService.check().then((info) {
           if (context.mounted && info != null && info.isNewer) {
@@ -120,6 +122,8 @@ Future<void> showNotificationsSheet(
                             'reply' => Colors.teal,
                             'city' => Colors.purple,
                             'update' => Colors.indigo,
+                            'guidevibe' => const Color(0xFFFF4D5E),
+                            'follow' => Colors.green,
                             _ => blue,
                           },
                           child: Icon(
@@ -128,6 +132,8 @@ Future<void> showNotificationsSheet(
                               'reply' => Icons.chat_bubble,
                               'city' => Icons.location_city,
                               'update' => Icons.system_update,
+                              'guidevibe' => Icons.play_circle_fill,
+                              'follow' => Icons.person_add,
                               _ => Icons.fiber_new,
                             },
                             color: white,

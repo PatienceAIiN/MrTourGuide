@@ -39,6 +39,7 @@ class _DetailScreenState extends State<DetailScreen> {
   int? _replyingTo;
   String? _replyingToName;
   bool _postingComment = false;
+  int _commentsShown = 5; // paginate: reveal 10 more each tap
 
   Place get place => widget.place;
 
@@ -654,6 +655,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Widget _commentsSection() {
     final tops = comments.where((c) => c.parentId == null).toList();
+    final shown = tops.take(_commentsShown).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -663,8 +665,8 @@ class _DetailScreenState extends State<DetailScreen> {
             child: Text('No comments yet — start the conversation.',
                 style: TextStyle(color: inkSoft(context), fontSize: 13)),
           )
-        else
-          for (final c in tops) ...[
+        else ...[
+          for (final c in shown) ...[
             _commentTile(c),
             for (final r in comments.where((x) => x.parentId == c.id))
               Padding(
@@ -672,6 +674,20 @@ class _DetailScreenState extends State<DetailScreen> {
                 child: _commentTile(r, inThread: true),
               ),
           ],
+          if (tops.length > shown.length)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () =>
+                    setState(() => _commentsShown += 10),
+                icon: const Icon(Icons.expand_more, size: 18),
+                label: Text(
+                    'View ${tops.length - shown.length} more comment'
+                    '${tops.length - shown.length == 1 ? '' : 's'}',
+                    style: TextStyle(color: brandInk(context))),
+              ),
+            ),
+        ],
         const SizedBox(height: 8),
         if (_replyingToName != null)
           Padding(
