@@ -17,7 +17,15 @@ import 'settings_service.dart';
 ///   string — "guitar string" pluck: a strong hit followed by a decaying
 ///            flutter, used for expressive moments (opening an experience).
 class Haptics {
+  // UI micro-feedback (taps, nav) — gated by the "UI touch feedback" setting.
   static bool get _enabled => SettingsService.instance.uiHaptics;
+
+  // Playback feel (video/GuideVibe) — gated by the master "Haptics" setting
+  // and scaled by the "Feel intensity" slider so one global knob controls
+  // how strong every experience feels, everywhere.
+  static bool get _feelEnabled => SettingsService.instance.haptics;
+  static double get _feelScale =>
+      SettingsService.instance.intensity.clamp(0.0, 1.0);
 
   static void tick() {
     if (_enabled) HapticFeedback.selectionClick();
@@ -45,8 +53,9 @@ class Haptics {
   /// value slightly longer than its tick interval so back-to-back calls
   /// overlap into one continuously-changing vibration instead of a stutter.
   static void level(double v, {int durationMs = 60}) {
-    if (!_enabled) return;
-    _levelAsync(v.clamp(0.0, 1.0), durationMs);
+    if (!_feelEnabled) return;
+    // The global feel-intensity slider scales every playback pulse.
+    _levelAsync((v * _feelScale).clamp(0.0, 1.0), durationMs);
   }
 
   static Future<void> _levelAsync(double v, int durationMs) async {
@@ -78,8 +87,9 @@ class Haptics {
   /// Recoil: one hard hit then a soft settle — the gunshot/impact feel.
   /// [punch] 0..1 scales the strength.
   static Future<void> recoil(double punch) async {
-    if (!_enabled) return;
-    final p = punch.clamp(0.0, 1.0);
+    if (!_feelEnabled) return;
+    // Impacts are scaled by the same global feel-intensity knob.
+    final p = (punch * _feelScale).clamp(0.0, 1.0);
     if (!kIsWeb) {
       try {
         _hasAmplitude ??= await Vibration.hasAmplitudeControl();

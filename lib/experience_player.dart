@@ -114,7 +114,9 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
             final t = (e['t'] as num).toInt();
             if ((ms - t).abs() <= 130) {
               _nextEvent++;
-              final punch = ((e['power'] as num) * intensity).clamp(0.0, 1.0);
+              // Raw power — the global feel-intensity is applied inside
+              // Haptics.recoil so one knob scales everything.
+              final punch = (e['power'] as num).clamp(0.0, 1.0);
               Haptics.recoil(punch.toDouble());
               // Let the recoil breathe — don't stomp it with level pulses.
               _recoilUntilMs = ms + 230;
@@ -135,8 +137,9 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
         final a = track[idx.clamp(0, track.length - 1)];
         final b = track[(idx + 1).clamp(0, track.length - 1)];
         final energy = a + (b - a) * frac;
-        final feel = (energy * intensity).clamp(0.0, 1.0);
-        if (feel < 0.06) return; // near-silence: no feel
+        // Raw energy — Haptics.level applies the global feel-intensity.
+        final feel = energy.clamp(0.0, 1.0);
+        if (feel < 0.04) return; // near-silence: no feel
         // Duration a hair over the tick → overlapping, continuous feel.
         Haptics.level(feel, durationMs: tickMs + 40);
         if (mounted && !_pulse) {
@@ -529,11 +532,17 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                                   activeColor: Colors.purpleAccent,
                                   inactiveColor: Colors.white24,
                                   onChanged: (v) {
-                                    if ((v * 10).round() !=
-                                        (intensity * 10).round()) {
-                                      Haptics.level(v);
-                                    }
+                                    final changed = (v * 10).round() !=
+                                        (intensity * 10).round();
+                                    // This is the same global knob as
+                                    // Settings → Feel intensity.
                                     setState(() => intensity = max(0.05, v));
+                                    SettingsService.instance.intensity =
+                                        intensity;
+                                    SettingsService.instance.save();
+                                    if (changed) {
+                                      Haptics.level(1.0); // feel the new level
+                                    }
                                     _startHaptics();
                                   },
                                 ),

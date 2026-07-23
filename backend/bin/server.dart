@@ -1703,6 +1703,101 @@ Future<Response> _ratePlace(Request request, String slug) async {
   });
 }
 
+/// Authoritative rating for a place + the caller's own stars (so the city
+/// page shows a stable, correct rating and remembers what the user rated).
+Future<Response> _placeRating(Request request, String slug) async {
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  final agg = await _db.execute(
+    Sql.named('SELECT COALESCE(avg(stars), 0), count(*) FROM place_ratings '
+        'WHERE city_slug = @c'),
+    parameters: {'c': slug},
+  );
+  var mine = 0;
+  if (userId != null) {
+    final r = await _db.execute(
+      Sql.named('SELECT stars FROM place_ratings WHERE city_slug = @c '
+          'AND user_id = @u'),
+      parameters: {'c': slug, 'u': userId},
+    );
+    if (r.isNotEmpty) mine = r.first[0] as int;
+  }
+  return _json(200, {
+    'rating': double.parse(
+        double.parse(agg.first[0].toString()).toStringAsFixed(2)),
+    'ratingCount': agg.first[1],
+    'myStars': mine,
+  });
+}
+
+Future<Response> _placeComments(Request request, String slug) async {
+  final rows = await _db.execute(
+    Sql.named('SELECT id, author_id, author_name, author_role, body, '
+        'parent_id, created_at FROM place_comments WHERE city_slug = @c '
+        'ORDER BY created_at, id LIMIT 300'),
+    parameters: {'c': slug},
+  );
+  return _json(200, {
+    'comments': [
+      for (final r in rows)
+        {
+          'id': r[0],
+          'authorId': r[1],
+          'authorName': r[2],
+          'authorRole': r[3],
+          'body': r[4],
+          'parentId': r[5],
+          'createdAt': (r[6] as DateTime).toIso8601String(),
+        }
+    ]
+  });
+}
+
+Future<Response> _addPlaceComment(Request request, String slug) async {
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  final text = (body?['body'] as String?)?.trim() ?? '';
+  final parentId = body?['parentId'] as int?;
+  if (userId == null) return _json(401, {'error': 'Sign in to comment.'});
+  if (text.isEmpty) return _json(400, {'error': 'Say something first!'});
+  if (text.length > 500) return _json(400, {'error': 'Keep it under 500 chars.'});
+  final unsafe = _unsafeText(text);
+  if (unsafe != null) return _json(400, {'error': unsafe});
+  final user = await _db.execute(
+    Sql.named('SELECT name, role FROM users WHERE id = @id'),
+    parameters: {'id': userId},
+  );
+  if (user.isEmpty) return _json(401, {'error': 'Unknown user.'});
+  await _db.execute(
+    Sql.named('INSERT INTO place_comments (city_slug, author_id, author_name, '
+        'author_role, body, parent_id) VALUES (@c, @a, @an, @ar, @b, @p)'),
+    parameters: {
+      'c': slug,
+      'a': userId,
+      'an': user.first[0],
+      'ar': user.first[1],
+      'b': text,
+      'p': parentId,
+    },
+  );
+  return _json(201, {'ok': true});
+}
+
+/// Owner deletes their own place comment.
+Future<Response> _deletePlaceComment(Request request, String id) async {
+  final commentId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (commentId == null) return _json(400, {'error': 'Bad id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final rows = await _db.execute(
+    Sql.named('DELETE FROM place_comments WHERE id = @id AND author_id = @u '
+        'RETURNING 1'),
+    parameters: {'id': commentId, 'u': userId},
+  );
+  if (rows.isEmpty) return _json(403, {'error': 'Not your comment.'});
+  return _json(200, {'ok': true});
+}
+
 /// Travel news: precautions, advisories and fresh ideas — Google News RSS
 /// parsed server-side and cached 60 min (free-tier friendly).
 final Map<String, (DateTime, Map<String, Object?>)> _newsCache = {};
@@ -2854,6 +2949,179 @@ Future<Response> _addShortComment(Request request, String id) async {
     parameters: {'s': shortId, 'a': userId, 'an': user.first[0], 'b': text},
   );
   return _json(201, {'ok': true});
+}
+
+/// Owner-only: update a short's caption / kind.
+Future<Response> _updateShort(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final owner = await _db.execute(
+    Sql.named('SELECT owner_id FROM shorts WHERE id = @s'),
+    parameters: {'s': shortId},
+  );
+  if (owner.isEmpty) return _json(404, {'error': 'Short not found.'});
+  if (owner.first[0] != userId) {
+    return _json(403, {'error': 'You can only edit your own GuideVibe.'});
+  }
+  final caption = (body?['caption'] as String?)?.trim();
+  if (caption != null) {
+    if (caption.length > 400) {
+      return _json(400, {'error': 'Keep captions under 400 characters.'});
+    }
+    final unsafe = caption.isEmpty ? null : _unsafeText(caption);
+    if (unsafe != null) return _json(400, {'error': unsafe});
+  }
+  final kind = const ['normal', 'vr', 'mr'].contains(body?['kind'])
+      ? body!['kind'] as String
+      : null;
+  await _db.execute(
+    Sql.named('UPDATE shorts SET '
+        'caption = COALESCE(@cap, caption), '
+        'kind = COALESCE(@kind, kind) WHERE id = @s'),
+    parameters: {'cap': caption, 'kind': kind, 's': shortId},
+  );
+  return _json(200, {'ok': true});
+}
+
+/// Owner-only: delete a short and its likes/comments.
+Future<Response> _deleteShort(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  final body = await _readJsonBody(request);
+  final userId = body?['userId'] as int?;
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final rows = await _db.execute(
+    Sql.named('DELETE FROM shorts WHERE id = @s AND owner_id = @u RETURNING 1'),
+    parameters: {'s': shortId, 'u': userId},
+  );
+  if (rows.isEmpty) {
+    return _json(403, {'error': 'You can only delete your own GuideVibe.'});
+  }
+  await _db.execute(Sql.named('DELETE FROM short_likes WHERE short_id = @s'),
+      parameters: {'s': shortId});
+  await _db.execute(Sql.named('DELETE FROM short_comments WHERE short_id = @s'),
+      parameters: {'s': shortId});
+  _logActivity('user:$userId', 'guidevibe-delete', 'short #$shortId');
+  return _json(200, {'ok': true});
+}
+
+/// Per-short analytics for the owner (views/likes/comments).
+Future<Response> _shortAnalytics(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  if (shortId == null) return _json(400, {'error': 'Bad id.'});
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  final rows = await _db.execute(
+    Sql.named('''
+      SELECT s.owner_id, s.views, s.likes, s.created_at, s.kind, s.caption,
+             (SELECT count(*) FROM short_comments c WHERE c.short_id = s.id)
+      FROM shorts s WHERE s.id = @s
+    '''),
+    parameters: {'s': shortId},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Short not found.'});
+  final r = rows.first;
+  if (r[0] != userId) {
+    return _json(403, {'error': 'Analytics are private to the creator.'});
+  }
+  return _json(200, {
+    'views': r[1],
+    'likes': r[2],
+    'comments': r[6],
+    'createdAt': (r[3] as DateTime).toIso8601String(),
+    'kind': r[4],
+    'caption': r[5],
+  });
+}
+
+/// Public, shareable page for a single GuideVibe short (no auth). Plays the
+/// vertical video; after two minutes a download/sign-up card slides in.
+Future<Response> _publicShort(Request request, String id) async {
+  final shortId = int.tryParse(id);
+  if (shortId == null) return Response.notFound('Not found');
+  final rows = await _db.execute(
+    Sql.named('SELECT owner_name, caption, city, filename, thumb_url, kind, '
+        'likes FROM shorts WHERE id = @s AND status = \'ready\''),
+    parameters: {'s': shortId},
+  );
+  if (rows.isEmpty) {
+    return Response.notFound('This GuideVibe is no longer available.');
+  }
+  final r = rows.first;
+  final name = _escapeHtml(r[0] as String? ?? 'Traveler');
+  final caption = _escapeHtml(r[1] as String? ?? '');
+  final city = _escapeHtml(r[2] as String? ?? '');
+  const base = 'https://mrtourguide.patienceai.in';
+  final videoUrl = '$base/api/files/guidevibe/${r[3]}';
+  final poster = r[4] is String ? '$base/api/files/guidevibe/${r[4]}' : '';
+  final kind = (r[5] as String? ?? 'normal').toUpperCase();
+  final immersive = kind == 'VR' || kind == 'MR';
+  final html = '''<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$name on GuideVibe</title>
+<meta property="og:title" content="$name on Mr.Tour Guide GuideVibe">
+<meta property="og:description" content="$caption">
+<meta property="og:image" content="${_escapeHtml(poster)}">
+<meta property="og:type" content="video.other">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,sans-serif;
+  background:#0d0e12;min-height:100vh;color:#fff;
+  display:flex;flex-direction:column;align-items:center}
+.brand{font-weight:800;font-size:16px;color:#aebaff;padding:14px}
+.brand b{color:#fff}
+.wrap{position:relative;width:100%;max-width:440px;flex:1;
+  display:flex;align-items:center;justify-content:center}
+video{width:100%;max-height:82vh;background:#000;border-radius:14px}
+.meta{max-width:440px;width:100%;padding:14px 18px 120px}
+.who{font-weight:800;font-size:15px}
+.cap{font-size:13.5px;line-height:1.5;color:#d9dcef;margin-top:6px}
+.pill{display:inline-block;font-size:10.5px;font-weight:800;color:#fff;
+  background:rgba(255,255,255,.14);border-radius:999px;padding:3px 9px;margin-top:8px}
+.cta{position:fixed;left:0;right:0;bottom:-110%;transition:bottom .5s
+  cubic-bezier(.2,.9,.3,1.1);padding:14px}
+.cta.show{bottom:0}
+.cta .in{max-width:440px;margin:0 auto;background:linear-gradient(135deg,
+  #1E319D,#3D53D8);border-radius:18px;padding:18px;
+  box-shadow:0 -8px 30px rgba(30,49,157,.4)}
+.cta h3{font-size:16px;margin-bottom:4px}
+.cta p{font-size:12.5px;opacity:.9}
+.cta .row{display:flex;gap:10px;margin-top:12px}
+.cta a{flex:1;text-align:center;border-radius:12px;padding:11px 8px;
+  font-size:13.5px;font-weight:800;text-decoration:none}
+.cta a.dl{background:#fff;color:#1E319D}
+.cta a.web{border:1.5px solid rgba(255,255,255,.7);color:#fff}
+.cta .x{float:right;background:none;border:none;color:#fff;font-size:18px;cursor:pointer;opacity:.8}
+</style></head><body>
+<div class="brand"><b>Mr.Tour Guide</b> · GuideVibe</div>
+<div class="wrap">
+  <video controls playsinline autoplay muted loop ${poster.isEmpty ? '' : 'poster="${_escapeHtml(poster)}"'} src="${_escapeHtml(videoUrl)}"></video>
+</div>
+<div class="meta">
+  <div class="who">$name${city.isEmpty ? '' : ' · $city'}</div>
+  ${caption.isEmpty ? '' : '<div class="cap">$caption</div>'}
+  ${immersive ? '<span class="pill">&#129406; $kind · immersive</span>' : ''}
+</div>
+<div class="cta" id="cta"><div class="in">
+  <button class="x" onclick="document.getElementById('cta').classList.remove('show')">&times;</button>
+  <h3>Feel it, don&rsquo;t just watch it</h3>
+  <p>Mr.Tour Guide turns travel shorts into touch &mdash; haptics, MR/VR and
+  an AI trip planner. Join $name on GuideVibe.</p>
+  <div class="row">
+    <a class="dl" href="$base/api/apk">&#11015; Download the app</a>
+    <a class="web" href="$base/">Explore</a>
+  </div>
+</div></div>
+<script>setTimeout(function(){document.getElementById('cta').classList.add('show')},120000);</script>
+</body></html>''';
+  return Response.ok(html, headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'public, max-age=300',
+  });
 }
 
 String _escapeHtml(String t) => t
@@ -4759,6 +5027,17 @@ Future<void> main() async {
       'body TEXT NOT NULL, '
       'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
 
+  // Ratings/discussion threads on a place (city) page.
+  await _db.execute('CREATE TABLE IF NOT EXISTS place_comments ('
+      'id SERIAL PRIMARY KEY, '
+      'city_slug TEXT NOT NULL, '
+      'author_id INTEGER NOT NULL, '
+      'author_name TEXT NOT NULL, '
+      'author_role TEXT NOT NULL DEFAULT \'traveler\', '
+      'body TEXT NOT NULL, '
+      'parent_id INTEGER, ' // one-level threads (reply to a comment)
+      'created_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+
   // Security / audit trail for the admin panel.
   await _db.execute('CREATE TABLE IF NOT EXISTS activity_logs ('
       'id SERIAL PRIMARY KEY, '
@@ -4815,6 +5094,10 @@ Future<void> main() async {
     ..get('/cities', _cities)
     ..post('/cities', _addCity)
     ..post('/cities/<slug>/rate', _ratePlace)
+    ..get('/cities/<slug>/rating', _placeRating)
+    ..get('/cities/<slug>/comments', _placeComments)
+    ..post('/cities/<slug>/comments', _addPlaceComment)
+    ..post('/place-comments/<id>/delete', _deletePlaceComment)
     ..get('/news', _travelNews)
     ..get('/geo/reverse', _geoReverse)
     ..post('/cities/<city>/cover', _uploadCover)
@@ -4851,6 +5134,10 @@ Future<void> main() async {
     ..post('/guidevibe/<id>/view', _viewShort)
     ..get('/guidevibe/<id>/comments', _shortComments)
     ..post('/guidevibe/<id>/comments', _addShortComment)
+    ..post('/guidevibe/<id>/update', _updateShort)
+    ..post('/guidevibe/<id>/delete', _deleteShort)
+    ..get('/guidevibe/<id>/analytics', _shortAnalytics)
+    ..get('/short/<id>', _publicShort)
     ..post('/upload', _upload)
     ..post('/videos/<id>/config', _updateConfig)
     ..post('/videos/<id>/thumbnail', _uploadThumbnail)

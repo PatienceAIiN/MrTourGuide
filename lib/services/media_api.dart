@@ -284,6 +284,39 @@ class SavedItinerary {
 }
 
 /// Travel news headline (advisories, precautions, new destinations).
+/// A comment (or one-level reply) on a place/city page.
+class PlaceComment {
+  final int id;
+  final int authorId;
+  final String authorName;
+  final String authorRole;
+  final String body;
+  final int? parentId;
+  final DateTime createdAt;
+
+  const PlaceComment({
+    required this.id,
+    required this.authorId,
+    required this.authorName,
+    required this.authorRole,
+    required this.body,
+    required this.parentId,
+    required this.createdAt,
+  });
+
+  bool get byCreator => authorRole == 'creator';
+
+  factory PlaceComment.fromJson(Map<String, dynamic> j) => PlaceComment(
+        id: j['id'] as int,
+        authorId: j['authorId'] as int,
+        authorName: j['authorName'] as String,
+        authorRole: j['authorRole'] as String? ?? 'traveler',
+        body: j['body'] as String,
+        parentId: j['parentId'] as int?,
+        createdAt: DateTime.parse(j['createdAt'] as String),
+      );
+}
+
 class NewsItem {
   final String title;
   final String url;
@@ -638,6 +671,41 @@ class MediaApi {
       (decoded['rating'] as num).toDouble(),
       decoded['ratingCount'] as int
     );
+  }
+
+  /// Authoritative rating + the caller's own stars — keeps the city page's
+  /// rating stable (no vanishing) and remembers what the user rated.
+  static Future<(double, int, int)> placeRating(String slug) async {
+    final me = AuthApi.currentUser?.id;
+    final decoded =
+        await _get('/cities/$slug/rating${me != null ? '?userId=$me' : ''}');
+    return (
+      (decoded['rating'] as num).toDouble(),
+      (decoded['ratingCount'] as num).toInt(),
+      (decoded['myStars'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  static Future<List<PlaceComment>> placeComments(String slug) async {
+    final decoded = await _get('/cities/$slug/comments');
+    return [
+      for (final c in decoded['comments'] as List)
+        PlaceComment.fromJson(c as Map<String, dynamic>)
+    ];
+  }
+
+  static Future<void> addPlaceComment(String slug, String body,
+      {int? parentId}) async {
+    await _postJson('/cities/$slug/comments', {
+      'userId': AuthApi.currentUser?.id,
+      'body': body,
+      if (parentId != null) 'parentId': parentId,
+    });
+  }
+
+  static Future<void> deletePlaceComment(int commentId) async {
+    await _postJson('/place-comments/$commentId/delete',
+        {'userId': AuthApi.currentUser?.id});
   }
 
   /// Travel news: precautions, advisories and fresh ideas (server-cached).

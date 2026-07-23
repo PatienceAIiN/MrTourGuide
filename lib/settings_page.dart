@@ -120,10 +120,12 @@ class _SettingsPageState extends State<SettingsPage> {
                   label: '${(s.intensity * 100).round()}%',
                   activeColor: Colors.purpleAccent,
                   onChanged: (v) {
-                    if ((v * 10).round() != (s.intensity * 10).round()) {
-                      Haptics.level(v); // feel each level as you scrub
-                    }
+                    final changed =
+                        (v * 10).round() != (s.intensity * 10).round();
+                    // Set first so the buzz uses the new strength — like the
+                    // Android volume slider, higher = stronger as you drag.
                     _update(() => s.intensity = v);
+                    if (changed) Haptics.level(1.0);
                   },
                 ),
               ),

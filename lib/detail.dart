@@ -8,6 +8,7 @@ import 'news_webview.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
 import 'services/media_api.dart';
+import 'widgets/hashtag_text.dart';
 import 'widgets/ux.dart';
 
 /// Place detail page — fully dynamic: hero, about and live experience videos
@@ -33,12 +34,26 @@ class _DetailScreenState extends State<DetailScreen> {
   bool loadingVideos = true;
   String? videosError;
 
+  List<PlaceComment> comments = [];
+  final _commentCtl = TextEditingController();
+  int? _replyingTo;
+  String? _replyingToName;
+  bool _postingComment = false;
+
   Place get place => widget.place;
+
+  @override
+  void dispose() {
+    _commentCtl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
     super.initState();
     _loadVideos();
+    _loadRating();
+    _loadComments();
     // Live temperature + ML suggestions load independently — never block
     // the page on them.
     MediaApi.fetchWeather(place.citySlug).then((w) {
@@ -51,6 +66,62 @@ class _DetailScreenState extends State<DetailScreen> {
     MediaApi.searchMedia('${place.title} ${place.location}').then((m) {
       if (mounted) setState(() => ytPicks = m.youtube);
     }).catchError((_) {});
+  }
+
+  /// Authoritative rating so it never shows stale/blank and remembers the
+  /// user's own stars across visits.
+  Future<void> _loadRating() async {
+    try {
+      final (avg, count, mine) = await MediaApi.placeRating(place.citySlug);
+      if (!mounted) return;
+      setState(() {
+        rating = avg;
+        ratingCount = count;
+        myStars = mine;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _loadComments() async {
+    try {
+      final list = await MediaApi.placeComments(place.citySlug);
+      if (mounted) setState(() => comments = list);
+    } catch (_) {}
+  }
+
+  Future<void> _postComment() async {
+    final text = _commentCtl.text.trim();
+    if (text.isEmpty) return;
+    if (AuthApi.currentUser == null) {
+      newSnackBar(context, title: 'Sign in to comment.');
+      return;
+    }
+    setState(() => _postingComment = true);
+    try {
+      await MediaApi.addPlaceComment(place.citySlug, text,
+          parentId: _replyingTo);
+      _commentCtl.clear();
+      setState(() {
+        _replyingTo = null;
+        _replyingToName = null;
+        _postingComment = false;
+      });
+      Haptics.medium();
+      await _loadComments();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() => _postingComment = false);
+      newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _deleteComment(PlaceComment c) async {
+    try {
+      await MediaApi.deletePlaceComment(c.id);
+      if (mounted) setState(() => comments.removeWhere((x) => x.id == c.id));
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
   }
 
   Future<void> _loadVideos() async {
@@ -464,6 +535,11 @@ class _DetailScreenState extends State<DetailScreen> {
                     for (final s in suggestions) _videoCard(s),
                     const SizedBox(height: 20),
                   ],
+                  // Ratings & discussion — community-style threads.
+                  const SizedBox(height: 8),
+                  _sectionTitle('Ratings & comments'),
+                  _commentsSection(),
+                  const SizedBox(height: 20),
                   // Other destinations (dynamic — excludes this one)
                   _sectionTitle('View more places'),
                   _morePlaces(),
@@ -572,6 +648,164 @@ class _DetailScreenState extends State<DetailScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _commentsSection() {
+    final tops = comments.where((c) => c.parentId == null).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (tops.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Text('No comments yet — start the conversation.',
+                style: TextStyle(color: inkSoft(context), fontSize: 13)),
+          )
+        else
+          for (final c in tops) ...[
+            _commentTile(c),
+            for (final r in comments.where((x) => x.parentId == c.id))
+              Padding(
+                padding: const EdgeInsets.only(left: 34),
+                child: _commentTile(r, inThread: true),
+              ),
+          ],
+        const SizedBox(height: 8),
+        if (_replyingToName != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                Text('Replying to $_replyingToName',
+                    style: TextStyle(
+                        fontSize: 12, color: inkSoft(context))),
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: () => setState(() {
+                    _replyingTo = null;
+                    _replyingToName = null;
+                  }),
+                  child: const Icon(Icons.close, size: 14, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _commentCtl,
+                style: TextStyle(color: ink(context)),
+                minLines: 1,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  hintText: _replyingToName != null
+                      ? 'Write a reply…'
+                      : 'Add a comment…',
+                  filled: true,
+                  fillColor: cardBg(context),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _postingComment
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : IconButton(
+                    icon: Icon(Icons.send_rounded, color: brandInk(context)),
+                    onPressed: _postComment,
+                  ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _commentTile(PlaceComment c, {bool inThread = false}) {
+    final mine = c.authorId == AuthApi.currentUser?.id;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: inThread ? 12 : 15,
+            backgroundColor: c.byCreator ? Colors.purple : blue,
+            child: Text(
+              c.authorName.isNotEmpty ? c.authorName[0].toUpperCase() : '?',
+              style: TextStyle(
+                  color: Colors.white, fontSize: inThread ? 10 : 12),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(c.authorName,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: inkSoft(context),
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12)),
+                    ),
+                    if (c.byCreator)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: Text('✦',
+                            style: TextStyle(
+                                color: Colors.purple, fontSize: 11)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                HashtagText(c.body,
+                    style: TextStyle(
+                        color: ink(context), fontSize: 13.5, height: 1.4)),
+                Row(
+                  children: [
+                    if (!inThread)
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            minimumSize: const Size(0, 30),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        onPressed: () => setState(() {
+                          _replyingTo = c.id;
+                          _replyingToName = c.authorName;
+                        }),
+                        child: Text('Reply',
+                            style: TextStyle(
+                                fontSize: 12, color: brandInk(context))),
+                      ),
+                    if (mine)
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            minimumSize: const Size(0, 30),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        onPressed: () => _deleteComment(c),
+                        child: const Text('Delete',
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

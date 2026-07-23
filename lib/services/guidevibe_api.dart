@@ -214,6 +214,24 @@ class GuideVibeApi {
     await _post('/guidevibe/$shortId/comments', {'userId': _me, 'body': body});
   }
 
+  /// The public, shareable browser link for a short.
+  static String shareUrl(String shortId) => '$apiBase/short/$shortId';
+
+  static Future<void> updateShort(String shortId, {String? caption}) async {
+    await _post('/guidevibe/$shortId/update', {
+      'userId': _me,
+      if (caption != null) 'caption': caption,
+    });
+  }
+
+  static Future<void> deleteShort(String shortId) async {
+    await _post('/guidevibe/$shortId/delete', {'userId': _me});
+  }
+
+  static Future<Map<String, dynamic>> analytics(String shortId) async {
+    return _get('/guidevibe/$shortId/analytics?userId=$_me');
+  }
+
   static Future<Map<String, dynamic>> _get(String path) async {
     late http.Response r;
     try {

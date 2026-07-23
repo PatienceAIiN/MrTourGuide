@@ -47,7 +47,11 @@ Future<void> feelPlace(BuildContext context, City city) async {
 /// backend) controlled by the ✨ toggle.
 class SearchPage extends StatefulWidget {
   final void Function(int index)? onSelectTab;
-  const SearchPage({super.key, this.onSelectTab});
+
+  /// When pushed as its own route (e.g. tapping a #hashtag), pre-fills and
+  /// runs this query immediately.
+  final String? initialQuery;
+  const SearchPage({super.key, this.onSelectTab, this.initialQuery});
 
   @override
   State<SearchPage> createState() => _SearchPageState();
@@ -79,6 +83,11 @@ class _SearchPageState extends State<SearchPage>
   void initState() {
     super.initState();
     _loadPrefs();
+    final q = widget.initialQuery;
+    if (q != null && q.trim().isNotEmpty) {
+      query.text = q.trim();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _search(q.trim()));
+    }
     // Leaving the tab clears the field and results automatically.
     TabEvents.changed.addListener(_onTabChanged);
   }

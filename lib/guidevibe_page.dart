@@ -11,6 +11,8 @@ import 'services/auth_api.dart';
 import 'services/guidevibe_api.dart';
 import 'services/haptic_service.dart';
 import 'services/location_service.dart';
+import 'widgets/hashtag_text.dart';
+import 'widgets/ux.dart';
 
 /// GuideVibe. Travelers get a full-screen, vertically-scrolling short feed
 /// (Reels style, platform videos only — no third-party sources). Creators
@@ -421,9 +423,11 @@ class _ShortViewState extends State<_ShortView> {
   Future<void> _share() async {
     Haptics.tick();
     final s = widget.short;
+    final preview = s.caption.isEmpty ? 'this GuideVibe' : s.caption;
+    // Embed the link to THIS specific short.
     await SharePlus.instance.share(ShareParams(
-      text: 'Watch "${s.caption.isEmpty ? 'this GuideVibe' : s.caption}" on '
-          'Mr.Tour Guide\nhttps://mrtourguide.patienceai.in/',
+      subject: '${s.ownerName} on GuideVibe',
+      text: 'Watch "$preview" on Mr.Tour Guide\n${GuideVibeApi.shareUrl(s.id)}',
     ));
   }
 
@@ -686,10 +690,11 @@ class _ShortViewState extends State<_ShortView> {
             ),
             if (s.caption.isNotEmpty) ...[
               const SizedBox(height: 9),
-              Text(
+              HashtagText(
                 s.caption,
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
+                tagColor: const Color(0xFF8FD3FF),
                 style: const TextStyle(
                     color: Colors.white,
                     fontSize: 13.5,
@@ -945,8 +950,176 @@ class _CreatorStudioState extends State<_CreatorStudio>
         ],
       );
 
+  /// Analytics + edit/delete for one of the creator's own shorts.
+  Future<void> _manage(Short s) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  _stat(Icons.play_arrow, '${s.views}', 'views'),
+                  _stat(Icons.favorite, '${s.likes}', 'likes'),
+                  if (s.isImmersive)
+                    _stat(Icons.view_in_ar, s.kind.toUpperCase(), 'mode'),
+                ],
+              ),
+              const Divider(height: 24),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.analytics_outlined, color: brandInk(context)),
+                title: const Text('Analytics'),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _analytics(s);
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.edit_outlined, color: brandInk(context)),
+                title: const Text('Edit caption'),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _edit(s);
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.delete_outline, color: red),
+                title: const Text('Delete', style: TextStyle(color: red)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _delete(s);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _stat(IconData icon, String value, String label) => Expanded(
+        child: Column(
+          children: [
+            Icon(icon, color: brandInk(context), size: 20),
+            const SizedBox(height: 4),
+            Text(value,
+                style: TextStyle(
+                    color: ink(context),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16)),
+            Text(label,
+                style: TextStyle(color: inkSoft(context), fontSize: 11.5)),
+          ],
+        ),
+      );
+
+  Future<void> _analytics(Short s) async {
+    Map<String, dynamic>? a;
+    try {
+      a = await GuideVibeApi.analytics(s.id);
+    } catch (_) {}
+    if (!mounted || a == null) return;
+    final data = a;
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('GuideVibe analytics'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _analyticsRow(Icons.play_arrow, 'Views', '${data['views'] ?? 0}'),
+            _analyticsRow(Icons.favorite, 'Likes', '${data['likes'] ?? 0}'),
+            _analyticsRow(
+                Icons.mode_comment_outlined, 'Comments', '${data['comments'] ?? 0}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  Widget _analyticsRow(IconData icon, String label, String value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: brandInk(context)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(label)),
+            Text(value,
+                style: const TextStyle(fontWeight: FontWeight.w800)),
+          ],
+        ),
+      );
+
+  Future<void> _edit(Short s) async {
+    final ctl = TextEditingController(text: s.caption);
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Edit caption'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLength: 400,
+          maxLines: 3,
+          decoration: const InputDecoration(hintText: 'Update your caption…'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (save != true || !mounted) return;
+    try {
+      await GuideVibeApi.updateShort(s.id, caption: ctl.text.trim());
+      Haptics.medium();
+      await _load();
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
+  Future<void> _delete(Short s) async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Delete GuideVibe?',
+      message: 'This removes the short for everyone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    );
+    if (!ok) return;
+    try {
+      await GuideVibeApi.deleteShort(s.id);
+      if (mounted) setState(() => _mine.removeWhere((x) => x.id == s.id));
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
   Widget _tile(Short s, int i) => GestureDetector(
         onTap: () => _preview(i),
+        onLongPress: () => _manage(s),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(10),
           child: Stack(
@@ -1012,6 +1185,25 @@ class _CreatorStudioState extends State<_CreatorStudio>
                               Shadow(color: Colors.black54, blurRadius: 2)
                             ])),
                   ],
+                ),
+              ),
+              // Manage (analytics / edit / delete) — always tappable.
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => _manage(s),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.more_vert,
+                          color: Colors.white, size: 18, shadows: [
+                        Shadow(color: Colors.black54, blurRadius: 3)
+                      ]),
+                    ),
+                  ),
                 ),
               ),
             ],

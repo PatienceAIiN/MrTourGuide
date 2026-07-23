@@ -15,6 +15,7 @@ import '../services/media_api.dart';
 import '../services/community_api.dart';
 import '../services/haptic_service.dart';
 import '../services/image_tools.dart';
+import '../widgets/hashtag_text.dart';
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
 
@@ -949,8 +950,9 @@ class _CommunityPageState extends State<CommunityPage>
                   ),
                 )
               else ...[
-                Text(post.body,
-                    style: const TextStyle(fontSize: 14, height: 1.45)),
+                HashtagText(post.body,
+                    style: TextStyle(
+                        fontSize: 14, height: 1.45, color: ink(context))),
                 if (post.media.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   _MediaCarousel(post: post, height: 200),
