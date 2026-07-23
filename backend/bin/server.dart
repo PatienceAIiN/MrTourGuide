@@ -5633,7 +5633,7 @@ Future<void> main() async {
       if (build == null) return;
       final announced = await _db.execute(
         Sql.named('SELECT 1 FROM activity_logs WHERE action = @a '
-            'AND detail = @d LIMIT 1'),
+            'AND details = @d LIMIT 1'),
         parameters: {'a': 'update-announced', 'd': 'build $build'},
       );
       if (announced.isNotEmpty) return;
