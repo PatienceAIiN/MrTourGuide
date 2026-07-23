@@ -13,7 +13,9 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/bin/server /app/bin/server
-COPY --from=build /runtime/ /
+# NB: `dart compile exe` is self-contained; the debian base already provides
+# glibc, so we must NOT copy /runtime (that is only for a scratch base and
+# clashes with debian's /lib symlink on buildkit).
 # OTA version manifest (read from _backendDir=/app) + the built landing site
 # (served as static files at / when present).
 COPY --from=build /app/app_version.json /app/app_version.json
