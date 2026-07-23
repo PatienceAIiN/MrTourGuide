@@ -3679,6 +3679,15 @@ Future<Response> _createPost(Request request) async {
       'media': media.isEmpty ? null : jsonEncode(media),
     },
   );
+  // Tell everyone else a new community message landed (fire-and-forget so
+  // posting stays snappy).
+  final preview = text.length > 80 ? '${text.substring(0, 77)}…' : text;
+  _tokensFor(excludeUserId: userId).then((tokens) => _sendPush(
+        tokens,
+        'New in $community',
+        '${user.first[0]}: $preview',
+        data: {'type': 'community'},
+      ));
   return _json(201, {'ok': true, 'id': rows.first[0]});
 }
 
@@ -4245,6 +4254,26 @@ Future<Response> _notifications(Request request) async {
             ? 'New GuideVibe from ${r[0]}'
             : 'New GuideVibe: ${cap.length > 50 ? '${cap.substring(0, 47)}...' : cap}',
         'at': (r[2] as DateTime).toIso8601String(),
+      });
+    }
+  } catch (_) {}
+
+  // New community messages (excluding the caller's own).
+  try {
+    final posts = await _db.execute(
+      Sql.named('SELECT author_name, community, body, created_at FROM posts '
+          'WHERE created_at > @since AND reshared_by IS NULL '
+          '${userId != null ? 'AND author_id != @me ' : ''}'
+          'ORDER BY created_at DESC LIMIT 10'),
+      parameters: {'since': since, if (userId != null) 'me': userId},
+    );
+    for (final r in posts) {
+      final body = (r[2] as String).trim();
+      items.add({
+        'type': 'community',
+        'title':
+            '${r[0]} in ${r[1]}: ${body.length > 60 ? '${body.substring(0, 57)}…' : body}',
+        'at': (r[3] as DateTime).toIso8601String(),
       });
     }
   } catch (_) {}
@@ -5538,18 +5567,32 @@ Future<void> main() async {
 
   // On the VM, nginx maps /api/* → backend (prefix stripped), /admin → backend
   // and serves the landing statically. On Render there is no nginx, so this
-  // one service replicates all three: the router is reachable both under /api
-  // (what the app + landing call) and at the root (/admin, /health, /files…),
-  // and the built landing is served as static files for everything else.
-  final apiMount = Router()..mount('/api/', router.call);
-
+  // one service replicates all three. /api/* is routed by EXPLICIT prefix
+  // strip — NOT a Cascade — because Cascade falls through on ANY 404,
+  // swallowing legitimate 404 JSON responses (e.g. login "no user found",
+  // forgot-password "no password account") and replacing them with a plain
+  // "Route not found" the app can't parse (it surfaced as a fake
+  // "check your internet" error).
   final landingDir = '$_backendDir/web/landing';
-  final cascade = Directory(landingDir).existsSync()
-      ? Cascade()
-          .add(createStaticHandler(landingDir, defaultDocument: 'index.html'))
-          .add(apiMount.call)
-          .add(router.call)
-      : Cascade().add(apiMount.call).add(router.call);
+  final Handler rootHandler = Directory(landingDir).existsSync()
+      // Static files first; anything the landing doesn't have falls to the
+      // router (/admin, /health, /files, /post/<id>, /short/<id>…), whose
+      // responses — including 404s — are final.
+      ? (Cascade()
+              .add(createStaticHandler(landingDir,
+                  defaultDocument: 'index.html'))
+              .add(router.call))
+          .handler
+      : router.call;
+
+  Future<Response> route(Request request) async {
+    final p = request.url.path;
+    if (p == 'api' || p.startsWith('api/')) {
+      // Strip the /api prefix; the router's response is FINAL (no cascade).
+      return await router.call(request.change(path: 'api'));
+    }
+    return await rootHandler(request);
+  }
 
   final handler = const Pipeline()
       .addMiddleware(logRequests())
@@ -5557,7 +5600,7 @@ Future<void> main() async {
       .addMiddleware(_edgeCache())
       .addMiddleware(_redisCache())
       .addMiddleware(_cors())
-      .addHandler(cascade.handler);
+      .addHandler(route);
 
   final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, _port);
   print('MrTouride backend listening on http://${server.address.host}:${server.port}');
