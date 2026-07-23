@@ -81,8 +81,14 @@ class R2Storage implements MediaStorage {
         throw const FormatException('File too large.');
       }
     }
-    await _put('$city/$filename', data);
+    // Write the local cache FIRST (fast, on-disk) so the file is immediately
+    // servable and the caller can return right away. The R2 upload (the slow
+    // VM→Cloudflare leg) runs in the background — otherwise big uploads sit at
+    // ~95% for the whole R2 push and time out.
     await cache.save(city, filename, Stream.value(data));
+    _put('$city/$filename', data).catchError((Object e) {
+      print('R2 put failed (served from cache) for $city/$filename: $e');
+    });
     return data.length;
   }
 
@@ -2468,7 +2474,7 @@ Future<Response> _uploadCommunityImage(Request request) async {
   return _json(201, {'imageUrl': '/files/community/$rawName'});
 }
 
-const _maxPostVideoBytes = 25 * 1024 * 1024; // hard cap per video (25 MB)
+const _maxPostVideoBytes = 80 * 1024 * 1024; // hard cap per video (80 MB)
 
 /// One community video is compressed at a time — the free-tier VM cannot
 /// afford parallel ffmpeg runs.
@@ -2500,7 +2506,7 @@ Future<Response> _uploadCommunityVideo(Request request) async {
       if (size > _maxPostVideoBytes) {
         await sink.close();
         await tmpIn.delete();
-        return _json(413, {'error': 'Post videos are limited to 25 MB.'});
+        return _json(413, {'error': 'Post videos are limited to 80 MB.'});
       }
       sink.add(chunk);
     }
@@ -2763,37 +2769,15 @@ Future<Response> _uploadShort(Request request) async {
   }
 
   final finalName = 'gv_$stamp.mp4';
-  // Poster frame first (fast — reads only the head of the file).
-  String? thumbUrl;
-  final poster = File('${Directory.systemTemp.path}/mrt_gvposter_$stamp.jpg');
-  try {
-    final r = await Process.run('ffmpeg', [
-      '-y', '-loglevel', 'error',
-      '-ss', '0.5', '-i', tmpIn.path,
-      '-frames:v', '1',
-      '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
-      '-q:v', '5',
-      poster.path,
-    ]).timeout(const Duration(seconds: 45));
-    if (r.exitCode == 0 && await poster.exists()) {
-      final thumbName = 'gvthumb_$stamp.jpg';
-      await _storage.save(
-          'guidevibe', thumbName, Stream.value(await poster.readAsBytes()));
-      thumbUrl = '/files/guidevibe/$thumbName';
-    }
-  } catch (_) {} finally {
-    try {
-      if (await poster.exists()) await poster.delete();
-    } catch (_) {}
-  }
-
-  // Serve the original immediately so the short appears while it transcodes.
-  await _storage.save('guidevibe', finalName, tmpIn.openRead());
-
+  // Insert the row and respond IMMEDIATELY (status processing, no thumb yet).
+  // All the heavy work — storing the file, the poster frame, transcode, music
+  // mux and haptics — runs in the background queue below, so the client's
+  // upload progress bar completes the moment the bytes are received instead of
+  // sitting near the end while the VM finalizes.
   final rows = await _db.execute(
     Sql.named('INSERT INTO shorts (owner_id, owner_name, owner_role, caption, '
         'city, filename, thumb_url, kind, size_bytes, status) VALUES '
-        '(@o, @on, @or, @cap, @city, @f, @t, @k, @sz, \'processing\') '
+        '(@o, @on, @or, @cap, @city, @f, NULL, @k, @sz, \'processing\') '
         'RETURNING $_shortColumns'),
     parameters: {
       'o': userId,
@@ -2802,7 +2786,6 @@ Future<Response> _uploadShort(Request request) async {
       'cap': caption,
       'city': city.isEmpty ? null : city,
       'f': finalName,
-      't': thumbUrl,
       'k': kind,
       'sz': size,
     },
@@ -2810,12 +2793,40 @@ Future<Response> _uploadShort(Request request) async {
   final shortId = rows.first[0] as int;
   _logActivity('user:$userId', 'guidevibe-upload', 'short #$shortId ($kind)');
 
-  // Queue transcode + haptics; overwrite the same storage key when smaller.
+  // Background queue: store original, poster, transcode + music + haptics.
   _shortQueue = _shortQueue.then((_) async {
     final tmpOut = File('${Directory.systemTemp.path}/mrt_shortc_$stamp.mp4');
     final tmpMusic = File('${Directory.systemTemp.path}/mrt_gvmusic_$stamp.mp3');
     var haveMusic = false;
     try {
+      // Store the original first so the clip exists even before transcoding.
+      await _storage.save('guidevibe', finalName, tmpIn.openRead());
+      // Poster frame (updates the row's thumb once ready).
+      final poster =
+          File('${Directory.systemTemp.path}/mrt_gvposter_$stamp.jpg');
+      try {
+        final pr = await Process.run('ffmpeg', [
+          '-y', '-loglevel', 'error',
+          '-ss', '0.5', '-i', tmpIn.path,
+          '-frames:v', '1',
+          '-vf', "scale='trunc(min(720,iw)/2)*2':-2",
+          '-q:v', '5',
+          poster.path,
+        ]).timeout(const Duration(seconds: 45));
+        if (pr.exitCode == 0 && await poster.exists()) {
+          final thumbName = 'gvthumb_$stamp.jpg';
+          await _storage.save('guidevibe', thumbName,
+              Stream.value(await poster.readAsBytes()));
+          await _db.execute(
+            Sql.named('UPDATE shorts SET thumb_url = @t WHERE id = @id'),
+            parameters: {'t': '/files/guidevibe/$thumbName', 'id': shortId},
+          );
+        }
+      } catch (_) {} finally {
+        try {
+          if (await poster.exists()) await poster.delete();
+        } catch (_) {}
+      }
       // Fetch the chosen soundtrack (size-capped) before transcoding.
       if (musicUrl != null) {
         try {

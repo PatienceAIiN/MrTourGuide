@@ -6,6 +6,7 @@ import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/detail.dart';
 import 'package:mrtouride/experience_player.dart';
 import 'package:mrtouride/models/place.dart';
+import 'package:mrtouride/news_webview.dart';
 import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/location_service.dart';
 import 'package:mrtouride/services/media_api.dart';
@@ -34,6 +35,8 @@ class _HomePageState extends State<HomeScreen>
   String? error;
   bool hasUnseen = false;
   List<NewsItem> news = [];
+  // Playable "Picked for you" experience videos (city/activity-seeded).
+  List<YtSuggestion> picks = [];
 
   // Rotating headline below the greeting.
   static const _phrases = [
@@ -54,6 +57,7 @@ class _HomePageState extends State<HomeScreen>
     WidgetsBinding.instance.addObserver(this);
     _load(initial: true);
     _loadNews();
+    _loadPicks();
     _refreshUnseen();
     // Slower, calmer headline cadence.
     _phraseTimer = Timer.periodic(const Duration(milliseconds: 5500), (_) {
@@ -94,6 +98,19 @@ class _HomePageState extends State<HomeScreen>
       final (country, city) = await LocationService.current();
       final items = await MediaApi.fetchNews(country: country, city: city);
       if (mounted) setState(() => news = items);
+    } catch (_) {}
+  }
+
+  /// Playable experience-video picks for the main feed — seeded by the
+  /// reader's city (falls back to a general travel query). Server-cached.
+  Future<void> _loadPicks() async {
+    try {
+      final (_, city) = await LocationService.current();
+      final seed = city.isNotEmpty
+          ? '$city travel experience'
+          : 'India travel experiences';
+      final m = await MediaApi.searchMedia(seed);
+      if (mounted) setState(() => picks = m.youtube);
     } catch (_) {}
   }
 
@@ -339,7 +356,24 @@ class _HomePageState extends State<HomeScreen>
                           ),
                         ),
                       ],
-                      // Travel news at the bottom of the main feed.
+                      // Experience videos — playable "Picked for you" rail,
+                      // between trending and the travel/precautions news.
+                      if (picks.isNotEmpty) ...[
+                        const SizedBox(height: 26),
+                        _sectionHeader('Picked for you'),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          height: 216,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: picks.length,
+                            separatorBuilder: (c, i) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, i) => _pickCard(picks[i]),
+                          ),
+                        ),
+                      ],
+                      // Travel news + precautions at the bottom of the feed.
                       ...newsSection(context, news),
                       // Keep last row clear of the floating navbar.
                       const SizedBox(height: 110),
@@ -461,6 +495,59 @@ class _HomePageState extends State<HomeScreen>
                   ),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Playable "Picked for you" experience-video card — opens in-app.
+  Widget _pickCard(YtSuggestion pick) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              NewsWebViewPage(title: pick.title, url: pick.url),
+        ),
+      ),
+      child: SizedBox(
+        width: 300,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Image.network(
+                    pick.thumbnail.replaceFirst('mqdefault', 'hqdefault'),
+                    width: 300,
+                    height: 170,
+                    fit: BoxFit.cover,
+                    errorBuilder: (c, e, st) => Container(
+                        width: 300, height: 170, color: Colors.black12),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: const BoxDecoration(
+                      color: Colors.black45, shape: BoxShape.circle),
+                  child: const Icon(Icons.play_arrow,
+                      color: Colors.white, size: 28),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Flexible(
+              child: Text(pick.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w700, fontSize: 13)),
             ),
           ],
         ),

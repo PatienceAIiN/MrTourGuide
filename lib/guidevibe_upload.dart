@@ -378,8 +378,8 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Uploading…',
-                  style: TextStyle(
+              Text(pct >= 98 ? 'Finishing up…' : 'Uploading…',
+                  style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w800,
                       fontSize: 14)),

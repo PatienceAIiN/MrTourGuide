@@ -261,7 +261,7 @@ class CommunityApi {
     return decoded['imageUrl'] as String;
   }
 
-  /// Uploads a post video (client cap 25 MB) as a stream so a clip never
+  /// Uploads a post video (client cap 80 MB) via a background transfer so a
   /// sits fully in memory. The backend serves it immediately and re-encodes
   /// it to 720p in the background under the same URL.
   static Future<PostMedia> uploadVideo(String filePath,
@@ -270,8 +270,8 @@ class CommunityApi {
     if (me == null) throw const AuthException('Sign in to attach videos.');
     final file = File(filePath);
     final size = await file.length();
-    if (size > 25 * 1024 * 1024) {
-      throw const AuthException('Post videos are limited to 25 MB.');
+    if (size > 80 * 1024 * 1024) {
+      throw const AuthException('Post videos are limited to 80 MB.');
     }
     final url = Uri.parse('$apiBase/community/upload-video').replace(
         queryParameters: {

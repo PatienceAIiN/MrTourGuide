@@ -430,9 +430,9 @@ class _CommunityPageState extends State<CommunityPage>
     );
     final file = picked?.files.single;
     if (file == null || file.path == null) return;
-    if (file.size > 25 * 1024 * 1024) {
+    if (file.size > 80 * 1024 * 1024) {
       if (mounted) {
-        newSnackBar(context, title: 'Post videos are limited to 25 MB.');
+        newSnackBar(context, title: 'Post videos are limited to 80 MB.');
       }
       return;
     }
@@ -620,7 +620,7 @@ class _CommunityPageState extends State<CommunityPage>
                       ),
                       IconButton(
                         visualDensity: VisualDensity.compact,
-                        tooltip: 'Add a video (up to 2, 25 MB each)',
+                        tooltip: 'Add a video (up to 2, 80 MB each)',
                         icon: const Icon(Icons.videocam_outlined,
                             color: Colors.grey),
                         onPressed: _attachVideo,
