@@ -11,6 +11,7 @@ import 'services/auth_api.dart';
 import 'services/guidevibe_api.dart';
 import 'services/haptic_service.dart';
 import 'services/location_service.dart';
+import 'services/tab_events.dart';
 import 'widgets/hashtag_text.dart';
 import 'widgets/ux.dart';
 
@@ -42,7 +43,10 @@ class _UserFeed extends StatefulWidget {
 }
 
 class _UserFeedState extends State<_UserFeed>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
+  // GuideVibe's position in the main PageView (see main_page.dart pages list).
+  static const _guideVibeTabIndex = 4;
+
   final PageController _pager = PageController();
   final List<Short> _shorts = [];
   bool _loading = true;
@@ -53,6 +57,13 @@ class _UserFeedState extends State<_UserFeed>
   int _index = 0;
   bool _loadedOnce = false;
 
+  // The feed is kept alive across tab switches, so it must stop playback
+  // itself when it's not the visible tab or the app is backgrounded.
+  bool _tabVisible = true;
+  bool _appResumed = true;
+
+  bool get _playbackAllowed => _tabVisible && _appResumed;
+
   // Keep the feed alive across tab switches — no reload spinner on return.
   @override
   bool get wantKeepAlive => true;
@@ -60,11 +71,31 @@ class _UserFeedState extends State<_UserFeed>
   @override
   void initState() {
     super.initState();
+    _tabVisible = TabEvents.changed.value == _guideVibeTabIndex;
+    TabEvents.changed.addListener(_onTabChanged);
+    WidgetsBinding.instance.addObserver(this);
     _load(initial: true);
+  }
+
+  void _onTabChanged() {
+    final visible = TabEvents.changed.value == _guideVibeTabIndex;
+    if (visible != _tabVisible && mounted) {
+      setState(() => _tabVisible = visible);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final resumed = state == AppLifecycleState.resumed;
+    if (resumed != _appResumed && mounted) {
+      setState(() => _appResumed = resumed);
+    }
   }
 
   @override
   void dispose() {
+    TabEvents.changed.removeListener(_onTabChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _pager.dispose();
     super.dispose();
   }
@@ -139,7 +170,10 @@ class _UserFeedState extends State<_UserFeed>
                           itemBuilder: (context, i) => _ShortView(
                             key: ValueKey(_shorts[i].id),
                             short: _shorts[i],
-                            active: i == _index,
+                            // Only the on-screen page plays, and only while
+                            // GuideVibe is the visible tab and the app is
+                            // foregrounded — switching away pauses it.
+                            active: i == _index && _playbackAllowed,
                           ),
                         ),
                         // Close → back to Home (the navbar is hidden here).
