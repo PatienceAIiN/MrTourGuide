@@ -1606,6 +1606,162 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
+  /// Owner-only place management (long-press on your place's chip):
+  /// edit details, refresh the cover image, or delete the place.
+  Future<void> _managePlace(City city) async {
+    Haptics.tick();
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(2)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_location_alt, color: blue),
+              title: Text('Edit "${city.name}"'),
+              subtitle: const Text('Name, location, description'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                _editPlaceDialog(city);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.image, color: Colors.teal),
+              title: const Text('Refresh cover image'),
+              subtitle: const Text('Fetch a fresh high-res photo'),
+              onTap: () async {
+                Navigator.pop(sheetCtx);
+                try {
+                  await showBusyWhile(
+                      context,
+                      MediaApi.editCity(city.slug, refreshCover: true),
+                      label: 'Refreshing…');
+                  if (!mounted) return;
+                  newSnackBar(context,
+                      title: 'Fetching a new cover — it appears shortly.');
+                  unawaited(_silentSync());
+                } on AuthException catch (e) {
+                  if (mounted) newSnackBar(context, title: e.message);
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: red),
+              title: const Text('Delete place',
+                  style: TextStyle(color: red)),
+              subtitle:
+                  const Text('Removes the place and all its experiences'),
+              onTap: () async {
+                Navigator.pop(sheetCtx);
+                final ok = await confirmDialog(
+                  context,
+                  title: 'Delete "${city.name}"?',
+                  message: 'This removes the place, its experiences, ratings '
+                      'and comments for everyone. It cannot be undone.',
+                  confirmLabel: 'Delete',
+                  destructive: true,
+                );
+                if (!ok) return;
+                try {
+                  await showBusyWhile(
+                      context, MediaApi.removeCity(city.slug),
+                      label: 'Deleting…');
+                  if (!mounted) return;
+                  setState(() {
+                    cities.removeWhere((c) => c.slug == city.slug);
+                    if (selectedCity == city.slug) {
+                      selectedCity =
+                          cities.isNotEmpty ? cities.first.slug : null;
+                      videos.clear();
+                    }
+                  });
+                  newSnackBar(context, title: 'Deleted "${city.name}".');
+                  unawaited(_silentSync());
+                } on AuthException catch (e) {
+                  if (mounted) newSnackBar(context, title: e.message);
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editPlaceDialog(City city) async {
+    final nameCtl = TextEditingController(text: city.name);
+    final locCtl = TextEditingController(text: city.location);
+    final descCtl = TextEditingController(text: city.description);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: Text('Edit ${city.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtl,
+              decoration: const InputDecoration(labelText: 'Name'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: locCtl,
+              decoration: const InputDecoration(
+                  labelText: 'Location (city, state, country)'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: descCtl,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: 'Description'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true) return;
+    try {
+      await showBusyWhile(
+        context,
+        MediaApi.editCity(
+          city.slug,
+          name: nameCtl.text.trim(),
+          location: locCtl.text.trim(),
+          description: descCtl.text.trim(),
+        ),
+        label: 'Saving…',
+      );
+      if (!mounted) return;
+      newSnackBar(context, title: 'Place updated.');
+      unawaited(_silentSync());
+    } on AuthException catch (e) {
+      if (mounted) newSnackBar(context, title: e.message);
+    }
+  }
+
   Widget _videoIconBox(bool processing) => Container(
         width: 48,
         height: 48,
@@ -1758,19 +1914,28 @@ class _DashboardPageState extends State<DashboardPage>
                         for (final city in cities)
                           Padding(
                             padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              label: Text('${city.name} (${city.videoCount})'),
-                              selected: selectedCity == city.slug,
-                              selectedColor: blue,
-                              labelStyle: TextStyle(
-                                color: selectedCity == city.slug
-                                    ? white
-                                    : ink(context),
+                            // Long-press YOUR OWN place to manage it —
+                            // others' places show no management options.
+                            child: GestureDetector(
+                              onLongPress: city.ownerId != null &&
+                                      city.ownerId == AuthApi.currentUser?.id
+                                  ? () => _managePlace(city)
+                                  : null,
+                              child: ChoiceChip(
+                                label:
+                                    Text('${city.name} (${city.videoCount})'),
+                                selected: selectedCity == city.slug,
+                                selectedColor: blue,
+                                labelStyle: TextStyle(
+                                  color: selectedCity == city.slug
+                                      ? white
+                                      : ink(context),
+                                ),
+                                onSelected: (_) {
+                                  setState(() => selectedCity = city.slug);
+                                  _reloadVideos();
+                                },
                               ),
-                              onSelected: (_) {
-                                setState(() => selectedCity = city.slug);
-                                _reloadVideos();
-                              },
                             ),
                           ),
                         if (isCreator) ...[

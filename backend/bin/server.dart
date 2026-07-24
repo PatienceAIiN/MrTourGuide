@@ -1256,10 +1256,11 @@ Future<Response> _adminAddCity(Request request) async {
   if (dup.isNotEmpty) return _json(409, {'error': 'Place already exists.'});
   await _db.execute(
     Sql.named('INSERT INTO cities (slug, name, location, description, '
-        'rating) VALUES (@s, @n, @l, @d, 4.5)'),
+        'rating, owner_id) VALUES (@s, @n, @l, @d, 4.5, @owner)'),
     parameters: {
       's': slug,
       'n': name,
+      'owner': null,
       'l': location,
       'd': description.isEmpty
           ? 'A new destination on Mr.TourGuide — experiences coming soon.'
@@ -1273,6 +1274,83 @@ Future<Response> _adminAddCity(Request request) async {
 }
 
 /// Admin: update a place; empty cover_url triggers a fresh auto-embed.
+/// Creator manages a place from the app: edit details / refresh the cover
+/// image / delete. Mirrors the admin tools but gated on the creator role.
+/// Strict ownership: the place's owner_id must match — creators manage only
+/// places THEY added (legacy places without an owner stay admin-only).
+Future<Response?> _requireCityOwner(String slug, int? userId) async {
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final rows = await _db.execute(
+    Sql.named('SELECT owner_id FROM cities WHERE slug = @s'),
+    parameters: {'s': slug},
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Place not found.'});
+  if (rows.first[0] != userId) {
+    return _json(403,
+        {'error': 'Only the creator who added this place can manage it.'});
+  }
+  return null;
+}
+
+Future<Response> _editCity(Request request, String slug) async {
+  final body = await _readJsonBody(request);
+  final gate = await _requireCityOwner(slug, body?['userId'] as int?);
+  if (gate != null) return gate;
+  final name = (body?['name'] as String?)?.trim();
+  final location = (body?['location'] as String?)?.trim();
+  final description = (body?['description'] as String?)?.trim();
+  final refreshCover = body?['refreshCover'] == true;
+  final rows = await _db.execute(
+    Sql.named('UPDATE cities SET '
+        'name = COALESCE(@n, name), '
+        'location = COALESCE(@l, location), '
+        'description = COALESCE(@d, description) '
+        '${refreshCover ? ', cover_url = NULL ' : ''}'
+        'WHERE slug = @s RETURNING name, location'),
+    parameters: {
+      'n': (name?.isEmpty ?? true) ? null : name,
+      'l': (location?.isEmpty ?? true) ? null : location,
+      'd': (description?.isEmpty ?? true) ? null : description,
+      's': slug,
+    },
+  );
+  if (rows.isEmpty) return _json(404, {'error': 'Place not found.'});
+  _logActivity('user:${body?['userId']}', 'city-updated', slug);
+  if (refreshCover) {
+    _autoCityCover(
+        slug, rows.first[0] as String, rows.first[1] as String? ?? '');
+  }
+  await _cacheBust('cities');
+  await _cacheBust('videos');
+  return _json(200, {'ok': true});
+}
+
+Future<Response> _removeCity(Request request, String slug) async {
+  final body = await _readJsonBody(request);
+  final gate = await _requireCityOwner(slug, body?['userId'] as int?);
+  if (gate != null) return gate;
+  final exists = await _db.execute(
+    Sql.named('SELECT name FROM cities WHERE slug = @s'),
+    parameters: {'s': slug},
+  );
+  if (exists.isEmpty) return _json(404, {'error': 'Place not found.'});
+  for (final sql in [
+    'DELETE FROM place_ratings WHERE city_slug = @s',
+    'DELETE FROM place_comments WHERE city_slug = @s',
+    'DELETE FROM videos WHERE city = @s',
+    'DELETE FROM cities WHERE slug = @s',
+  ]) {
+    try {
+      await _db.execute(Sql.named(sql), parameters: {'s': slug});
+    } catch (_) {}
+  }
+  _logActivity('user:${body?['userId']}', 'city-deleted',
+      '${exists.first[0]} ($slug)');
+  await _cacheBust('cities');
+  await _cacheBust('videos');
+  return _json(200, {'ok': true});
+}
+
 Future<Response> _adminUpdateCity(Request request, String slug) async {
   if (!_adminAuthed(request)) return _adminChallenge();
   final body = await _readJsonBody(request);
@@ -1887,11 +1965,12 @@ Future<Response> _cities(Request request) async {
           'COALESCE((SELECT avg(stars) FROM place_ratings pr '
           'WHERE pr.city_slug = c.slug), 0), '
           'c.model_url, '
-          '(SELECT count(*) FROM place_ratings pr WHERE pr.city_slug = c.slug) '
+          '(SELECT count(*) FROM place_ratings pr WHERE pr.city_slug = c.slug), '
+          'c.owner_id '
           'FROM cities c '
           '$join '
           'GROUP BY c.slug, c.name, c.cover_url, c.location, c.description, '
-          'c.model_url ORDER BY c.name'),
+          'c.model_url, c.owner_id ORDER BY c.name'),
       parameters: {if (owner != null) 'owner': owner});
   return _json(200, {
     'cities': [
@@ -1907,6 +1986,7 @@ Future<Response> _cities(Request request) async {
               double.parse(r[6].toString()).toStringAsFixed(2)),
           'modelUrl': r[7],
           'ratingCount': r[8],
+          'ownerId': r[9],
         }
     ]
   });
@@ -2316,11 +2396,12 @@ Future<Response> _addCity(Request request) async {
     return _json(409, {'error': 'That place is already on the platform.'});
   }
   await _db.execute(
-    Sql.named('INSERT INTO cities (slug, name, location, description, rating) '
-        'VALUES (@s, @n, @l, @d, 4.5)'),
+    Sql.named('INSERT INTO cities (slug, name, location, description, '
+        'rating, owner_id) VALUES (@s, @n, @l, @d, 4.5, @owner)'),
     parameters: {
       's': slug,
       'n': name,
+      'owner': userId,
       'l': location,
       'd': description.isEmpty
           ? 'A new destination on Mr.TourGuide — experiences coming soon.'
@@ -5621,6 +5702,9 @@ Future<void> main() async {
       'token TEXT PRIMARY KEY, '
       'user_id INTEGER, '
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  // Place ownership: only the creator who ADDED a place can manage it.
+  await _db.execute(
+      'ALTER TABLE cities ADD COLUMN IF NOT EXISTS owner_id INTEGER');
   // Location targeting: the device's city + "my location only" preference.
   await _db.execute(
       'ALTER TABLE push_tokens ADD COLUMN IF NOT EXISTS city TEXT');
@@ -5757,6 +5841,8 @@ Future<void> main() async {
     ..get('/cities', _cities)
     ..post('/cities', _addCity)
     ..post('/cities/<slug>/rate', _ratePlace)
+    ..post('/cities/<slug>/edit', _editCity)
+    ..post('/cities/<slug>/remove', _removeCity)
     ..get('/cities/<slug>/rating', _placeRating)
     ..get('/cities/<slug>/comments', _placeComments)
     ..post('/cities/<slug>/comments', _addPlaceComment)

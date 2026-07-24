@@ -223,13 +223,43 @@ class _SettingsPageState extends State<SettingsPage> {
               leading:
                   const Icon(Icons.view_in_ar_rounded, color: Colors.purple),
               title: const Text('MR / VR mode'),
-              subtitle: const Text('Step inside places in mixed / virtual '
-                  'reality'),
               trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const ArViewPage()),
-              ),
+              onTap: () async {
+                // Confirm before the immersive hand-off.
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18)),
+                    icon: const Icon(Icons.view_in_ar_rounded,
+                        color: Colors.purple, size: 34),
+                    title: const Text('Enter MR / VR?'),
+                    content: const Text(
+                      'Step inside places in mixed / virtual reality. '
+                      'Works best with a headset or Google Cardboard.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13.5, height: 1.5),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Deny'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                );
+                if (ok == true && context.mounted) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ArViewPage()),
+                  );
+                }
+              },
             ),
           ]),
           _section('Accessibility', [

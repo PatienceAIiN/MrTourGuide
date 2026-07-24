@@ -134,8 +134,9 @@ class _MainPageState extends State<MainPage> {
         extendBody: true, // content flows under the floating bar
         body: PageView(
           controller: _pageController,
-          // Swipe between tabs — iOS-like, sequential, haptic ticks.
-          physics: const PageScrollPhysics(),
+          // Tabs change ONLY from the navbar — on-screen swiping is off so
+          // horizontal gestures inside pages never yank you to another tab.
+          physics: const NeverScrollableScrollPhysics(),
           onPageChanged: (i) {
             if (i != currentIndex) {
               Haptics.tick();

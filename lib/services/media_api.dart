@@ -26,6 +26,9 @@ class City {
   /// How many users have rated this place (0 = show no stars yet).
   final int ratingCount;
 
+  /// The creator who added this place — only they can edit/delete it.
+  final int? ownerId;
+
   const City({
     required this.slug,
     required this.name,
@@ -36,6 +39,7 @@ class City {
     this.rating = 0,
     this.modelUrl,
     this.ratingCount = 0,
+    this.ownerId,
   });
 
   /// Absolute cover URL (creator uploads are backend-relative).
@@ -55,6 +59,7 @@ class City {
         description: json['description'] as String? ?? '',
         rating: (json['rating'] as num?)?.toDouble() ?? 0,
         modelUrl: json['modelUrl'] as String?,
+        ownerId: json['ownerId'] as int?,
       );
 }
 
@@ -836,6 +841,31 @@ class MediaApi {
   }
 
   /// Creator enrolls a new place on the platform.
+  /// Creator: edit a place's details; [refreshCover] pulls a fresh internet
+  /// cover image automatically.
+  static Future<void> editCity(
+    String slug, {
+    String? name,
+    String? location,
+    String? description,
+    bool refreshCover = false,
+  }) async {
+    await _postJson('/cities/$slug/edit', {
+      'userId': AuthApi.currentUser?.id,
+      if (name != null) 'name': name,
+      if (location != null) 'location': location,
+      if (description != null) 'description': description,
+      'refreshCover': refreshCover,
+    });
+  }
+
+  /// Creator: delete a place and everything under it.
+  static Future<void> removeCity(String slug) async {
+    await _postJson('/cities/$slug/remove', {
+      'userId': AuthApi.currentUser?.id,
+    });
+  }
+
   static Future<void> addCity({
     required String name,
     required String location,
