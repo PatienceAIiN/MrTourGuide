@@ -2472,6 +2472,26 @@ String _weatherDescription(int code) {
   return 'Unknown';
 }
 
+/// Name → coordinates via open-meteo's keyless geocoder (first match).
+Future<(double, double)?> _geocodePlace(String name) async {
+  try {
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(
+        'https://geocoding-api.open-meteo.com/v1/search'
+        '?name=${Uri.encodeQueryComponent(name)}&count=1'));
+    final res = await req.close();
+    final body = await res.transform(utf8.decoder).join();
+    client.close();
+    final decoded = jsonDecode(body) as Map<String, dynamic>;
+    final results = decoded['results'] as List?;
+    if (results == null || results.isEmpty) return null;
+    final r = results.first as Map<String, dynamic>;
+    return ((r['latitude'] as num).toDouble(), (r['longitude'] as num).toDouble());
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<Response> _weather(Request request, String slug) async {
   final cached = _weatherCache[slug];
   if (cached != null &&
@@ -2482,10 +2502,26 @@ Future<Response> _weather(Request request, String slug) async {
     Sql.named('SELECT name, lat, lon FROM cities WHERE slug = @slug'),
     parameters: {'slug': slug},
   );
-  if (rows.isEmpty || rows.first[1] == null) {
+  if (rows.isEmpty) {
     return _json(404, {'error': 'No weather available for $slug.'});
   }
-  final lat = rows.first[1], lon = rows.first[2];
+  Object? lat = rows.first[1], lon = rows.first[2];
+  if (lat == null || lon == null) {
+    // New places get coordinates automatically: geocode by name once, save,
+    // and every later request is a plain lookup — creator-added places show
+    // live temperature exactly like the seeded ones.
+    final geo = await _geocodePlace(rows.first[0] as String);
+    if (geo == null) {
+      return _json(404, {'error': 'No weather available for $slug.'});
+    }
+    lat = geo.$1;
+    lon = geo.$2;
+    await _db.execute(
+      Sql.named('UPDATE cities SET lat = @lat, lon = @lon '
+          'WHERE slug = @slug AND lat IS NULL'),
+      parameters: {'lat': lat, 'lon': lon, 'slug': slug},
+    );
+  }
   try {
     final client = HttpClient();
     final req = await client.getUrl(Uri.parse(

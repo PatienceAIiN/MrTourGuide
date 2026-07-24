@@ -50,6 +50,7 @@ class _HomePageState extends State<HomeScreen>
   int _phrase = 0;
   Timer? _phraseTimer;
   Timer? _syncTimer;
+  Timer? _rotateTimer;
 
   bool _loadedOnce = false;
 
@@ -75,6 +76,11 @@ class _HomePageState extends State<HomeScreen>
     // data we already have.
     _syncTimer = Timer.periodic(const Duration(seconds: 60), (_) {
       if (mounted) _load();
+    });
+    // Hourly full rotation: fresh recommendations, news and places keep the
+    // dashboard alive even if the user never pulls to refresh.
+    _rotateTimer = Timer.periodic(const Duration(hours: 1), (_) {
+      if (mounted) _refreshAll();
     });
   }
 
@@ -107,6 +113,7 @@ class _HomePageState extends State<HomeScreen>
     WidgetsBinding.instance.removeObserver(this);
     _phraseTimer?.cancel();
     _syncTimer?.cancel();
+    _rotateTimer?.cancel();
     super.dispose();
   }
 
@@ -179,6 +186,17 @@ class _HomePageState extends State<HomeScreen>
     if (mounted) setState(() => hasUnseen = false);
   }
 
+  /// Pull-to-refresh + the hourly rotation: EVERYTHING on the dashboard
+  /// renews — places, trending, recommended videos, news and the bell.
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _load(),
+      _loadNews(),
+      _loadPicks(),
+      _refreshUnseen(),
+    ]);
+  }
+
   Future<void> _load({bool initial = false}) async {
     try {
       final results = await Future.wait([
@@ -214,7 +232,7 @@ class _HomePageState extends State<HomeScreen>
       body: SafeArea(
         bottom: false,
         child: RefreshIndicator(
-          onRefresh: _load,
+          onRefresh: _refreshAll,
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             child: Column(

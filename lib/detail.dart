@@ -5,6 +5,7 @@ import 'constant.dart';
 import 'experience_player.dart';
 import 'models/place.dart';
 import 'news_webview.dart';
+import 'widgets/youtube_player_page.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
 import 'services/media_api.dart';
@@ -477,8 +478,18 @@ class _DetailScreenState extends State<DetailScreen> {
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => NewsWebViewPage(
-                                  title: ytPicks[i].title, url: ytPicks[i].url),
+                              // YouTube picks play fullscreen landscape —
+                              // same as the home-screen recommendations.
+                              builder: (context) =>
+                                  YoutubePlayerPage.videoIdOf(
+                                              ytPicks[i].url) !=
+                                          null
+                                      ? YoutubePlayerPage(
+                                          title: ytPicks[i].title,
+                                          url: ytPicks[i].url)
+                                      : NewsWebViewPage(
+                                          title: ytPicks[i].title,
+                                          url: ytPicks[i].url),
                             ),
                           ),
                           child: SizedBox(

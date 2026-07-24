@@ -178,11 +178,40 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.my_location, color: Colors.teal),
               title: const Text('My location only'),
-              subtitle: const Text('New-experience alerts just for your '
-                  'city; off = all places notify'),
               value: s.locationNotifs,
               activeThumbColor: blue,
-              onChanged: (v) {
+              onChanged: (v) async {
+                if (v) {
+                  // Explain the trade-off before narrowing their alerts.
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18)),
+                      icon: const Icon(Icons.my_location,
+                          color: Colors.teal, size: 34),
+                      title: const Text('Only your location?'),
+                      content: const Text(
+                        'You will get new-experience alerts only for your '
+                        'current city. Alerts from every other place stay '
+                        'silent.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 13.5, height: 1.5),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Deny'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('OK'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok != true) return;
+                }
                 _update(() => s.locationNotifs = v);
                 // Tell the server so targeting changes immediately.
                 PushService.refreshRegistration();
