@@ -276,11 +276,14 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     }
     String? out;
     try {
+      // Length is cut ONLY when the clip exceeds a minute; an oversized but
+      // short clip keeps its FULL length and only gets compressed.
+      final needsTrim = dur > const Duration(seconds: 62);
       var info = await VideoCompress.compressVideo(
         path,
         quality: VideoQuality.MediumQuality,
-        startTime: startSec,
-        duration: clipSecs,
+        startTime: needsTrim ? startSec : null,
+        duration: needsTrim ? clipSecs : null,
         includeAudio: true,
         deleteOrigin: false,
       );

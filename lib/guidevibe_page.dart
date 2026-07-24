@@ -982,17 +982,11 @@ class _CreatorStudioState extends State<_CreatorStudio>
                     ])
                   : _mine.isEmpty
                       ? _empty()
-                      : GridView.builder(
+                      : ListView.builder(
                           padding: const EdgeInsets.fromLTRB(14, 14, 14, 110),
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            childAspectRatio: 9 / 16,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                          ),
                           itemCount: _mine.length,
-                          itemBuilder: (context, i) => _tile(_mine[i], i),
+                          itemBuilder: (context, i) =>
+                              _shortCard(_mine[i], i),
                         ),
             ),
     );
@@ -1200,98 +1194,101 @@ class _CreatorStudioState extends State<_CreatorStudio>
     }
   }
 
-  Widget _tile(Short s, int i) => GestureDetector(
-        onTap: () => _preview(i),
-        onLongPress: () => _manage(s),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Stack(
-            fit: StackFit.expand,
+  /// Catalog-style card — same look & feel as My uploads / Catalog rows.
+  Widget _shortCard(Short s, int i) {
+    return Card(
+      color: cardBg(context),
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: s.isProcessing ? null : () => _preview(i),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
             children: [
-              if (s.absoluteThumbUrl != null)
-                Image.network(s.absoluteThumbUrl!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (c, e, st) =>
-                        Container(color: Colors.black26))
-              else
-                Container(color: Colors.black26),
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, Color(0x99000000)],
-                    stops: [0.5, 1],
-                  ),
+              // Vertical thumb, like the catalog's leading media box.
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: 54,
+                  height: 84,
+                  child: s.absoluteThumbUrl != null
+                      ? Image.network(s.absoluteThumbUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (c, e, st) => _thumbBox(s))
+                      : _thumbBox(s),
                 ),
               ),
-              if (s.isImmersive)
-                Positioned(
-                  top: 6,
-                  left: 6,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(s.kind.toUpperCase(),
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 9,
-                            fontWeight: FontWeight.w800)),
-                  ),
-                ),
-              if (s.isProcessing)
-                const Center(
-                  child: Chip(
-                    label: Text('Processing',
-                        style: TextStyle(fontSize: 10, color: Colors.white)),
-                    backgroundColor: Colors.black54,
-                    padding: EdgeInsets.zero,
-                  ),
-                ),
-              Positioned(
-                left: 6,
-                bottom: 6,
-                child: Row(
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.play_arrow, color: Colors.white, size: 13),
-                    const SizedBox(width: 2),
-                    Text('${s.views}',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            shadows: [
-                              Shadow(color: Colors.black54, blurRadius: 2)
-                            ])),
+                    Text(
+                      s.caption.isEmpty ? 'Untitled short' : s.caption,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13.5,
+                          color: ink(context)),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      [
+                        if ((s.city ?? '').isNotEmpty) s.city!,
+                        '${s.views} views',
+                        '${s.likes} likes',
+                        if (s.isImmersive) s.kind.toUpperCase(),
+                      ].join(' · '),
+                      style: const TextStyle(
+                          fontSize: 11.5, color: Colors.grey),
+                    ),
+                    if (s.isProcessing) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 6),
+                          Text('Processing',
+                              style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: brandInk(context))),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
-              // Manage (analytics / edit / delete) — always tappable.
-              Positioned(
-                top: 2,
-                right: 2,
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: () => _manage(s),
-                    child: const Padding(
-                      padding: EdgeInsets.all(4),
-                      child: Icon(Icons.more_vert,
-                          color: Colors.white, size: 18, shadows: [
-                        Shadow(color: Colors.black54, blurRadius: 3)
-                      ]),
-                    ),
-                  ),
-                ),
+              IconButton(
+                tooltip: 'Manage',
+                icon: Icon(Icons.more_vert, color: inkSoft(context)),
+                onPressed: () => _manage(s),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _thumbBox(Short s) => Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0F6E84), Color(0xFF3CEBFF)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: const Icon(Icons.play_circle_outline,
+            color: Colors.white, size: 26),
       );
 }
 
