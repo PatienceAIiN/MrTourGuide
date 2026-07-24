@@ -49,6 +49,10 @@ late MediaStorage _storage;
 abstract class MediaStorage {
   Future<int> save(String city, String filename, Stream<List<int>> bytes);
   Future<File?> open(String city, String filename);
+
+  /// Remove the stored object AND any local cache copy — deleting content
+  /// in the app must free the storage too, not just the DB row.
+  Future<void> delete(String city, String filename);
 }
 
 /// Cloudflare R2 (S3-compatible) storage with SigV4 signing.
@@ -110,6 +114,16 @@ class R2Storage implements MediaStorage {
     } catch (_) {
       return null;
     }
+  }
+
+  @override
+  Future<void> delete(String city, String filename) async {
+    try {
+      await _request('DELETE', '$city/$filename');
+    } catch (e) {
+      print('R2 delete failed for $city/$filename: $e');
+    }
+    await cache.delete(city, filename);
   }
 
   // ------------------------- SigV4 (region "auto") ------------------------
@@ -227,6 +241,14 @@ class LocalFolderStorage implements MediaStorage {
   Future<File?> open(String city, String filename) async {
     final file = _fileFor(city, filename);
     return await file.exists() ? file : null;
+  }
+
+  @override
+  Future<void> delete(String city, String filename) async {
+    try {
+      final file = _fileFor(city, filename);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 }
 
@@ -669,7 +691,8 @@ Future<void> _muxVideoAudio(
         '-map', '0:v', '-map', '[a]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest',
         out.path,
-      ]);
+      ])
+          .timeout(const Duration(minutes: 5));
     }
     if (result.exitCode == 0 && await out.length() > 0) {
       // Overwrite the stored video under the SAME name — the poster/haptics
@@ -715,7 +738,8 @@ void _scheduleMlProcessing(int videoId, {Future<void> Function()? preprocess}) {
             '-ss', '00:00:01', '-frames:v', '1',
             '-vf', 'scale=640:-2',
             tmpThumb.path,
-          ]);
+          ])
+          .timeout(const Duration(minutes: 5));
           if (result.exitCode == 0) {
             await _storage.save(
                 city, thumbName, Stream.value(await tmpThumb.readAsBytes()));
@@ -860,7 +884,8 @@ Future<(List<double> fine, List<Map<String, num>> events)>
   }
 
   try {
-    final fullDb = await rms(const []);
+    final fullDb = await rms(const [])
+          .timeout(const Duration(minutes: 5));
     if (fullDb.isEmpty) return (const <double>[], const <Map<String, num>>[]);
     final raw = normalize(fullDb);
 
@@ -1325,6 +1350,28 @@ Future<Response> _editCity(Request request, String slug) async {
   return _json(200, {'ok': true});
 }
 
+/// Everything stored under a place — its videos, thumbnails and covers —
+/// removed from R2 + cache when the place is deleted.
+Future<void> _deleteCityFiles(String slug) async {
+  try {
+    final vids = await _db.execute(
+      Sql.named('SELECT filename, thumb_url FROM videos WHERE city = @s'),
+      parameters: {'s': slug},
+    );
+    for (final r in vids) {
+      await _storage.delete(slug, r[0] as String);
+      await _deleteStoredPath(r[1] as String?);
+    }
+    final cover = await _db.execute(
+      Sql.named('SELECT cover_url FROM cities WHERE slug = @s'),
+      parameters: {'s': slug},
+    );
+    if (cover.isNotEmpty) await _deleteStoredPath(cover.first[0] as String?);
+  } catch (e) {
+    print('city file cleanup failed for $slug: $e');
+  }
+}
+
 Future<Response> _removeCity(Request request, String slug) async {
   final body = await _readJsonBody(request);
   final gate = await _requireCityOwner(slug, body?['userId'] as int?);
@@ -1334,6 +1381,7 @@ Future<Response> _removeCity(Request request, String slug) async {
     parameters: {'s': slug},
   );
   if (exists.isEmpty) return _json(404, {'error': 'Place not found.'});
+  await _deleteCityFiles(slug);
   for (final sql in [
     'DELETE FROM place_ratings WHERE city_slug = @s',
     'DELETE FROM place_comments WHERE city_slug = @s',
@@ -1391,6 +1439,7 @@ Future<Response> _adminDeleteCity(Request request, String slug) async {
     parameters: {'s': slug},
   );
   if (exists.isEmpty) return _json(404, {'error': 'Place not found.'});
+  await _deleteCityFiles(slug);
   for (final sql in [
     'DELETE FROM place_ratings WHERE city_slug = @s',
     'DELETE FROM videos WHERE city = @s',
@@ -2916,7 +2965,8 @@ Future<Response> _uploadCommunityImage(Request request) async {
     '-vf', "scale='trunc(min(1280,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
-  ]);
+  ])
+          .timeout(const Duration(minutes: 5));
   final finalName = 'img_$stamp.jpg';
   if (result.exitCode == 0) {
     final compressed = await tmpOut.readAsBytes();
@@ -3236,7 +3286,8 @@ Future<Response> _uploadShort(Request request) async {
       '-show_entries', 'format=duration',
       '-of', 'default=noprint_wrappers=1:nokey=1',
       tmpIn.path,
-    ]);
+    ])
+          .timeout(const Duration(minutes: 5));
     final dur = double.tryParse('${probe.stdout}'.trim()) ?? 0;
     if (dur > _maxShortSeconds + 5) {
       await tmpIn.delete();
@@ -3324,7 +3375,8 @@ Future<Response> _uploadShort(Request request) async {
         // Seek into the track to the creator-chosen start, then let
         // -shortest trim it to the clip length. The music REPLACES the
         // original audio, so the audio→haptics feel follows the song.
-        ffArgs.addAll(['-ss', musicStart.toStringAsFixed(1), '-i', tmpMusic.path]);
+        ffArgs.addAll(
+            ['-ss', musicStart.toStringAsFixed(1), '-i', tmpMusic.path]);
       }
       ffArgs.addAll(['-vf', "scale='trunc(min(720,iw)/2)*2':-2"]);
       if (haveMusic) {
@@ -3605,7 +3657,8 @@ Future<Response> _deleteShort(Request request, String id) async {
   if (shortId == null) return _json(400, {'error': 'Bad id.'});
   if (userId == null) return _json(401, {'error': 'Sign in first.'});
   final rows = await _db.execute(
-    Sql.named('DELETE FROM shorts WHERE id = @s AND owner_id = @u RETURNING 1'),
+    Sql.named('DELETE FROM shorts WHERE id = @s AND owner_id = @u '
+        'RETURNING filename, thumb_url'),
     parameters: {'s': shortId, 'u': userId},
   );
   if (rows.isEmpty) {
@@ -3616,6 +3669,9 @@ Future<Response> _deleteShort(Request request, String id) async {
   await _db.execute(Sql.named('DELETE FROM short_comments WHERE short_id = @s'),
       parameters: {'s': shortId});
   _logActivity('user:$userId', 'guidevibe-delete', 'short #$shortId');
+  // Free the storage too (video + poster, R2 and cache).
+  await _storage.delete('guidevibe', rows.first[0] as String);
+  await _deleteStoredPath(rows.first[1] as String?);
   await _cacheBust('guidevibe');
   return _json(200, {'ok': true});
 }
@@ -4057,11 +4113,26 @@ Future<Response> _deletePost(Request request, String id) async {
   final rows = await _db.execute(
     Sql.named('DELETE FROM posts WHERE id = @p AND '
         '(CASE WHEN reshared_by_id IS NOT NULL '
-        'THEN reshared_by_id = @u ELSE author_id = @u END) RETURNING 1'),
+        'THEN reshared_by_id = @u ELSE author_id = @u END) '
+        'RETURNING image_url, media'),
     parameters: {'p': postId, 'u': userId},
   );
   if (rows.isEmpty) {
     return _json(403, {'error': 'You can only delete your own posts.'});
+  }
+  // Free the attached media (images/videos/thumbs) from R2 + cache too.
+  await _deleteStoredPath(rows.first[0] as String?);
+  final media = rows.first[1];
+  if (media != null) {
+    try {
+      final list = media is String ? jsonDecode(media) : media;
+      for (final m in (list as List)) {
+        if (m is Map) {
+          await _deleteStoredPath(m['url'] as String?);
+          await _deleteStoredPath(m['thumb'] as String?);
+        }
+      }
+    } catch (_) {}
   }
   return _json(200, {'ok': true});
 }
@@ -4959,7 +5030,8 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
     '-vf', "scale='trunc(min(640,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
-  ]);
+  ])
+          .timeout(const Duration(minutes: 5));
   await tmpIn.delete();
   if (result.exitCode != 0 || !await tmpOut.exists()) {
     return _json(400, {'error': 'That image could not be processed.'});
@@ -5245,18 +5317,34 @@ Future<Response> _landing(Request request) async {
   return Response.ok(html, headers: {'content-type': 'text/html; charset=utf-8'});
 }
 
-/// Owner deletes an upload (row cascade removes reactions is N/A here;
-/// stored files stay in R2/cache as orphans — cheap and recoverable).
+/// Deletes a stored object given its served path ('/files/<dir>/<name>').
+Future<void> _deleteStoredPath(String? urlPath) async {
+  if (urlPath == null || !urlPath.startsWith('/files/')) return;
+  final parts = urlPath.substring('/files/'.length).split('/');
+  if (parts.length != 2) return;
+  await _storage.delete(parts[0], parts[1]);
+}
+
+/// Owner deletes an upload — the DB row AND the stored video + thumbnail
+/// are removed (R2 + local cache), so deleted content frees storage.
 Future<Response> _deleteVideo(Request request, String id) async {
   final videoId = int.tryParse(id);
   if (videoId == null) return _json(400, {'error': 'Bad video id.'});
   final body = await _readJsonBody(request);
   final gate = await _requireOwner(videoId, body?['userId'] as int?);
   if (gate != null) return gate;
+  final files = await _db.execute(
+    Sql.named('SELECT city, filename, thumb_url FROM videos WHERE id = @id'),
+    parameters: {'id': videoId},
+  );
   await _db.execute(
     Sql.named('DELETE FROM videos WHERE id = @id'),
     parameters: {'id': videoId},
   );
+  if (files.isNotEmpty) {
+    await _storage.delete(files.first[0] as String, files.first[1] as String);
+    await _deleteStoredPath(files.first[2] as String?);
+  }
   // Drop cached catalog responses so the deletion is visible IMMEDIATELY.
   await _cacheBust('videos');
   await _cacheBust('cities');
@@ -5317,7 +5405,8 @@ Future<Response> _uploadAvatar(Request request) async {
     '-vf', "scale='trunc(min(512,iw)/2)*2':-2",
     '-q:v', '6',
     tmpOut.path,
-  ]);
+  ])
+          .timeout(const Duration(minutes: 5));
   final name = 'u${userId}_$stamp.jpg';
   final data =
       result.exitCode == 0 ? await tmpOut.readAsBytes() : bytes;
@@ -5564,7 +5653,8 @@ Future<Response> _uploadUserCover(Request request) async {
     '-vf', "scale='trunc(min(1280,iw)/2)*2':-2",
     '-q:v', '5',
     tmpOut.path,
-  ]);
+  ])
+          .timeout(const Duration(minutes: 5));
   await tmpIn.delete();
   if (result.exitCode != 0 || !await tmpOut.exists()) {
     return _json(400, {'error': 'That image could not be processed.'});
@@ -5982,6 +6072,30 @@ Future<void> main() async {
       }
     }
   });
+
+  // Watchdog: anything stuck "processing" for 15+ minutes (crashed ffmpeg,
+  // killed instance mid-transcode) flips to ready so it never hangs forever —
+  // the original file still plays even without the enhancement pass.
+  Future<void> sweepStuck() async {
+    try {
+      final v = await _db.execute(
+          "UPDATE videos SET status = 'ready' WHERE status = 'processing' "
+          "AND uploaded_at < now() - interval '15 minutes' RETURNING id");
+      final sh = await _db.execute(
+          "UPDATE shorts SET status = 'ready' WHERE status = 'processing' "
+          "AND created_at < now() - interval '15 minutes' RETURNING id");
+      if (v.isNotEmpty || sh.isNotEmpty) {
+        print('watchdog: released ${v.length} videos, ${sh.length} shorts');
+        await _cacheBust('videos');
+        await _cacheBust('guidevibe');
+      }
+    } catch (e) {
+      print('watchdog sweep failed: $e');
+    }
+  }
+
+  sweepStuck();
+  Timer.periodic(const Duration(hours: 1), (_) => sweepStuck());
 
   // App-update push: each shipped build redeploys this server, so on boot we
   // announce the manifest's build to every device ONCE (activity_logs
