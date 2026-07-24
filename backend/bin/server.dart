@@ -2434,7 +2434,7 @@ Future<void> _autoCityCover(String slug, String name, String location) async {
     final body = await _httpGetText(
             'https://en.wikipedia.org/w/api.php?action=query&format=json'
             '&generator=search&gsrsearch=$q&gsrlimit=5'
-            '&prop=pageimages&piprop=thumbnail&pithumbsize=1920')
+            '&prop=pageimages&piprop=thumbnail&pithumbsize=1280')
         .timeout(const Duration(seconds: 15));
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     final pages = (decoded['query']?['pages'] as Map<String, dynamic>?) ?? {};
@@ -2484,7 +2484,7 @@ Future<void> _autoCityCover(String slug, String name, String location) async {
     final result = await Process.run('ffmpeg', [
       '-y', '-loglevel', 'error',
       '-i', tmpIn.path,
-      '-vf', "scale='trunc(min(1920,iw)/2)*2':-2",
+      '-vf', "scale='trunc(min(1280,iw)/2)*2':-2",
       '-q:v', '4',
       tmpOut.path,
     ]).timeout(const Duration(minutes: 2));
@@ -2499,6 +2499,9 @@ Future<void> _autoCityCover(String slug, String name, String location) async {
       parameters: {'c': '/files/$slug/$coverName', 's': slug},
     );
     _logActivity('system', 'auto-cover', '$name ($slug) ← Wikipedia HD');
+    // Make the fresh cover visible IMMEDIATELY — without this the catalog
+    // cache kept serving the cover-less row for up to 5 minutes.
+    await _cacheBust('cities');
   } catch (_) {
   } finally {
     client?.close(force: true);

@@ -51,6 +51,8 @@ class _HomePageState extends State<HomeScreen>
   Timer? _phraseTimer;
   Timer? _syncTimer;
   Timer? _rotateTimer;
+  int _coverPolls = 0;
+  bool _coverPollScheduled = false;
 
   bool _loadedOnce = false;
 
@@ -211,6 +213,19 @@ class _HomePageState extends State<HomeScreen>
         _loadedOnce = true;
         error = null;
       });
+      // A just-added place gets its cover a few seconds later — poll fast
+      // (10s, max ~2 min) until every card has a real photo.
+      final missing = places.any((p) => !p.isNetworkImage);
+      if (!missing) {
+        _coverPolls = 0;
+      } else if (_coverPolls < 12 && !_coverPollScheduled) {
+        _coverPolls++;
+        _coverPollScheduled = true;
+        Timer(const Duration(seconds: 10), () {
+          _coverPollScheduled = false;
+          if (mounted) _load();
+        });
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -549,7 +564,7 @@ class _HomePageState extends State<HomeScreen>
         child: Stack(
           fit: StackFit.expand,
           children: [
-            _cover(place.image),
+            place.isNetworkImage ? _cover(place.image) : _fetchingCover(),
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -746,6 +761,39 @@ class _HomePageState extends State<HomeScreen>
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Cover not ready yet (a new place fetches its photo server-side within
+  /// seconds) — show a live loading treatment on THAT card only.
+  Widget _fetchingCover() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+        ),
+      ),
+      child: const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2.2, color: Colors.white70),
+            ),
+            SizedBox(height: 10),
+            Text('Fetching photo…',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600)),
           ],
         ),
       ),
