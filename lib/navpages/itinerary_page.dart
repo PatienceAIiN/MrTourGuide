@@ -11,6 +11,7 @@ import '../services/media_api.dart';
 import '../services/tab_events.dart';
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
+import '../widgets/youtube_player_page.dart';
 import 'search_page.dart' show feelPlace;
 
 /// AI Itinerary planner: ask for any trip ("3 days in Rajasthan"), get a
@@ -354,11 +355,18 @@ class _ItineraryPageState extends State<ItineraryPage>
     for (final raw in lines) {
       final line = raw.trim();
       if (line.isEmpty) continue;
-      final isHeader = RegExp(
-              r'^(Day \d+\s*[:\-]|Tips\s*:|Getting there\s*:|Stay\s*:)',
-              caseSensitive: false)
+      // Two header shapes: the classic day/logistics labels AND any short
+      // "Label:" line — follow-up answers use free-form headers (Food:,
+      // Budget:, Morning:…) that the old fixed list missed, which dumped
+      // the whole reply into one raw block.
+      final isDayHeader = RegExp(r'^(Day \d+\s*[:\-])', caseSensitive: false)
           .hasMatch(line);
-      if (isHeader) {
+      final m = RegExp(r"^([A-Z][A-Za-z0-9 /&'\-]{2,28}):\s*(.*)$")
+          .firstMatch(line);
+      final isLabelHeader = !line.startsWith('•') &&
+          m != null &&
+          (m.group(2)!.isEmpty || m.group(1)!.length <= 22);
+      if (isDayHeader || isLabelHeader) {
         push();
         final split = line.indexOf(':');
         title = split > 0 ? line.substring(0, split).trim() : line;
@@ -369,9 +377,12 @@ class _ItineraryPageState extends State<ItineraryPage>
       }
     }
     push();
-    // A short plan with no headers still deserves a proper day card.
+    // Headerless answers still deserve proper cards: the initial plan gets a
+    // Day 1 card; a follow-up reply gets an "Answer" card.
     if (sections.length == 1 && sections.first.key.isEmpty) {
-      return [MapEntry('Day 1', sections.first.value)];
+      return [
+        MapEntry(chat.length > 2 ? 'Answer' : 'Day 1', sections.first.value)
+      ];
     }
     return sections;
   }
@@ -431,6 +442,8 @@ class _ItineraryPageState extends State<ItineraryPage>
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
                       border: InputBorder.none,
+                      // The wrapping container is the visual — don't double-fill.
+                      filled: false,
                       hintText: 'Plan my trip… e.g. "3 days in Rajasthan"',
                       hintStyle:
                           const TextStyle(color: Colors.grey, fontSize: 14),
@@ -572,7 +585,13 @@ class _ItineraryPageState extends State<ItineraryPage>
                         style: TextStyle(fontSize: 11, color: Colors.grey)),
                     trailing: const Icon(Icons.open_in_new,
                         color: Colors.redAccent, size: 18),
-                    onTap: () => launchUrl(Uri.parse(y.url)),
+                    onTap: () => YoutubePlayerPage.videoIdOf(y.url) != null
+                        ? Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) => YoutubePlayerPage(
+                                    title: y.title, url: y.url)))
+                        : launchUrl(Uri.parse(y.url)),
                   ),
                 ),
             ],
@@ -758,6 +777,8 @@ class _ItineraryPageState extends State<ItineraryPage>
                   decoration: InputDecoration(
                     isDense: true,
                     border: InputBorder.none,
+                    // The wrapping container is the visual — don't double-fill.
+                    filled: false,
                     hintText: 'Add, reduce or ask anything about this plan…',
                     hintStyle:
                         const TextStyle(color: Colors.grey, fontSize: 13),

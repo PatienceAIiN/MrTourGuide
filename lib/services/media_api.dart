@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_base.dart';
 import 'auth_api.dart' show AuthApi, AuthException;
@@ -418,40 +420,88 @@ class MediaApi {
     );
   }
 
+  // ---- stale-while-revalidate disk cache ---------------------------------
+  // Catalog responses are saved so screens paint INSTANTLY from disk on the
+  // next open while the network refresh happens behind them.
+  static Future<void> _swrSave(String key, Map<String, dynamic> d) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('swr.$key', jsonEncode(d));
+    } catch (_) {}
+  }
+
+  static Future<Map<String, dynamic>?> _swrLoad(String key) async {
+    try {
+      final raw =
+          (await SharedPreferences.getInstance()).getString('swr.$key');
+      return raw == null ? null : jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static List<City> _parseCities(Map<String, dynamic> d) => [
+        for (final c in d['cities'] as List)
+          City.fromJson(c as Map<String, dynamic>)
+      ];
+
+  /// Last successful public catalog, straight from disk — instant paint.
+  static Future<List<City>?> cachedCities() async {
+    final d = await _swrLoad('cities');
+    return d == null ? null : _parseCities(d);
+  }
+
   static Future<List<City>> fetchCities({bool mine = false}) async {
     final me = AuthApi.currentUser?.id;
+    final personalized = mine && me != null;
     final decoded =
-        await _get('/cities${mine && me != null ? '?ownerId=$me' : ''}');
-    return [
-      for (final c in decoded['cities'] as List)
-        City.fromJson(c as Map<String, dynamic>)
-    ];
+        await _get('/cities${personalized ? '?ownerId=$me' : ''}');
+    if (!personalized) unawaited(_swrSave('cities', decoded));
+    return _parseCities(decoded);
   }
 
   /// Latest ready videos across all cities (home trending rail).
+  static List<VideoItem> _parseTrending(Map<String, dynamic> d) => [
+        for (final v in d['videos'] as List)
+          VideoItem.fromJson(v as Map<String, dynamic>)
+      ];
+
+  static Future<List<VideoItem>?> cachedTrending() async {
+    final d = await _swrLoad('trending');
+    return d == null ? null : _parseTrending(d);
+  }
+
   static Future<List<VideoItem>> fetchTrending({int limit = 6}) async {
     final decoded = await _get('/videos/trending?limit=$limit');
-    return [
-      for (final v in decoded['videos'] as List)
-        VideoItem.fromJson(v as Map<String, dynamic>)
-    ];
+    unawaited(_swrSave('trending', decoded));
+    return _parseTrending(decoded);
   }
 
   /// Photos (Wikimedia) + YouTube suggestions for a search query.
-  static Future<MediaSuggestions> searchMedia(String query) async {
+  static MediaSuggestions _parseMedia(Map<String, dynamic> decoded) =>
+      MediaSuggestions(
+        images: [for (final i in decoded['images'] as List) i as String],
+        youtube: [
+          for (final y in decoded['youtube'] as List)
+            YtSuggestion(
+              title: y['title'] as String,
+              thumbnail: y['thumbnail'] as String,
+              url: y['url'] as String,
+            )
+        ],
+      );
+
+  static Future<MediaSuggestions?> cachedMedia(String swrKey) async {
+    final d = await _swrLoad('media.$swrKey');
+    return d == null ? null : _parseMedia(d);
+  }
+
+  static Future<MediaSuggestions> searchMedia(String query,
+      {String? swrKey}) async {
     final decoded =
         await _get('/search/media?q=${Uri.encodeQueryComponent(query)}');
-    return MediaSuggestions(
-      images: [for (final i in decoded['images'] as List) i as String],
-      youtube: [
-        for (final y in decoded['youtube'] as List)
-          YtSuggestion(
-            title: y['title'] as String,
-            thumbnail: y['thumbnail'] as String,
-            url: y['url'] as String,
-          )
-      ],
-    );
+    if (swrKey != null) unawaited(_swrSave('media.$swrKey', decoded));
+    return _parseMedia(decoded);
   }
 
   /// AI itinerary plan (backend → Groq with web search). Pass [history]
@@ -607,18 +657,59 @@ class MediaApi {
     );
   }
 
+  /// Uploads a soundtrack / voice-over (≤10 MB) ahead of a video upload.
+  /// Returns the audioId to pass to [uploadVideo].
+  static Future<String> uploadVideoAudio({
+    required String filename,
+    required Uint8List bytes,
+  }) async {
+    if (bytes.length > 10 * 1024 * 1024) {
+      throw const AuthException('Audio is limited to 10 MB.');
+    }
+    final uri = Uri.parse('$apiBase/videos/upload-audio').replace(
+        queryParameters: {
+          'userId': '${AuthApi.currentUser?.id ?? ''}',
+          'filename': filename,
+        });
+    late http.Response response;
+    try {
+      response = await http
+          .post(uri,
+              headers: {'Content-Type': 'application/octet-stream'},
+              body: bytes)
+          .timeout(const Duration(minutes: 3));
+    } catch (_) {
+      throw const AuthException(
+          'Could not sync — check your internet and try again.');
+    }
+    final decoded = _decode(response.body);
+    if (response.statusCode == 201) return decoded['audioId'] as String;
+    throw AuthException(decoded['error'] as String? ?? 'Audio upload failed.');
+  }
+
   static Future<VideoItem> uploadVideo({
     required String city,
     required String title,
     required String filename,
     Uint8List? bytes,
     String? filePath,
+    // Optional soundtrack (from [uploadVideoAudio]) muxed server-side.
+    String? audioId,
+    double audioOffset = 0,
+    String audioMode = 'mix',
+    double origVol = 1,
+    double audioVol = 1,
   }) async {
     final uri = Uri.parse('$apiBase/upload').replace(queryParameters: {
       'city': city,
       'title': title,
       'filename': filename,
       'userId': '${AuthApi.currentUser?.id ?? ''}',
+      if (audioId != null) 'audioId': audioId,
+      if (audioId != null) 'audioOffset': '$audioOffset',
+      if (audioId != null) 'audioMode': audioMode,
+      if (audioId != null) 'origVol': '$origVol',
+      if (audioId != null) 'audioVol': '$audioVol',
     });
     late http.Response response;
     try {
@@ -718,10 +809,18 @@ class MediaApi {
       if (city.isNotEmpty) 'city=${Uri.encodeComponent(city)}',
     ].join('&');
     final decoded = await _get('/news${q.isEmpty ? '' : '?$q'}');
-    return [
-      for (final n in decoded['items'] as List)
-        NewsItem.fromJson(n as Map<String, dynamic>)
-    ];
+    unawaited(_swrSave('news', decoded));
+    return _parseNews(decoded);
+  }
+
+  static List<NewsItem> _parseNews(Map<String, dynamic> d) => [
+        for (final n in d['items'] as List)
+          NewsItem.fromJson(n as Map<String, dynamic>)
+      ];
+
+  static Future<List<NewsItem>?> cachedNews() async {
+    final d = await _swrLoad('news');
+    return d == null ? null : _parseNews(d);
   }
 
   /// Reverse geocode device coordinates → country/state/city.

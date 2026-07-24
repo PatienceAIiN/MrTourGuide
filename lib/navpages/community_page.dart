@@ -590,6 +590,8 @@ class _CommunityPageState extends State<CommunityPage>
                           maxLength: 1000,
                           decoration: InputDecoration(
                             border: InputBorder.none,
+                            // The wrapping container is the visual — don't double-fill.
+                            filled: false,
                             counterText: '',
                             hintText: community == 'creators'
                                 ? 'Share tips with fellow creators...'

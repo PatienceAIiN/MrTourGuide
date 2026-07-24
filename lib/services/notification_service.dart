@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'auth_api.dart';
@@ -126,12 +128,34 @@ class NotificationService {
       final decoded = await MediaApi.getJson(
           '/notifications?since=${Uri.encodeQueryComponent(since.toIso8601String())}'
           '${me != null ? '&userId=$me' : ''}');
+      // Remember the raw list so the next bell open paints instantly.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+            'swr.notifications', jsonEncode(decoded['items']));
+      } catch (_) {}
       return [
         for (final n in decoded['items'] as List)
           AppNotification.fromJson(n as Map<String, dynamic>)
       ];
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// Last fetched inbox, straight from disk — used to fill the sheet
+  /// immediately while the fresh list loads behind it.
+  static Future<List<AppNotification>?> recentCached() async {
+    try {
+      final raw = (await SharedPreferences.getInstance())
+          .getString('swr.notifications');
+      if (raw == null) return null;
+      return [
+        for (final n in jsonDecode(raw) as List)
+          AppNotification.fromJson(n as Map<String, dynamic>)
+      ];
+    } catch (_) {
+      return null;
     }
   }
 

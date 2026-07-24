@@ -493,102 +493,77 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                         backgroundColor: Colors.white12,
                       ),
                     ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 6),
+                  // Icon-only controls, evenly arranged — words removed and
+                  // the old "Hide" button dropped (tapping the video hides
+                  // the overlay). Left→right: feel, mute, feel-style, then
+                  // the intensity slider fills the rest.
                   Row(
                     children: [
-                      _toggle(
+                      _iconToggle(
                         icon: Icons.vibration,
-                        label: 'Feel',
+                        tooltip: haptics ? 'Feel off' : 'Feel on',
                         active: haptics,
-                        onChanged: (v) {
-                          setState(() => haptics = v);
+                        onTap: () {
+                          setState(() => haptics = !haptics);
                           _startHaptics();
                         },
                       ),
-                      const SizedBox(width: 8),
-                      _toggle(
+                      const SizedBox(width: 10),
+                      _iconToggle(
                         icon: sound ? Icons.volume_up : Icons.volume_off,
-                        label: 'Sound',
+                        tooltip: sound ? 'Mute' : 'Unmute',
                         active: sound,
-                        onChanged: (v) {
-                          setState(() => sound = v);
-                          c?.setVolume(v ? 1 : 0);
+                        onTap: () {
+                          setState(() => sound = !sound);
+                          c?.setVolume(sound ? 1 : 0);
                         },
                       ),
-                      const SizedBox(width: 12),
-                      // Feel intensity
+                      if (haptics && widget.video.hapticEvents.isNotEmpty) ...[
+                        const SizedBox(width: 10),
+                        // One tap flips adaptive (impact pulses) ⇄ smooth.
+                        _iconToggle(
+                          icon: feelStyle == 'adaptive'
+                              ? Icons.auto_awesome
+                              : Icons.waves,
+                          tooltip: feelStyle == 'adaptive'
+                              ? 'Adaptive feel'
+                              : 'Smooth feel',
+                          active: true,
+                          activeColor: Colors.purpleAccent,
+                          onTap: () {
+                            Haptics.tick();
+                            setState(() => feelStyle =
+                                feelStyle == 'adaptive' ? 'smooth' : 'adaptive');
+                            _startHaptics();
+                          },
+                        ),
+                      ],
+                      const SizedBox(width: 6),
                       if (haptics)
                         Expanded(
-                          child: Row(
-                            children: [
-                              const Icon(Icons.waves,
-                                  color: Colors.white54, size: 18),
-                              Expanded(
-                                child: Slider(
-                                  value: intensity,
-                                  divisions: 10,
-                                  label: '${(intensity * 100).round()}%',
-                                  activeColor: Colors.purpleAccent,
-                                  inactiveColor: Colors.white24,
-                                  onChanged: (v) {
-                                    final changed = (v * 10).round() !=
-                                        (intensity * 10).round();
-                                    // This is the same global knob as
-                                    // Settings → Feel intensity.
-                                    setState(() => intensity = max(0.05, v));
-                                    SettingsService.instance.intensity =
-                                        intensity;
-                                    SettingsService.instance.save();
-                                    if (changed) {
-                                      Haptics.level(1.0); // feel the new level
-                                    }
-                                    _startHaptics();
-                                  },
-                                ),
-                              ),
-                              // Feel style: adaptive answers impacts with
-                              // recoil pulses; smooth is the curve only.
-                              if (widget.video.hapticEvents.isNotEmpty)
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    for (final (label, value) in const [
-                                      ('Adaptive', 'adaptive'),
-                                      ('Smooth', 'smooth'),
-                                    ])
-                                      Padding(
-                                        padding: const EdgeInsets.only(left: 6),
-                                        child: ChoiceChip(
-                                          visualDensity: VisualDensity.compact,
-                                          labelStyle: TextStyle(
-                                              fontSize: 10.5,
-                                              color: feelStyle == value
-                                                  ? Colors.white
-                                                  : Colors.white70),
-                                          selectedColor: Colors.purple,
-                                          backgroundColor: Colors.white12,
-                                          label: Text(label),
-                                          selected: feelStyle == value,
-                                          onSelected: (_) {
-                                            Haptics.tick();
-                                            setState(() => feelStyle = value);
-                                            _startHaptics();
-                                          },
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                            ],
+                          child: Slider(
+                            value: intensity,
+                            divisions: 10,
+                            label: '${(intensity * 100).round()}%',
+                            activeColor: Colors.purpleAccent,
+                            inactiveColor: Colors.white24,
+                            onChanged: (v) {
+                              final changed = (v * 10).round() !=
+                                  (intensity * 10).round();
+                              // Same global knob as Settings → Feel intensity.
+                              setState(() => intensity = max(0.05, v));
+                              SettingsService.instance.intensity = intensity;
+                              SettingsService.instance.save();
+                              if (changed) {
+                                Haptics.level(1.0); // feel the new level
+                              }
+                              _startHaptics();
+                            },
                           ),
                         )
                       else
                         const Spacer(),
-                      TextButton(
-                        onPressed: () =>
-                            setState(() => controlsVisible = false),
-                        child: const Text('Hide',
-                            style: TextStyle(color: Colors.white54)),
-                      ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -601,35 +576,34 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
     );
   }
 
-  Widget _toggle({
+  /// Compact circular icon control — active state fills the circle so the
+  /// on/off reading is instant without any words.
+  Widget _iconToggle({
     required IconData icon,
-    required String label,
+    required String tooltip,
     required bool active,
-    required ValueChanged<bool> onChanged,
+    required VoidCallback onTap,
+    Color activeColor = lightBlue,
   }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: () => onChanged(!active),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: active
-              ? lightBlue.withValues(alpha: 0.25)
-              : Colors.white.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(20),
-          border:
-              Border.all(color: active ? lightBlue : Colors.white24, width: 1),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16, color: active ? lightBlue : Colors.white54),
-            const SizedBox(width: 6),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 13, color: active ? lightBlue : Colors.white54)),
-          ],
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: active
+                ? activeColor.withValues(alpha: 0.28)
+                : Colors.white.withValues(alpha: 0.08),
+            shape: BoxShape.circle,
+            border: Border.all(
+                color: active ? activeColor : Colors.white24, width: 1),
+          ),
+          child: Icon(icon,
+              size: 19, color: active ? activeColor : Colors.white54),
         ),
       ),
     );

@@ -24,11 +24,15 @@ Future<void> showNotificationsSheet(
   Haptics.tick();
   NotificationService.markSeen();
 
-  // Kick the fetches off now; the sheet renders immediately and fills in.
-  final load = Future.wait<Object?>([
-    NotificationService.recent(),
-    UpdateService.check(),
-  ]).then((results) {
+  // Stale-while-revalidate: the LAST fetched inbox paints instantly from
+  // disk; the fresh list (plus any update banner) replaces it when ready.
+  Stream<List<AppNotification>> loadStream() async* {
+    final cached = await NotificationService.recentCached();
+    if (cached != null && cached.isNotEmpty) yield cached;
+    final results = await Future.wait<Object?>([
+      NotificationService.recent(),
+      UpdateService.check(),
+    ]);
     final items =
         List<AppNotification>.from(results[0] as List<AppNotification>);
     final update = results[1] as UpdateInfo?;
@@ -41,8 +45,10 @@ Future<void> showNotificationsSheet(
             at: DateTime.now(),
           ));
     }
-    return items;
-  });
+    yield items;
+  }
+
+  final load = loadStream().asBroadcastStream();
 
   void openTarget(AppNotification n) {
     Haptics.light();
@@ -99,8 +105,8 @@ Future<void> showNotificationsSheet(
             ],
           ),
           const SizedBox(height: 10),
-          FutureBuilder<List<AppNotification>>(
-            future: load,
+          StreamBuilder<List<AppNotification>>(
+            stream: load,
             builder: (context, snap) {
               if (!snap.hasData) {
                 // Instant open: a light placeholder while items stream in.

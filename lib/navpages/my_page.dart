@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../constant.dart';
@@ -39,7 +42,21 @@ class _MyPageState extends State<MyPage> {
   @override
   void initState() {
     super.initState();
+    _hydrateMe(); // cover + handle paint instantly from the last visit
     _loadStats();
+  }
+
+  /// Seed `me` from disk so the cover photo URL (already in the image disk
+  /// cache) and username render on the FIRST frame — no flash/reload.
+  Future<void> _hydrateMe() async {
+    final user = AuthApi.currentUser;
+    if (user == null) return;
+    try {
+      final raw = (await SharedPreferences.getInstance())
+          .getString('me.profile.${user.id}');
+      if (raw == null || !mounted || me.isNotEmpty) return;
+      setState(() => me = jsonDecode(raw) as Map<String, dynamic>);
+    } catch (_) {}
   }
 
   Future<void> _loadStats() async {
@@ -64,6 +81,11 @@ class _MyPageState extends State<MyPage> {
     try {
       final p = await MediaApi.publicProfile(user.id);
       if (mounted) setState(() => me = p);
+      // Persist for instant hydration on the next open.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('me.profile.${user.id}', jsonEncode(p));
+      } catch (_) {}
     } catch (_) {}
   }
 
@@ -235,11 +257,46 @@ class _MyPageState extends State<MyPage> {
                                 ],
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                user?.email ?? 'Not signed in',
-                                style: const TextStyle(
-                                    color: Colors.grey, fontSize: 14),
-                              ),
+                              // Handle first (tap to set one) — the email
+                              // stays private to Settings.
+                              if (me['username'] != null &&
+                                  '${me['username']}'.isNotEmpty)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: brandInk(context)
+                                        .withValues(alpha: 0.10),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    '@${me['username']}',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        color: brandInk(context),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 13),
+                                  ),
+                                )
+                              else if (user != null)
+                                InkWell(
+                                  onTap: _editSocialProfile,
+                                  child: Text(
+                                    'Set a username',
+                                    style: TextStyle(
+                                        color: brandInk(context),
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                        decoration: TextDecoration.underline,
+                                        decorationColor: brandInk(context)),
+                                  ),
+                                )
+                              else
+                                const Text(
+                                  'Not signed in',
+                                  style: TextStyle(
+                                      color: Colors.grey, fontSize: 14),
+                                ),
                               if (user != null) ...[
                                 const SizedBox(height: 6),
                                 InkWell(

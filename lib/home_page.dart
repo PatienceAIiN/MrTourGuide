@@ -12,6 +12,7 @@ import 'package:mrtouride/services/location_service.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
 import 'package:mrtouride/widgets/notifications_sheet.dart';
+import 'package:mrtouride/widgets/youtube_player_page.dart';
 import 'package:mrtouride/widgets/news_section.dart';
 import 'package:mrtouride/widgets/ux.dart';
 
@@ -55,6 +56,7 @@ class _HomePageState extends State<HomeScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _hydrateFromCache(); // paint the last-known data INSTANTLY
     _load(initial: true);
     _loadNews();
     _loadPicks();
@@ -90,6 +92,35 @@ class _HomePageState extends State<HomeScreen>
     super.dispose();
   }
 
+  /// Instant first paint: hydrate every home rail from the disk cache while
+  /// the real fetches run behind it (stale-while-revalidate). This is what
+  /// makes a cold open feel immediate instead of spinner-bound.
+  Future<void> _hydrateFromCache() async {
+    try {
+      final results = await Future.wait([
+        MediaApi.cachedCities(),
+        MediaApi.cachedTrending(),
+        MediaApi.cachedNews(),
+        MediaApi.cachedMedia('picks'),
+      ]);
+      if (!mounted || _loadedOnce) return;
+      final cs = results[0] as List<City>?;
+      final tr = results[1] as List<VideoItem>?;
+      final nw = results[2] as List<NewsItem>?;
+      final pk = results[3] as MediaSuggestions?;
+      if (cs == null && tr == null && nw == null && pk == null) return;
+      setState(() {
+        if (cs != null && places.isEmpty) {
+          places = [for (final c in cs) Place.fromCity(c)];
+          loading = false;
+        }
+        if (tr != null && trending.isEmpty) trending = tr;
+        if (nw != null && news.isEmpty) news = nw;
+        if (pk != null && picks.isEmpty) picks = pk.youtube;
+      });
+    } catch (_) {}
+  }
+
   /// News for the reader's current country + city (falls back to the
   /// default feed when location is unknown). Location is cached, so this is
   /// cheap and doesn't re-prompt on every open.
@@ -109,7 +140,7 @@ class _HomePageState extends State<HomeScreen>
       final seed = city.isNotEmpty
           ? '$city travel experience'
           : 'India travel experiences';
-      final m = await MediaApi.searchMedia(seed);
+      final m = await MediaApi.searchMedia(seed, swrKey: 'picks');
       if (mounted) setState(() => picks = m.youtube);
     } catch (_) {}
   }
@@ -180,7 +211,12 @@ class _HomePageState extends State<HomeScreen>
                         bottom: Radius.circular(30)),
                   ),
                   padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
-                  child: Column(
+                  // Stack so the bell can pin to the card's TRUE top-right
+                  // corner, independent of the greeting row's layout.
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Entrance(
@@ -211,13 +247,8 @@ class _HomePageState extends State<HomeScreen>
                             const SizedBox(width: 8),
                             const WavingHand(size: 26),
                             const Spacer(),
-                            // Notifications bell — nudged past the content
-                            // padding so it sits in the card's top-right
-                            // corner, beside the greeting.
-                            Transform.translate(
-                              offset: const Offset(12, 0),
-                              child: _bellButton(context),
-                            ),
+                            // Keep the greeting clear of the corner bell.
+                            const SizedBox(width: 34),
                           ],
                         ),
                       ),
@@ -287,6 +318,14 @@ class _HomePageState extends State<HomeScreen>
                             ),
                           ),
                         ),
+                      ),
+                    ],
+                      ),
+                      // Pinned to the card's true top-right corner.
+                      Positioned(
+                        top: -8,
+                        right: -10,
+                        child: _bellButton(context),
                       ),
                     ],
                   ),
@@ -526,8 +565,11 @@ class _HomePageState extends State<HomeScreen>
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) =>
-              NewsWebViewPage(title: pick.title, url: pick.url),
+          // YouTube picks play fullscreen-landscape, just that one video;
+          // anything else opens in the reader webview.
+          builder: (context) => YoutubePlayerPage.videoIdOf(pick.url) != null
+              ? YoutubePlayerPage(title: pick.title, url: pick.url)
+              : NewsWebViewPage(title: pick.title, url: pick.url),
         ),
       ),
       child: SizedBox(

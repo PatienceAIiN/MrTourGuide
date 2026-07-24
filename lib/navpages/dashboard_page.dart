@@ -5,7 +5,9 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart' as ap;
 import 'package:geolocator/geolocator.dart';
+import 'package:record/record.dart';
 import 'package:video_player/video_player.dart';
 
 import '../constant.dart';
@@ -592,6 +594,18 @@ class _DashboardPageState extends State<DashboardPage>
     prefillLocation(targetCity);
     final sizeMb = (sizeBytes / (1024 * 1024)).toStringAsFixed(1);
     var locating = false;
+    // Optional soundtrack: pick a track or record a voice-over, then align
+    // and balance it — the backend muxes it into the video while processing.
+    Uint8List? audioBytes;
+    var audioName = '';
+    var audioMode = 'mix';
+    double audioOffset = 0;
+    double origVol = 1;
+    double audioVol = 1;
+    var recording = false;
+    final recorder = AudioRecorder();
+    final audioPreview = ap.AudioPlayer();
+    var previewing = false;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -925,6 +939,220 @@ class _DashboardPageState extends State<DashboardPage>
                     onChanged: (v) =>
                         setSheet(() => config = config.copyWith(haptics: v)),
                   ),
+                  const SizedBox(height: 16),
+                  const Text('Soundtrack (optional)',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.library_music, size: 17),
+                          label: const Text('Add audio',
+                              style: TextStyle(fontSize: 12.5)),
+                          onPressed: () async {
+                            try {
+                              final picked =
+                                  await FilePicker.platform.pickFiles(
+                                type: FileType.audio,
+                                withData: true,
+                              );
+                              final f = picked?.files.single;
+                              if (f?.bytes == null) return;
+                              if (f!.bytes!.length > 10 * 1024 * 1024) {
+                                if (context.mounted) {
+                                  newSnackBar(context,
+                                      title: 'Audio is limited to 10 MB.');
+                                }
+                                return;
+                              }
+                              setSheet(() {
+                                audioBytes = f.bytes;
+                                audioName = f.name;
+                              });
+                            } catch (_) {}
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: Icon(recording ? Icons.stop : Icons.mic,
+                              size: 17,
+                              color: recording ? Colors.red : null),
+                          label: Text(recording ? 'Stop' : 'Record voice',
+                              style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: recording ? Colors.red : null)),
+                          onPressed: () async {
+                            if (recording) {
+                              final p = await recorder.stop();
+                              if (p == null) {
+                                setSheet(() => recording = false);
+                                return;
+                              }
+                              final rec = await File(p).readAsBytes();
+                              setSheet(() {
+                                recording = false;
+                                if (rec.length <= 10 * 1024 * 1024) {
+                                  audioBytes = rec;
+                                  audioName = 'voice-over.m4a';
+                                }
+                              });
+                              if (rec.length > 10 * 1024 * 1024 &&
+                                  context.mounted) {
+                                newSnackBar(context,
+                                    title:
+                                        'Recording exceeded 10 MB — try a shorter take.');
+                              }
+                              return;
+                            }
+                            if (!await recorder.hasPermission()) {
+                              if (context.mounted) {
+                                newSnackBar(context,
+                                    title:
+                                        'Microphone permission is needed to record.');
+                              }
+                              return;
+                            }
+                            final path =
+                                '${Directory.systemTemp.path}/mrt_vo_${DateTime.now().millisecondsSinceEpoch}.m4a';
+                            await recorder.start(
+                                const RecordConfig(
+                                    encoder: AudioEncoder.aacLc),
+                                path: path);
+                            setSheet(() => recording = true);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (audioBytes != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          icon: Icon(
+                              previewing
+                                  ? Icons.stop_circle
+                                  : Icons.play_circle,
+                              color: blue),
+                          onPressed: () async {
+                            if (previewing) {
+                              await audioPreview.stop();
+                              setSheet(() => previewing = false);
+                            } else {
+                              await audioPreview
+                                  .play(ap.BytesSource(audioBytes!));
+                              setSheet(() => previewing = true);
+                              audioPreview.onPlayerComplete.first.then((_) {
+                                previewing = false;
+                                try {
+                                  setSheet(() {});
+                                } catch (_) {}
+                              });
+                            }
+                          },
+                        ),
+                        Expanded(
+                          child: Text(
+                            '$audioName · ${(audioBytes!.length / (1024 * 1024)).toStringAsFixed(1)} MB',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.close, size: 17),
+                          onPressed: () async {
+                            await audioPreview.stop();
+                            setSheet(() {
+                              audioBytes = null;
+                              audioName = '';
+                              previewing = false;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                            value: 'mix',
+                            icon: Icon(Icons.multitrack_audio, size: 15),
+                            label: Text('Mix over original')),
+                        ButtonSegment(
+                            value: 'replace',
+                            icon: Icon(Icons.swap_horiz, size: 15),
+                            label: Text('Replace audio')),
+                      ],
+                      selected: {audioMode},
+                      onSelectionChanged: (v) =>
+                          setSheet(() => audioMode = v.first),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const SizedBox(
+                            width: 86,
+                            child: Text('Starts at',
+                                style: TextStyle(fontSize: 12))),
+                        Expanded(
+                          child: Slider(
+                            value: audioOffset,
+                            max: 60,
+                            divisions: 60,
+                            label: '${audioOffset.round()}s',
+                            onChanged: (v) =>
+                                setSheet(() => audioOffset = v),
+                          ),
+                        ),
+                        SizedBox(
+                            width: 34,
+                            child: Text('${audioOffset.round()}s',
+                                style: const TextStyle(fontSize: 12))),
+                      ],
+                    ),
+                    if (audioMode == 'mix') ...[
+                      Row(
+                        children: [
+                          const SizedBox(
+                              width: 86,
+                              child: Text('Original vol',
+                                  style: TextStyle(fontSize: 12))),
+                          Expanded(
+                            child: Slider(
+                              value: origVol,
+                              max: 1.5,
+                              divisions: 15,
+                              label: '${(origVol * 100).round()}%',
+                              onChanged: (v) => setSheet(() => origVol = v),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          const SizedBox(
+                              width: 86,
+                              child: Text('Added vol',
+                                  style: TextStyle(fontSize: 12))),
+                          Expanded(
+                            child: Slider(
+                              value: audioVol,
+                              max: 1.5,
+                              divisions: 15,
+                              label: '${(audioVol * 100).round()}%',
+                              onChanged: (v) => setSheet(() => audioVol = v),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                  const SizedBox(height: 6),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Sound experience'),
@@ -996,12 +1224,27 @@ class _DashboardPageState extends State<DashboardPage>
                         }
                       }
                       try {
+                        // Soundtrack goes up first (small) so the video
+                        // upload can reference it for the server-side mux.
+                        String? audioId;
+                        if (audioBytes != null) {
+                          audioId = await MediaApi.uploadVideoAudio(
+                              filename: audioName.isEmpty
+                                  ? 'audio.m4a'
+                                  : audioName,
+                              bytes: audioBytes!);
+                        }
                         final video = await MediaApi.uploadVideo(
                           city: targetCity,
                           title: title,
                           filename: filename,
                           bytes: bytes,
                           filePath: path,
+                          audioId: audioId,
+                          audioOffset: audioOffset,
+                          audioMode: audioMode,
+                          origVol: origVol,
+                          audioVol: audioVol,
                         );
                         // Apply the creator's control settings right away.
                         try {
@@ -1016,7 +1259,15 @@ class _DashboardPageState extends State<DashboardPage>
                           } catch (_) {}
                         }
                         if (!mounted) return;
-                        setState(() => uploading = false);
+                        setState(() {
+                          uploading = false;
+                          // Show the fresh upload IMMEDIATELY with its
+                          // "Processing" chip — no waiting on a refetch.
+                          selectedCity = targetCity;
+                          videos.removeWhere((v) => v.id == video.id);
+                          videos.insert(0, video);
+                        });
+                        _managePolling();
                         if (sheetContext.mounted) Navigator.pop(sheetContext);
                         newSnackBar(context,
                             title: 'Uploaded! Processing feel & sound for '
@@ -1037,6 +1288,11 @@ class _DashboardPageState extends State<DashboardPage>
         ),
       ),
     );
+    try {
+      await recorder.stop();
+    } catch (_) {}
+    recorder.dispose();
+    audioPreview.dispose();
     if (mounted && uploading) setState(() => uploading = false);
   }
 
@@ -1333,8 +1589,10 @@ class _DashboardPageState extends State<DashboardPage>
       await showBusyWhile(context, MediaApi.deleteVideo(video.id),
           label: 'Deleting…');
       if (!mounted) return;
+      // Instant: drop the row locally, then refresh lists in the background.
+      setState(() => videos.removeWhere((v) => v.id == video.id));
       newSnackBar(context, title: 'Deleted "${video.title}".');
-      await _loadCities();
+      unawaited(_silentSync());
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
     }

@@ -11,6 +11,7 @@ import 'services/auth_api.dart';
 import 'services/guidevibe_api.dart';
 import 'services/haptic_service.dart';
 import 'services/location_service.dart';
+import 'services/settings_service.dart';
 import 'services/tab_events.dart';
 import 'widgets/hashtag_text.dart';
 import 'widgets/ux.dart';
@@ -309,6 +310,26 @@ class _ShortViewState extends State<_ShortView> {
   late bool _liked = widget.short.liked;
   late int _likes = widget.short.likes;
 
+  // Per-feed quick toggles (rail buttons): sound + feel.
+  bool _muted = false;
+  bool _feelOn = SettingsService.instance.haptics;
+
+  void _toggleMute() {
+    Haptics.tick();
+    setState(() => _muted = !_muted);
+    _controller?.setVolume(_muted ? 0 : 1);
+  }
+
+  void _toggleFeel() {
+    Haptics.tick();
+    setState(() => _feelOn = !_feelOn);
+    if (_feelOn) {
+      _startHaptics();
+    } else {
+      _haptics?.cancel();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -355,6 +376,7 @@ class _ShortViewState extends State<_ShortView> {
     try {
       await c.initialize();
       c.setLooping(true);
+      c.setVolume(_muted ? 0 : 1);
       await c.play();
       if (!mounted) {
         c.dispose();
@@ -372,6 +394,7 @@ class _ShortViewState extends State<_ShortView> {
 
   /// Audio→haptics: fast tick, smooth interpolation, recoil on impacts.
   void _startHaptics() {
+    if (!_feelOn) return;
     _haptics?.cancel();
     final fine = widget.short.hapticFine;
     final events = widget.short.hapticEvents;
@@ -644,6 +667,20 @@ class _ShortViewState extends State<_ShortView> {
               color: Colors.white,
               label: 'Share',
               onTap: _share,
+            ),
+            const SizedBox(height: 18),
+            _railButton(
+              icon: _muted ? Icons.volume_off : Icons.volume_up,
+              color: _muted ? Colors.white38 : Colors.white,
+              label: _muted ? 'Muted' : 'Sound',
+              onTap: _toggleMute,
+            ),
+            const SizedBox(height: 18),
+            _railButton(
+              icon: Icons.vibration,
+              color: _feelOn ? const Color(0xFF3CEBFF) : Colors.white38,
+              label: 'Feel',
+              onTap: _toggleFeel,
             ),
           ],
         ),

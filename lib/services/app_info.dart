@@ -3,8 +3,8 @@
 /// /app/version manifest (backend/app_version.json).
 // Re-versioned to 0.9 (pre-1.0 public track) at the user's request —
 // buildNumber NEVER goes backwards; it's what the OTA comparison uses.
-const String appVersion = '0.9';
-const int appBuildNumber = 34;
+const String appVersion = '1.0';
+const int appBuildNumber = 35;
 
 /// Google OAuth web client id — audience for ID tokens (all platforms).
 /// The Android client (946282223370-odkhq0jlpf3qnf6t9gditibvndu5f3p4...)

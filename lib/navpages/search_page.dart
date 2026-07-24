@@ -17,6 +17,7 @@ import '../services/tab_events.dart';
 import 'community_page.dart' show showUserProfileDialog;
 import '../widgets/image_viewer.dart';
 import '../widgets/ux.dart';
+import '../widgets/youtube_player_page.dart';
 
 /// "Feel it" tap: play the place's experience video with haptics right away;
 /// only open the place page when no experience is ready yet.
@@ -152,10 +153,13 @@ class _SearchPageState extends State<SearchPage>
   void _onChanged(String text) {
     setState(() {}); // clear icon tracks typing instantly
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 350), () => _search(text));
+    // Typing runs only the regular search — the AI answer costs seconds and
+    // tokens, so it fires ONLY on Enter (or a tapped suggestion/chip).
+    _debounce = Timer(
+        const Duration(milliseconds: 350), () => _search(text, runAi: false));
   }
 
-  Future<void> _search(String text) async {
+  Future<void> _search(String text, {bool runAi = true}) async {
     final q = text.trim();
     if (q.isEmpty) {
       setState(() {
@@ -171,7 +175,7 @@ class _SearchPageState extends State<SearchPage>
       searching = true;
       error = null;
     });
-    if (aiEnabled) _fetchAi(q);
+    if (aiEnabled && runAi) _fetchAi(q);
     // Photos + YouTube suggestions load in parallel, never block results.
     MediaApi.searchMedia(q).then((m) {
       if (mounted && query.text.trim() == q) setState(() => media = m);
@@ -459,6 +463,8 @@ class _SearchPageState extends State<SearchPage>
                 autofocus: false,
                 decoration: InputDecoration(
                   border: InputBorder.none,
+                  // The wrapping container is the visual — don't double-fill.
+                  filled: false,
                   prefixIcon: const Icon(Icons.search, color: Colors.black87),
                   suffixIcon: query.text.isEmpty
                       ? null
@@ -677,7 +683,13 @@ class _SearchPageState extends State<SearchPage>
                   style: TextStyle(fontSize: 11, color: Colors.grey)),
               trailing: const Icon(Icons.open_in_new,
                   color: Colors.redAccent, size: 18),
-              onTap: () => launchUrl(Uri.parse(y.url)),
+              onTap: () => YoutubePlayerPage.videoIdOf(y.url) != null
+                  ? Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => YoutubePlayerPage(
+                              title: y.title, url: y.url)))
+                  : launchUrl(Uri.parse(y.url)),
             ),
           ),
       ],
@@ -780,7 +792,38 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _aiCard() {
-    if (!aiLoading && ai == null) return const SizedBox.shrink();
+    if (!aiLoading && ai == null) {
+      // AI is on but hasn't been asked yet — invite the Enter press instead
+      // of showing nothing.
+      if (aiEnabled && query.text.trim().isNotEmpty) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.purple.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.purple.withValues(alpha: 0.25)),
+          ),
+          child: InkWell(
+            onTap: () => _search(query.text),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome, size: 15, color: Colors.purple),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Press Enter ↵ (or tap here) to ask AI',
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: ink(context))),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+      return const SizedBox.shrink();
+    }
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(16),
