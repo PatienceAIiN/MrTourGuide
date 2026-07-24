@@ -9,6 +9,7 @@ import 'package:video_compress/video_compress.dart';
 import 'package:video_player/video_player.dart';
 
 import 'constant.dart';
+import 'services/api_base.dart';
 import 'services/auth_api.dart';
 import 'services/guidevibe_api.dart';
 import 'services/haptic_service.dart';
@@ -80,18 +81,29 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
   Future<void> _setVideo(String path) async {
     final file = File(path);
     var size = await file.length();
-    // Probe duration first.
-    var probe = VideoPlayerController.file(file);
+    // Native probe first — reads big files' metadata reliably where the
+    // player-based probe returned 0s (and made huge clips crash the flow).
     Duration dur = Duration.zero;
     try {
-      await probe.initialize();
-      dur = probe.value.duration;
+      final info = await VideoCompress.getMediaInfo(path);
+      final ms = info.duration ?? 0;
+      if (ms > 0) dur = Duration(milliseconds: ms.round());
     } catch (_) {}
-    await probe.dispose();
+    if (dur == Duration.zero) {
+      final probe = VideoPlayerController.file(file);
+      try {
+        await probe.initialize();
+        dur = probe.value.duration;
+      } catch (_) {}
+      await probe.dispose();
+    }
     if (!mounted) return;
 
     var usePath = path;
-    final tooLong = dur > const Duration(seconds: 62);
+    final knownDur = dur > Duration.zero;
+    // Unknown length counts as long — we then keep only the first minute
+    // instead of ever full-encoding a giant file (that was the crash).
+    final tooLong = !knownDur || dur > const Duration(seconds: 62);
     final tooBig = size > 20 * 1024 * 1024;
     if (tooLong || tooBig) {
       // Explain the reduction; over-long clips can be trimmed manually.
@@ -103,7 +115,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
           icon: const Icon(Icons.compress, color: Colors.orange, size: 34),
           title: const Text('Clip will be reduced'),
           content: Text(
-            'This clip is ${dur.inSeconds}s / '
+            'This clip is ${knownDur ? '${dur.inSeconds}s' : 'of unknown length'} / '
             '${(size / (1024 * 1024)).toStringAsFixed(1)} MB. GuideVibe '
             'shorts fit 1 minute and 20 MB — it will be compressed'
             '${tooLong ? ' and trimmed to 60 seconds' : ''} automatically.',
@@ -115,7 +127,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
               onPressed: () => Navigator.pop(context),
               child: const Text('Cancel'),
             ),
-            if (tooLong)
+            if (tooLong && knownDur)
               TextButton(
                 onPressed: () => Navigator.pop(context, 'trim'),
                 child: const Text('Trim myself'),
@@ -134,7 +146,8 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         if (picked == null || !mounted) return;
         startSec = picked;
       }
-      final reduced = await _reduceVideo(path, dur, startSec);
+      final reduced =
+          await _reduceVideo(path, dur, startSec, forceTrim: tooLong);
       if (reduced == null || !mounted) return;
       usePath = reduced;
       size = await File(usePath).length();
@@ -240,9 +253,11 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
 
   /// Real compression with a REAL progress dialog (video_compress reports
   /// actual percentage). 720p first; retries lower if still over 20 MB.
-  Future<String?> _reduceVideo(String path, Duration dur, int startSec) async {
-    final clipSecs =
-        (dur.inSeconds - startSec).clamp(1, 60);
+  Future<String?> _reduceVideo(String path, Duration dur, int startSec,
+      {bool forceTrim = false}) async {
+    final clipSecs = dur > Duration.zero
+        ? (dur.inSeconds - startSec).clamp(1, 60)
+        : 60;
     final progress = ValueNotifier<double>(0);
     final sub = VideoCompress.compressProgress$.subscribe((p) {
       progress.value = p;
@@ -276,9 +291,9 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     }
     String? out;
     try {
-      // Length is cut ONLY when the clip exceeds a minute; an oversized but
-      // short clip keeps its FULL length and only gets compressed.
-      final needsTrim = dur > const Duration(seconds: 62);
+      // Length is cut ONLY when the clip exceeds a minute (or its length is
+      // unknown); an oversized but short clip keeps its FULL length.
+      final needsTrim = forceTrim || dur > const Duration(seconds: 62);
       var info = await VideoCompress.compressVideo(
         path,
         quality: VideoQuality.MediumQuality,
@@ -836,6 +851,7 @@ class _MusicPickerSheetState extends State<_MusicPickerSheet> {
   final _query = TextEditingController();
   final _player = AudioPlayer();
   Timer? _debounce;
+  StreamSubscription<void>? _doneSub;
   List<MusicTrack> _results = [];
   bool _loading = true;
   String? _error;
@@ -844,11 +860,16 @@ class _MusicPickerSheetState extends State<_MusicPickerSheet> {
   @override
   void initState() {
     super.initState();
+    _player.setReleaseMode(ReleaseMode.stop);
+    _doneSub = _player.onPlayerComplete.listen((_) {
+      if (mounted) setState(() => _previewingId = null);
+    });
     _search(''); // popular tracks to start
   }
 
   @override
   void dispose() {
+    _doneSub?.cancel();
     _debounce?.cancel();
     _query.dispose();
     _player.dispose();
@@ -893,12 +914,17 @@ class _MusicPickerSheetState extends State<_MusicPickerSheet> {
     setState(() => _previewingId = t.id);
     try {
       await _player.stop();
-      await _player.play(UrlSource(t.audio));
-      _player.onPlayerComplete.listen((_) {
-        if (mounted) setState(() => _previewingId = null);
-      });
+      // Play through OUR origin — Android's player rejects the raw Deezer
+      // CDN URLs, a same-origin MP3 always works.
+      final proxied =
+          '$apiBase/music/preview?u=${Uri.encodeQueryComponent(t.audio)}';
+      await _player.stop();
+      await _player.play(UrlSource(proxied));
     } catch (_) {
-      if (mounted) setState(() => _previewingId = null);
+      if (mounted) {
+        setState(() => _previewingId = null);
+        newSnackBar(context, title: "Couldn't play the preview — try again.");
+      }
     }
   }
 

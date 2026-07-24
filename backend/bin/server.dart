@@ -3161,6 +3161,37 @@ Future<bool> _downloadCapped(String url, File dest,
 /// short GuideVibe clips). Cached per query for 30 min.
 final Map<String, (DateTime, List<Map<String, Object?>>)> _musicCache = {};
 
+/// Streams a Deezer 30s preview through our origin — Android's media
+/// player chokes on the raw CDN URLs (redirects/UA checks), a same-origin
+/// MP3 always plays. Host-allowlisted so this can't be used as an open proxy.
+Future<Response> _musicPreview(Request request) async {
+  final raw = request.url.queryParameters['u'] ?? '';
+  final uri = Uri.tryParse(raw);
+  final host = uri?.host.toLowerCase() ?? '';
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      !(host.contains('dzcdn.net') || host.contains('deezer'))) {
+    return _json(400, {'error': 'Bad preview url.'});
+  }
+  try {
+    final client = HttpClient();
+    final req = await client.getUrl(uri).timeout(const Duration(seconds: 10));
+    final res = await req.close().timeout(const Duration(seconds: 15));
+    final bytes = <int>[];
+    await for (final chunk in res) {
+      bytes.addAll(chunk);
+      if (bytes.length > 3 * 1024 * 1024) break; // previews are ~400KB
+    }
+    client.close();
+    return Response.ok(bytes, headers: {
+      'content-type': 'audio/mpeg',
+      'cache-control': 'public, max-age=600',
+    });
+  } catch (_) {
+    return _json(502, {'error': 'Preview unavailable.'});
+  }
+}
+
 Future<Response> _musicSearch(Request request) async {
   final q = (request.url.queryParameters['q'] ?? '').trim();
   final key = q.toLowerCase();
@@ -5978,6 +6009,7 @@ Future<void> main() async {
     ..get('/post/<id>', _publicPost)
     ..get('/guidevibe', _guidevibeFeed)
     ..get('/music/search', _musicSearch)
+    ..get('/music/preview', _musicPreview)
     ..post('/guidevibe/upload', _uploadShort)
     ..post('/guidevibe/<id>/like', _likeShort)
     ..post('/guidevibe/<id>/view', _viewShort)
