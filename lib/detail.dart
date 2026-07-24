@@ -8,6 +8,7 @@ import 'news_webview.dart';
 import 'widgets/youtube_player_page.dart';
 import 'services/auth_api.dart';
 import 'services/haptic_service.dart';
+import 'services/tab_events.dart';
 import 'services/media_api.dart';
 import 'widgets/hashtag_text.dart';
 import 'widgets/ux.dart';
@@ -44,8 +45,15 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Place get place => widget.place;
 
+  void _onContentPing() {
+    if (!mounted) return;
+    _loadComments();
+    _loadRating();
+  }
+
   @override
   void dispose() {
+    ContentEvents.refresh.removeListener(_onContentPing);
     _commentCtl.dispose();
     super.dispose();
   }
@@ -53,6 +61,8 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void initState() {
     super.initState();
+    // Push ping → comments/ratings sync instantly, no manual refresh.
+    ContentEvents.refresh.addListener(_onContentPing);
     _loadVideos();
     _loadRating();
     _loadComments();

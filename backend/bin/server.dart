@@ -777,10 +777,12 @@ void _scheduleMlProcessing(int videoId, {Future<void> Function()? preprocess}) {
       }
       // Per-second averages keep older app builds working.
       final track = <double>[];
-      for (var i = 0; i + 3 < fine.length; i += 4) {
-        track.add(double.parse(
-            ((fine[i] + fine[i + 1] + fine[i + 2] + fine[i + 3]) / 4)
-                .toStringAsFixed(3)));
+      for (var i = 0; i + 9 < fine.length; i += 10) {
+        var sum = 0.0;
+        for (var k = 0; k < 10; k++) {
+          sum += fine[i + k];
+        }
+        track.add(double.parse((sum / 10).toStringAsFixed(3)));
       }
 
       await _db.execute(
@@ -793,6 +795,7 @@ void _scheduleMlProcessing(int videoId, {Future<void> Function()? preprocess}) {
           'thumb': thumbUrl,
           'haptics': jsonEncode({
             'profile': 'auto',
+            'res': 100,
             'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v3',
             'generatedAt': DateTime.now().toIso8601String(),
             'track': track,
@@ -869,9 +872,10 @@ Future<(List<double> fine, List<Map<String, num>> events)>
   Future<List<double>> rms(List<String> preFilter) async {
     final result = await Process.run('ffmpeg', [
       '-i', path, '-map', '0:a:0?', '-af',
-      // 11025 samples ≈ 250 ms windows at 44.1 kHz.
+      // 4410 samples ≈ 100 ms windows at 44.1 kHz — 2.5× finer feel
+      // resolution than the original 250 ms grid.
       '${preFilter.isEmpty ? '' : '${preFilter.join(',')},'}'
-          'asetnsamples=11025,astats=metadata=1:reset=1,'
+          'asetnsamples=4410,astats=metadata=1:reset=1,'
           'ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
       '-f', 'null', '-',
     ]).timeout(const Duration(minutes: 3));
@@ -880,7 +884,7 @@ Future<(List<double> fine, List<Map<String, num>> events)>
         .allMatches(result.stdout as String)) {
       final raw = m.group(1)!;
       db.add(raw == '-inf' ? -90.0 : (double.tryParse(raw) ?? -90.0));
-      if (db.length >= 2400) break; // cap at 10 minutes
+      if (db.length >= 6000) break; // cap at 10 minutes (100ms windows)
     }
     return db;
   }
@@ -892,7 +896,12 @@ Future<(List<double> fine, List<Map<String, num>> events)>
     final lo = sorted[(sorted.length * 0.10).floor()];
     var hi = sorted[((sorted.length - 1) * 0.95).floor()];
     if (hi - lo < 6) hi = lo + 6; // near-constant audio: avoid noise blowup
-    return [for (final v in db) ((v - lo) / (hi - lo)).clamp(0.0, 1.0)];
+    // Hard silence gate: real quiet (below -55 dB) must FEEL silent — no
+    // room-noise buzz creeping through the percentile window.
+    return [
+      for (final v in db)
+        v < -55 ? 0.0 : ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+    ];
   }
 
   try {
@@ -916,14 +925,16 @@ Future<(List<double> fine, List<Map<String, num>> events)>
       final jump = raw[i] - raw[i - 1];
       final lowJump =
           i < low.length ? low[i] - low[i - 1] : 0.0;
-      final fullHit = jump > 0.26 && raw[i] > 0.42;
-      final bassHit = lowJump > 0.30 && i < low.length && low[i] > 0.5;
+      // 100 ms windows spread an onset across fewer samples — slightly
+      // lower jump thresholds keep the same real-world sensitivity.
+      final fullHit = jump > 0.22 && raw[i] > 0.40;
+      final bassHit = lowJump > 0.26 && i < low.length && low[i] > 0.48;
       if (fullHit || bassHit) {
         final punch =
             (jump > lowJump ? jump : lowJump).clamp(0.0, 1.0);
         // Merge with a hit in the previous window: keep the stronger punch.
         if (events.isNotEmpty &&
-            (i * 250) - (events.last['t'] as num) <= 250) {
+            (i * 100) - (events.last['t'] as num) <= 180) {
           if (punch > (events.last['power'] as num)) {
             events.last['power'] =
                 double.parse(punch.toStringAsFixed(2));
@@ -931,10 +942,10 @@ Future<(List<double> fine, List<Map<String, num>> events)>
           continue;
         }
         events.add({
-          't': i * 250, // ms into the video
+          't': i * 100, // ms into the video
           'power': double.parse(punch.toStringAsFixed(2)),
         });
-        if (events.length >= 150) break;
+        if (events.length >= 240) break;
       }
     }
 
@@ -943,7 +954,9 @@ Future<(List<double> fine, List<Map<String, num>> events)>
     final fine = <double>[];
     var level = raw.first;
     for (var i = 0; i < raw.length; i++) {
-      level = raw[i] >= level ? raw[i] : level * 0.55 + raw[i] * 0.45;
+      // Attack instantly; decay per-100ms tick tuned to match the old
+      // per-250ms glide (0.55^(1/2.5) ≈ 0.79).
+      level = raw[i] >= level ? raw[i] : level * 0.79 + raw[i] * 0.21;
       fine.add(double.parse(level.toStringAsFixed(3)));
     }
     return (fine, events);
@@ -2254,7 +2267,8 @@ Future<Response> _addPlaceComment(Request request, String slug) async {
   if (user.isEmpty) return _json(401, {'error': 'Unknown user.'});
   await _db.execute(
     Sql.named('INSERT INTO place_comments (city_slug, author_id, author_name, '
-        'author_role, body, parent_id) VALUES (@c, @a, @an, @ar, @b, @p)'),
+        'author_role, body, parent_id) VALUES (@c, @a, @an, @ar, @b, @p) '
+        'RETURNING author_name'),
     parameters: {
       'c': slug,
       'a': userId,
@@ -2264,6 +2278,27 @@ Future<Response> _addPlaceComment(Request request, String slug) async {
       'p': parentId,
     },
   );
+  // Replying to someone → notify them instantly.
+  if (parentId != null) {
+    () async {
+      try {
+        final parent = await _db.execute(
+          Sql.named('SELECT author_id FROM place_comments WHERE id = @p'),
+          parameters: {'p': parentId},
+        );
+        final target = parent.isEmpty ? null : parent.first[0] as int?;
+        if (target != null && target != userId) {
+          final clip = text.length > 60 ? '${text.substring(0, 57)}…' : text;
+          _sendPush(
+            await _tokensFor(userId: target),
+            'New reply to your comment',
+            '${user.first[0]}: $clip',
+            data: {'type': 'city'},
+          );
+        }
+      } catch (_) {}
+    }();
+  }
   return _json(201, {'ok': true});
 }
 
@@ -3476,10 +3511,12 @@ Future<Response> _uploadShort(Request request) async {
       // muxed file when music was added, so the feel matches the song.
       final (fine, events) = await _audioEnergyAnalysis(analyzePath);
       final track = <double>[];
-      for (var i = 0; i + 3 < fine.length; i += 4) {
-        track.add(double.parse(
-            ((fine[i] + fine[i + 1] + fine[i + 2] + fine[i + 3]) / 4)
-                .toStringAsFixed(3)));
+      for (var i = 0; i + 9 < fine.length; i += 10) {
+        var sum = 0.0;
+        for (var k = 0; k < 10; k++) {
+          sum += fine[i + k];
+        }
+        track.add(double.parse((sum / 10).toStringAsFixed(3)));
       }
       await _db.execute(
         Sql.named("UPDATE shorts SET status = 'ready', haptics = @h "
@@ -3488,6 +3525,7 @@ Future<Response> _uploadShort(Request request) async {
           'id': shortId,
           'h': jsonEncode({
             'profile': 'auto',
+            'res': 100,
             'source': fine.isEmpty ? 'ml-sim' : 'audio-energy-v3',
             'track': track,
             'fine': fine,
@@ -3676,6 +3714,25 @@ Future<Response> _addShortComment(Request request, String id) async {
         'body) VALUES (@s, @a, @an, @b)'),
     parameters: {'s': shortId, 'a': userId, 'an': user.first[0], 'b': text},
   );
+  // Tell the short's creator instantly (push → their feed self-refreshes).
+  () async {
+    try {
+      final owner = await _db.execute(
+        Sql.named('SELECT owner_id FROM shorts WHERE id = @s'),
+        parameters: {'s': shortId},
+      );
+      final ownerId = owner.isEmpty ? null : owner.first[0] as int?;
+      if (ownerId != null && ownerId != userId) {
+        final clip = text.length > 60 ? '${text.substring(0, 57)}…' : text;
+        _sendPush(
+          await _tokensFor(userId: ownerId),
+          'New comment on your GuideVibe',
+          '${user.first[0]}: $clip',
+          data: {'type': 'guidevibe'},
+        );
+      }
+    } catch (_) {}
+  }();
   return _json(201, {'ok': true});
 }
 
@@ -5147,6 +5204,39 @@ Future<Response> _updateHaptics(Request request, String id) async {
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
+/// App crash/error reports → dev inbox, throttled hard so a crash loop
+/// can't flood the mailbox (max 1 mail per 5 minutes globally).
+DateTime _lastCrashMail = DateTime.fromMillisecondsSinceEpoch(0);
+Future<Response> _crashReport(Request request) async {
+  final body = await _readJsonBody(request);
+  final error = (body?['error'] as String?)?.trim() ?? '';
+  final stack = (body?['stack'] as String?)?.trim() ?? '';
+  final version = (body?['version'] as String?)?.trim() ?? '?';
+  final userId = body?['userId'];
+  if (error.isEmpty) return _json(400, {'error': 'error required'});
+  _logActivity('app', 'crash-report',
+      'v$version u:$userId ${error.length > 180 ? error.substring(0, 180) : error}');
+  if (DateTime.now().difference(_lastCrashMail) > const Duration(minutes: 5)) {
+    _lastCrashMail = DateTime.now();
+    final inbox = Platform.environment['FEEDBACK_EMAIL'] ??
+        Platform.environment['BREVO_SENDER_EMAIL'] ??
+        'info@patienceai.in';
+    _sendEmail(
+      inbox,
+      '🐞 Mr.Tour Guide crash report (v$version)',
+      '<div style="font-family:system-ui,sans-serif;max-width:640px">'
+          '<h2 style="margin:0 0 8px">App error report</h2>'
+          '<p style="margin:0 0 6px">Version: <b>${_escapeHtml(version)}</b>'
+          ' · User: <b>${_escapeHtml('$userId')}</b></p>'
+          '<pre style="background:#f4f6f8;padding:12px;border-radius:8px;'
+          'white-space:pre-wrap;font-size:12px">${_escapeHtml(error)}\n\n'
+          '${_escapeHtml(stack.length > 4000 ? stack.substring(0, 4000) : stack)}</pre>'
+          '</div>',
+    ).catchError((Object _) => false);
+  }
+  return _json(200, {'ok': true});
+}
+
 Future<Response> _feedback(Request request) async {
   final body = await _readJsonBody(request);
   final message = (body?['message'] as String?)?.trim() ?? '';
@@ -6070,6 +6160,7 @@ Future<void> main() async {
     ..post('/users/delete-account', _deleteAccount)
     ..get('/users/<id>/profile', _publicProfile)
     ..post('/feedback', _feedback)
+    ..post('/crash-report', _crashReport)
     ..get('/admin', _adminPage)
     ..get('/admin/api/users', _adminUsers)
     ..post('/admin/api/users', _adminCreateUser)

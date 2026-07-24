@@ -34,6 +34,7 @@ class Short {
   /// Audio→haptics: the same {track, fine, events} contract as VideoItem.
   final List<double> hapticFine;
   final List<Map<String, num>> hapticEvents;
+  final int hapticRes;
 
   Short({
     required this.id,
@@ -51,6 +52,7 @@ class Short {
     this.status = 'ready',
     this.hapticFine = const [],
     this.hapticEvents = const [],
+    this.hapticRes = 250,
   });
 
   bool get isProcessing => status == 'processing';
@@ -93,6 +95,10 @@ class Short {
                   const []))
             {'t': (e as Map)['t'] as num, 'power': e['power'] as num}
         ],
+        hapticRes: ((json['haptics'] as Map<String, dynamic>?)?['res']
+                as num?)
+            ?.toInt() ??
+            250,
       );
 }
 

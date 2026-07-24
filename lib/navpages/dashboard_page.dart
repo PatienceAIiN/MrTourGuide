@@ -1867,19 +1867,33 @@ class _DashboardPageState extends State<DashboardPage>
     final isCreator = AuthApi.currentUser?.isCreator ?? false;
     // GuideVibe mode: the creator GuideVibe studio, embedded as-is.
     if (isCreator && studioFeed == 'guidevibe') {
+      // Same chrome as the catalog view — switching tabs must not jump or
+      // reshape the screen, only the content below the switch changes.
       return Scaffold(
         backgroundColor: pageBg(context),
-        body: SafeArea(
-          bottom: false,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                child: _studioSwitch(isCreator),
-              ),
-              Expanded(child: GuideVibePage(onSelectTab: widget.onSelectTab)),
-            ],
-          ),
+        appBar: AppBar(
+          backgroundColor: cardBg(context),
+          elevation: 0,
+          iconTheme: IconThemeData(color: ink(context)),
+          title: Text('Creator Studio',
+              style:
+                  TextStyle(color: ink(context), fontWeight: FontWeight.bold)),
+          actions: [
+            IconButton(
+              tooltip: 'Creator guide',
+              icon: Icon(Icons.info_outline, color: ink(context)),
+              onPressed: _creatorGuide,
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: _studioSwitch(isCreator),
+            ),
+            Expanded(child: GuideVibePage(onSelectTab: widget.onSelectTab)),
+          ],
         ),
       );
     }

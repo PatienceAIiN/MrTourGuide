@@ -6,6 +6,7 @@ import 'package:mrtouride/constant.dart';
 import 'package:mrtouride/login.dart';
 import 'package:mrtouride/navpages/main_page.dart';
 import 'package:mrtouride/services/auth_api.dart';
+import 'package:mrtouride/services/crash_reporter.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
@@ -14,6 +15,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Uncaught errors → dev inbox (throttled). Native crashes can't be
+  // caught here, but every Dart-side failure reports itself.
+  CrashReporter.install();
   await SettingsService.instance.load();
   PushService.init(); // fire-and-forget: push must never block startup
   runApp(ListenableBuilder(

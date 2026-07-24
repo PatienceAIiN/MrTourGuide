@@ -100,11 +100,19 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
       // settle, like a console controller. Pulses are cut a touch longer
       // than the tick so consecutive ones overlap into one vibration.
       const tickMs = 90;
+      var lastMs = 0;
       _hapticTimer =
           Timer.periodic(const Duration(milliseconds: tickMs), (_) {
         final c = controller;
         if (c == null || !c.value.isPlaying) return;
         final ms = c.value.position.inMilliseconds;
+        // Loop replay → rewind the feel engine so haptics fire every loop
+        // (they previously went silent after the first playthrough).
+        if (ms < lastMs - 1500) {
+          _nextEvent = 0;
+          _recoilUntilMs = 0;
+        }
+        lastMs = ms;
         if (feelStyle == 'adaptive' && events.isNotEmpty) {
           while (_nextEvent < events.length &&
               (events[_nextEvent]['t'] as num) < ms - 400) {
@@ -132,7 +140,7 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
           }
         }
         if (ms < _recoilUntilMs) return; // still settling from a recoil
-        final step = perSecond ? 1000 : 250;
+        final step = perSecond ? 1000 : widget.video.hapticRes;
         final idx = ms ~/ step;
         final frac = (ms % step) / step;
         final a = track[idx.clamp(0, track.length - 1)];

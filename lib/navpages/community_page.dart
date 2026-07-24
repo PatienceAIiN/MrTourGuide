@@ -15,6 +15,7 @@ import '../services/auth_api.dart';
 import '../services/media_api.dart';
 import '../services/community_api.dart';
 import '../services/haptic_service.dart';
+import '../services/tab_events.dart';
 import '../services/image_tools.dart';
 import '../widgets/hashtag_text.dart';
 import '../widgets/image_viewer.dart';
@@ -297,10 +298,17 @@ class _CommunityPageState extends State<CommunityPage>
     _feedTimer = Timer.periodic(const Duration(seconds: 45), (_) {
       if (mounted) _reload(silent: true);
     });
+    // Push said something new landed → sync THIS moment, no hard refresh.
+    ContentEvents.refresh.addListener(_onContentPing);
+  }
+
+  void _onContentPing() {
+    if (mounted) _reload(silent: true);
   }
 
   @override
   void dispose() {
+    ContentEvents.refresh.removeListener(_onContentPing);
     _feedTimer?.cancel();
     composer.dispose();
     super.dispose();

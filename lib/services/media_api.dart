@@ -177,6 +177,10 @@ class VideoItem {
   /// the player answers them with recoil-style pulses.
   final List<Map<String, num>> hapticEvents;
 
+  /// Milliseconds per [hapticFine] sample (new analyses are 100ms; older
+  /// videos default to the original 250ms grid).
+  final int hapticRes;
+
   const VideoItem({
     required this.id,
     required this.city,
@@ -193,6 +197,7 @@ class VideoItem {
     this.hapticTrack = const [],
     this.hapticFine = const [],
     this.hapticEvents = const [],
+    this.hapticRes = 250,
   });
 
   bool get isProcessing => status == 'processing';
@@ -218,6 +223,10 @@ class VideoItem {
               const []))
             {'t': (e as Map)['t'] as num, 'power': e['power'] as num}
         ],
+        hapticRes: ((json['haptics'] as Map<String, dynamic>?)?['res']
+                as num?)
+            ?.toInt() ??
+            250,
         id: json['id'] as int,
         city: json['city'] as String,
         title: json['title'] as String,

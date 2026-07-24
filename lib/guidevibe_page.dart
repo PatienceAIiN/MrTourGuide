@@ -408,10 +408,18 @@ class _ShortViewState extends State<_ShortView> {
     _nextEvent = 0;
     _recoilUntilMs = 0;
     const tickMs = 90;
+    var lastMs = 0;
     _haptics = Timer.periodic(const Duration(milliseconds: tickMs), (_) {
       final c = _controller;
       if (c == null || !c.value.isPlaying) return;
       final ms = c.value.position.inMilliseconds;
+      // Looped back to the start → rewind the feel engine too, so haptics
+      // keep firing on every replay (they used to die after the first loop).
+      if (ms < lastMs - 1500) {
+        _nextEvent = 0;
+        _recoilUntilMs = 0;
+      }
+      lastMs = ms;
       if (events.isNotEmpty) {
         while (_nextEvent < events.length &&
             (events[_nextEvent]['t'] as num) < ms - 400) {
@@ -429,7 +437,7 @@ class _ShortViewState extends State<_ShortView> {
         }
       }
       if (ms < _recoilUntilMs) return;
-      const step = 250;
+      final step = widget.short.hapticRes;
       final idx = ms ~/ step;
       final frac = (ms % step) / step;
       final a = fine[idx.clamp(0, fine.length - 1)];
