@@ -334,14 +334,53 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _checkForUpdate() async {
-    final info = await UpdateService.check();
+    final info = await showBusyWhile(context, UpdateService.check(),
+        label: 'Checking…');
     if (!mounted) return;
     if (info == null) {
       newSnackBar(context, title: 'Could not check for updates.');
-    } else if (!info.isNewer) {
-      newSnackBar(context, title: 'You are on the latest version.');
-    } else {
+    } else if (info.isNewer) {
+      // Update available → the update flow (its sheet shows what's new).
       await runUpdateFlow(context, info);
+    } else {
+      // Already current → show THIS version's changelog instead of a bare
+      // "you're up to date" snackbar.
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          icon: const Icon(Icons.verified, color: Colors.green, size: 34),
+          title: Text("You're up to date — v$appVersion"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("What's new in this version",
+                  style:
+                      TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: SingleChildScrollView(
+                  child: Text(
+                    info.notes.isEmpty
+                        ? 'General fixes and improvements.'
+                        : info.notes,
+                    style: const TextStyle(fontSize: 13, height: 1.5),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
     }
   }
 
