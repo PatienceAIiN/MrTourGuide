@@ -873,6 +873,13 @@ class _CreatorStudioState extends State<_CreatorStudio>
   List<Short> _mine = [];
   bool _loading = true;
   bool _loadedOnce = false;
+  Timer? _procPoll;
+
+  @override
+  void dispose() {
+    _procPoll?.cancel();
+    super.dispose();
+  }
   String? _error;
 
   @override
@@ -903,6 +910,14 @@ class _CreatorStudioState extends State<_CreatorStudio>
         _loadedOnce = true;
         _error = null;
       });
+      // Grid shows "Processing" live: poll every 8s until the pipeline
+      // (transcode + feel track) finishes — no manual refresh needed.
+      _procPoll?.cancel();
+      if (_mine.any((x) => x.isProcessing)) {
+        _procPoll = Timer(const Duration(seconds: 8), () {
+          if (mounted) _load();
+        });
+      }
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() {

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_base.dart';
 import 'auth_api.dart' show AuthApi, AuthException;
+import 'transfer_service.dart';
 
 class City {
   final String slug;
@@ -705,6 +706,8 @@ class MediaApi {
     String audioMode = 'mix',
     double origVol = 1,
     double audioVol = 1,
+    // REAL upload progress (0..1) straight from the background transfer.
+    void Function(double progress)? onProgress,
   }) async {
     final uri = Uri.parse('$apiBase/upload').replace(queryParameters: {
       'city': city,
@@ -716,39 +719,43 @@ class MediaApi {
       if (audioId != null) 'audioMode': audioMode,
       if (audioId != null) 'origVol': '$origVol',
       if (audioId != null) 'audioVol': '$audioVol',
-    });
-    late http.Response response;
+    }).toString();
+    // Background transfer (survives app-switch) with live progress — the
+    // same engine GuideVibe uploads use. Byte payloads go via a temp file.
+    var path = filePath;
+    File? tmp;
+    if (path == null) {
+      if (bytes == null) throw const AuthException('Nothing to upload.');
+      tmp = File(
+          '${Directory.systemTemp.path}/mrt_up_${DateTime.now().millisecondsSinceEpoch}_$filename');
+      await tmp.writeAsBytes(bytes);
+      path = tmp.path;
+    }
     try {
-      if (filePath != null) {
-        // Stream from disk — large phone videos never sit in RAM.
-        final file = File(filePath);
-        final req = http.StreamedRequest('POST', uri)
-          ..headers['Content-Type'] = 'application/octet-stream'
-          ..contentLength = await file.length();
-        file.openRead().listen(
-              req.sink.add,
-              onDone: req.sink.close,
-              onError: (Object e) => req.sink.close(),
-              cancelOnError: true,
-            );
-        final streamed = await req.send().timeout(const Duration(minutes: 15));
-        response = await http.Response.fromStream(streamed);
-      } else {
-        response = await http
-            .post(uri,
-                headers: {'Content-Type': 'application/octet-stream'},
-                body: bytes)
-            .timeout(const Duration(minutes: 15));
-      }
-    } catch (_) {
+      final body = await TransferService.uploadBinary(
+        filePath: path,
+        url: uri,
+        displayName: 'Experience upload',
+        onProgress: onProgress,
+      );
+      final decoded = _decode(body);
+      return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
+    } on TransferException catch (e) {
+      String msg = 'Upload failed — please try again.';
+      try {
+        final d = _decode(e.body ?? '');
+        if (d['error'] is String) msg = d['error'] as String;
+      } catch (_) {}
+      throw AuthException(msg);
+    } catch (e) {
+      if (e is AuthException) rethrow;
       throw const AuthException(
           'Could not sync — check your internet and try again.');
+    } finally {
+      try {
+        await tmp?.delete();
+      } catch (_) {}
     }
-    final decoded = _decode(response.body);
-    if (response.statusCode == 201) {
-      return VideoItem.fromJson(decoded['video'] as Map<String, dynamic>);
-    }
-    throw AuthException(decoded['error'] as String? ?? 'Upload failed.');
   }
 
   /// Creator: persist per-video experience settings (owner only).

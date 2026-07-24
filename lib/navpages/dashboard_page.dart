@@ -575,6 +575,7 @@ class _DashboardPageState extends State<DashboardPage>
     );
     var config = const ExperienceConfig();
     var busy = false;
+    double uploadPct = 0;
     bool? immersiveOk; // probed once, on first VR/MR selection
     var probing = false;
     Uint8List? thumbBytes;
@@ -1182,7 +1183,12 @@ class _DashboardPageState extends State<DashboardPage>
                   const SizedBox(height: 10),
                   LoadingButton(
                     busy: busy,
-                    label: 'Upload & publish',
+                    // Live percentage straight from the transfer engine.
+                    label: busy
+                        ? (uploadPct >= 0.99
+                            ? 'Processing…'
+                            : 'Uploading ${(uploadPct * 100).round()}%')
+                        : 'Upload & publish',
                     icon: Icons.cloud_upload,
                     onPressed: () async {
                       final title = titleCtl.text.trim();
@@ -1253,6 +1259,8 @@ class _DashboardPageState extends State<DashboardPage>
                           audioMode: audioMode,
                           origVol: origVol,
                           audioVol: audioVol,
+                          onProgress: (p) =>
+                              setSheet(() => uploadPct = p),
                         );
                         // Apply the creator's control settings right away.
                         try {

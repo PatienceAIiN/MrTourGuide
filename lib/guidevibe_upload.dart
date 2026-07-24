@@ -5,6 +5,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:video_compress/video_compress.dart';
 import 'package:video_player/video_player.dart';
 
 import 'constant.dart';
@@ -77,15 +78,78 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
   }
 
   Future<void> _setVideo(String path) async {
-    final size = await File(path).length();
-    if (size > 20 * 1024 * 1024) {
-      if (mounted) {
-        newSnackBar(context, title: 'GuideVibe clips are limited to 20 MB.');
+    final file = File(path);
+    var size = await file.length();
+    // Probe duration first.
+    var probe = VideoPlayerController.file(file);
+    Duration dur = Duration.zero;
+    try {
+      await probe.initialize();
+      dur = probe.value.duration;
+    } catch (_) {}
+    await probe.dispose();
+    if (!mounted) return;
+
+    var usePath = path;
+    final tooLong = dur > const Duration(seconds: 62);
+    final tooBig = size > 20 * 1024 * 1024;
+    if (tooLong || tooBig) {
+      // Explain the reduction; over-long clips can be trimmed manually.
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          icon: const Icon(Icons.compress, color: Colors.orange, size: 34),
+          title: const Text('Clip will be reduced'),
+          content: Text(
+            'This clip is ${dur.inSeconds}s / '
+            '${(size / (1024 * 1024)).toStringAsFixed(1)} MB. GuideVibe '
+            'shorts fit 1 minute and 20 MB — it will be compressed'
+            '${tooLong ? ' and trimmed to 60 seconds' : ''} automatically.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13.5, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            if (tooLong)
+              TextButton(
+                onPressed: () => Navigator.pop(context, 'trim'),
+                child: const Text('Trim myself'),
+              ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, 'auto'),
+              child: Text(tooLong ? 'Use first minute' : 'Auto process'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null || !mounted) return;
+      var startSec = 0;
+      if (choice == 'trim') {
+        final picked = await _pickTrimStart(path, dur);
+        if (picked == null || !mounted) return;
+        startSec = picked;
       }
-      return;
+      final reduced = await _reduceVideo(path, dur, startSec);
+      if (reduced == null || !mounted) return;
+      usePath = reduced;
+      size = await File(usePath).length();
+      if (size > 20 * 1024 * 1024) {
+        if (mounted) {
+          newSnackBar(context,
+              title: 'Could not fit this clip under 20 MB — try a shorter '
+                  'or lower-resolution capture.');
+        }
+        return;
+      }
     }
+
     _preview?.dispose();
-    final c = VideoPlayerController.file(File(path));
+    final c = VideoPlayerController.file(File(usePath));
     try {
       await c.initialize();
       c.setLooping(true);
@@ -96,19 +160,154 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
       c.dispose();
       return;
     }
-    // Enforce the 1-minute limit up front (a little slack for rounding).
-    if (c.value.duration > const Duration(seconds: 62)) {
-      c.dispose();
-      if (mounted) {
-        newSnackBar(context,
-            title: 'GuideVibe clips must be 1 minute or less.');
-      }
-      return;
-    }
     setState(() {
-      _path = path;
+      _path = usePath;
       _preview = c;
     });
+  }
+
+  /// Manual trim: scrub to where the 60-second clip should START.
+  Future<int?> _pickTrimStart(String path, Duration dur) async {
+    final c = VideoPlayerController.file(File(path));
+    try {
+      await c.initialize();
+      c.setVolume(0);
+      await c.play();
+    } catch (_) {
+      c.dispose();
+      return 0;
+    }
+    if (!mounted) {
+      c.dispose();
+      return null;
+    }
+    final maxStart = (dur.inSeconds - 60).clamp(0, 24 * 3600);
+    double start = 0;
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cardBg(context),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) => Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Choose where your minute starts',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                      color: ink(context))),
+              const SizedBox(height: 12),
+              AspectRatio(
+                aspectRatio: c.value.aspectRatio == 0 ? 9 / 16 : c.value.aspectRatio,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: VideoPlayer(c),
+                ),
+              ),
+              Slider(
+                value: start,
+                max: maxStart.toDouble(),
+                divisions: maxStart > 0 ? maxStart : 1,
+                label: '${start.round()}s',
+                onChanged: (v) {
+                  setSheet(() => start = v);
+                  c.seekTo(Duration(seconds: v.round()));
+                },
+              ),
+              Text(
+                'Clip: ${start.round()}s → ${start.round() + 60}s',
+                style: const TextStyle(fontSize: 12.5, color: Colors.grey),
+              ),
+              const SizedBox(height: 10),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, start.round()),
+                style: FilledButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48)),
+                child: const Text('Use this start'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    c.dispose();
+    return picked;
+  }
+
+  /// Real compression with a REAL progress dialog (video_compress reports
+  /// actual percentage). 720p first; retries lower if still over 20 MB.
+  Future<String?> _reduceVideo(String path, Duration dur, int startSec) async {
+    final clipSecs =
+        (dur.inSeconds - startSec).clamp(1, 60);
+    final progress = ValueNotifier<double>(0);
+    final sub = VideoCompress.compressProgress$.subscribe((p) {
+      progress.value = p;
+    });
+    if (mounted) {
+      // Non-blocking progress dialog fed by the encoder itself.
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          content: ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, p, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(
+                    value: p > 0 ? (p / 100).clamp(0.0, 1.0) : null,
+                    minHeight: 6,
+                    borderRadius: BorderRadius.circular(3)),
+                const SizedBox(height: 12),
+                Text('Reducing clip… ${p.toStringAsFixed(0)}%',
+                    style: const TextStyle(
+                        fontSize: 13.5, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    String? out;
+    try {
+      var info = await VideoCompress.compressVideo(
+        path,
+        quality: VideoQuality.MediumQuality,
+        startTime: startSec,
+        duration: clipSecs,
+        includeAudio: true,
+        deleteOrigin: false,
+      );
+      var f = info?.file;
+      if (f != null && await f.length() > 20 * 1024 * 1024) {
+        // Still heavy — one more pass at a lower profile.
+        info = await VideoCompress.compressVideo(
+          f.path,
+          quality: VideoQuality.LowQuality,
+          includeAudio: true,
+          deleteOrigin: false,
+        );
+        f = info?.file ?? f;
+      }
+      out = f?.path;
+    } catch (_) {
+      out = null;
+    } finally {
+      sub.unsubscribe();
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // progress dialog
+      }
+    }
+    if (out == null && mounted) {
+      newSnackBar(context, title: 'Could not process this clip — try again.');
+    }
+    return out;
   }
 
   /// A short buzzing preview of the auto feel — pulses the phone like the
