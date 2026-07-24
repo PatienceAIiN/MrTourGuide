@@ -211,7 +211,11 @@ class GuideVibeApi {
           ? 'Videos over 160 MB are too large — trim it first.'
           : 'GuideVibe clips are limited to 20 MB.');
     }
-    final url = Uri.parse('$apiBase/guidevibe/upload').replace(queryParameters: {
+    // 100MB+ raw uploads bypass the Cloudflare edge (its body cap would
+    // reject them before our server ever sees the request).
+    final base =
+        reduce && size > 90 * 1024 * 1024 ? originApiBase : apiBase;
+    final url = Uri.parse('$base/guidevibe/upload').replace(queryParameters: {
       'userId': '$me',
       'filename': filePath.split('/').last,
       'caption': caption,

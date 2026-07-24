@@ -576,6 +576,11 @@ const _videoColumns =
 /// trimmed/enhanced, a poster thumbnail is extracted (real ffmpeg) and a
 /// haptic track is generated from its audio/motion. Replace with the real
 /// ML worker later — same DB contract.
+/// NOTE on over-limit uploads: cutting the socket mid-body makes Cloudflare
+/// swallow our 413 and emit a bare 502, so the app never sees the real
+/// message — ingest loops below DRAIN the remaining body (skipping writes)
+/// before replying. Bounded: the edge caps bodies at ~100MB anyway.
+
 /// Soundtrack files parked by /videos/upload-audio, waiting for the video
 /// upload that references them. Swept after an hour if never used.
 final Map<String, (String, DateTime)> _pendingAudio = {};
@@ -609,13 +614,14 @@ Future<Response> _uploadVideoAudio(Request request) async {
   final tmp = File('${Directory.systemTemp.path}/mrt_$id.$ext');
   final sink = tmp.openWrite();
   var size = 0;
+  var audioOver = false;
   try {
     await for (final chunk in request.read()) {
       size += chunk.length;
+      if (audioOver) continue; // drain — Cloudflare 502 note
       if (size > 10 * 1024 * 1024) {
-        await sink.close();
-        await tmp.delete();
-        return _json(413, {'error': 'Audio is limited to 10 MB.'});
+        audioOver = true;
+        continue;
       }
       sink.add(chunk);
     }
@@ -623,6 +629,12 @@ Future<Response> _uploadVideoAudio(Request request) async {
     try {
       await sink.close();
     } catch (_) {}
+  }
+  if (audioOver) {
+    try {
+      await tmp.delete();
+    } catch (_) {}
+    return _json(413, {'error': 'Audio is limited to 10 MB.'});
   }
   if (size == 0) return _json(400, {'error': 'Empty audio body.'});
   _pendingAudio[id] = (tmp.path, DateTime.now());
@@ -3009,13 +3021,14 @@ Future<Response> _uploadCommunityVideo(Request request) async {
   final tmpIn = File('${Directory.systemTemp.path}/mrt_pvid_$stamp.$ext');
   final sink = tmpIn.openWrite();
   var size = 0;
+  var postOver = false;
   try {
     await for (final chunk in request.read()) {
       size += chunk.length;
+      if (postOver) continue; // drain — Cloudflare 502 note
       if (size > _maxPostVideoBytes) {
-        await sink.close();
-        await tmpIn.delete();
-        return _json(413, {'error': 'Post videos are limited to 80 MB.'});
+        postOver = true;
+        continue;
       }
       sink.add(chunk);
     }
@@ -3023,6 +3036,12 @@ Future<Response> _uploadCommunityVideo(Request request) async {
     try {
       await sink.close();
     } catch (_) {}
+  }
+  if (postOver) {
+    try {
+      await tmpIn.delete();
+    } catch (_) {}
+    return _json(413, {'error': 'Post videos are limited to 80 MB.'});
   }
   if (size == 0) {
     try {
@@ -3293,17 +3312,14 @@ Future<Response> _uploadShort(Request request) async {
   final tmpIn = File('${Directory.systemTemp.path}/mrt_short_$stamp.$ext');
   final sink = tmpIn.openWrite();
   var size = 0;
+  var overLimit = false;
   try {
     await for (final chunk in request.read()) {
       size += chunk.length;
+      if (overLimit) continue; // drain — see the Cloudflare 502 note above
       if (size > maxIngest) {
-        await sink.close();
-        await tmpIn.delete();
-        return _json(413, {
-          'error': reduce
-              ? 'Videos over 160 MB are too large even for server processing.'
-              : 'GuideVibe clips are limited to 20 MB.'
-        });
+        overLimit = true;
+        continue;
       }
       sink.add(chunk);
     }
@@ -3311,6 +3327,14 @@ Future<Response> _uploadShort(Request request) async {
     try {
       await sink.close();
     } catch (_) {}
+  }
+  if (overLimit) {
+    await tmpIn.delete();
+    return _json(413, {
+      'error': reduce
+          ? 'Videos over 160 MB are too large even for server processing.'
+          : 'GuideVibe clips are limited to 20 MB.'
+    });
   }
   if (size == 0) {
     try {
