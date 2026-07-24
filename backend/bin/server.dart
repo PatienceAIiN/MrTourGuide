@@ -1378,6 +1378,8 @@ Future<Response> _adminUpdateCity(Request request, String slug) async {
     _autoCityCover(
         slug, rows.first[0] as String, rows.first[1] as String? ?? '');
   }
+  await _cacheBust('cities');
+  await _cacheBust('videos');
   return _json(200, {'ok': true});
 }
 
@@ -1397,6 +1399,10 @@ Future<Response> _adminDeleteCity(Request request, String slug) async {
     await _db.execute(Sql.named(sql), parameters: {'s': slug});
   }
   _logActivity('admin', 'city-deleted', '${exists.first[0]} ($slug)');
+  // Without these busts the public catalog kept serving the deleted place
+  // for up to 5 minutes — even through pull-to-refresh.
+  await _cacheBust('cities');
+  await _cacheBust('videos');
   return _json(200, {'ok': true});
 }
 

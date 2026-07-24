@@ -1610,6 +1610,10 @@ class _DashboardPageState extends State<DashboardPage>
   /// edit details, refresh the cover image, or delete the place.
   Future<void> _managePlace(City city) async {
     Haptics.tick();
+    // The sheet opens for every place; the actions unlock only for the
+    // creator who added it — everyone else sees them disabled.
+    final canManage =
+        city.ownerId != null && city.ownerId == AuthApi.currentUser?.id;
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: cardBg(context),
@@ -1627,8 +1631,29 @@ class _DashboardPageState extends State<DashboardPage>
                   color: Colors.grey.withValues(alpha: 0.4),
                   borderRadius: BorderRadius.circular(2)),
             ),
+            if (!canManage)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.lock_outline,
+                        size: 15, color: Colors.grey),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Only the creator who added "${city.name}" can '
+                        'manage it.',
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ListTile(
-              leading: const Icon(Icons.edit_location_alt, color: blue),
+              enabled: canManage,
+              leading: Icon(Icons.edit_location_alt,
+                  color: canManage ? blue : Colors.grey),
               title: Text('Edit "${city.name}"'),
               subtitle: const Text('Name, location, description'),
               onTap: () {
@@ -1637,7 +1662,9 @@ class _DashboardPageState extends State<DashboardPage>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.image, color: Colors.teal),
+              enabled: canManage,
+              leading: Icon(Icons.image,
+                  color: canManage ? Colors.teal : Colors.grey),
               title: const Text('Refresh cover image'),
               subtitle: const Text('Fetch a fresh high-res photo'),
               onTap: () async {
@@ -1657,9 +1684,11 @@ class _DashboardPageState extends State<DashboardPage>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: red),
-              title: const Text('Delete place',
-                  style: TextStyle(color: red)),
+              enabled: canManage,
+              leading: Icon(Icons.delete_outline,
+                  color: canManage ? red : Colors.grey),
+              title: Text('Delete place',
+                  style: TextStyle(color: canManage ? red : Colors.grey)),
               subtitle:
                   const Text('Removes the place and all its experiences'),
               onTap: () async {
@@ -1914,13 +1943,10 @@ class _DashboardPageState extends State<DashboardPage>
                         for (final city in cities)
                           Padding(
                             padding: const EdgeInsets.only(right: 8),
-                            // Long-press YOUR OWN place to manage it —
-                            // others' places show no management options.
+                            // Long-press any place for the manage sheet;
+                            // the controls inside enable only for its owner.
                             child: GestureDetector(
-                              onLongPress: city.ownerId != null &&
-                                      city.ownerId == AuthApi.currentUser?.id
-                                  ? () => _managePlace(city)
-                                  : null,
+                              onLongPress: () => _managePlace(city),
                               child: ChoiceChip(
                                 label:
                                     Text('${city.name} (${city.videoCount})'),
