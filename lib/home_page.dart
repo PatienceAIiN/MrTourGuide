@@ -697,7 +697,7 @@ class _HomePageState extends State<HomeScreen>
               const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+                    colors: [Color(0xFF0F6E84), Color(0xFF3CEBFF)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -775,7 +775,7 @@ class _HomePageState extends State<HomeScreen>
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+          colors: [Color(0xFF0F6E84), Color(0xFF3CEBFF)],
         ),
       ),
       child: const Center(

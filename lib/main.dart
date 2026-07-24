@@ -26,7 +26,7 @@ void main() async {
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E319D),
+          seedColor: const Color(0xFF0F6E84),
           secondary: const Color(0xFF3CEBFF),
           tertiary: const Color(0xFF9C27B0),
         ),
@@ -64,7 +64,7 @@ void main() async {
         ),
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF1E319D)),
+              foregroundColor: const Color(0xFF0F6E84)),
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
@@ -95,7 +95,7 @@ void main() async {
         useMaterial3: true,
         brightness: Brightness.dark,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E319D),
+          seedColor: const Color(0xFF0F6E84),
           brightness: Brightness.dark,
           secondary: const Color(0xFF3CEBFF),
           tertiary: const Color(0xFF9C27B0),
@@ -122,7 +122,7 @@ void main() async {
         ),
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF9DB2FF)),
+              foregroundColor: const Color(0xFF4DD6EE)),
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
@@ -408,10 +408,10 @@ class _ProductLine extends StatelessWidget {
             TextSpan(
               text: 'PatienceAI',
               style: TextStyle(
-                color: const Color(0xFF1E319D),
+                color: const Color(0xFF0F6E84),
                 fontWeight: FontWeight.w700,
                 decoration: TextDecoration.underline,
-                decorationColor: const Color(0xFF1E319D).withValues(alpha: .4),
+                decorationColor: const Color(0xFF0F6E84).withValues(alpha: .4),
               ),
             ),
           ],

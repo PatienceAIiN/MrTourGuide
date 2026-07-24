@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
-const blue = Color.fromARGB(255, 30, 49, 157);
+/// Brand colour (deep teal) — pairs with the cyan accent and the
+/// dark-teal CTAs; readable on light surfaces and acceptable on dark
+/// (adaptive spots use [brandInk] for the bright-cyan dark variant).
+const blue = Color(0xFF0F6E84);
 const black = Color.fromARGB(255, 0, 0, 0);
 const grey = Color.fromARGB(255, 181, 181, 181);
 const white = Color.fromARGB(255, 255, 255, 255);
@@ -89,10 +92,10 @@ Color inkSoft(BuildContext context) =>
         ? Colors.white60
         : Colors.black54;
 
-/// Brand blue as a *foreground* (text/icon) colour. The base navy (#1E319D)
-/// is nearly invisible on the dark scaffold, so dark mode gets a light
-/// periwinkle that keeps the brand identity while staying readable.
+/// Brand teal as a *foreground* (text/icon) colour. The deep teal is
+/// too dim on the dark scaffold, so dark mode uses a bright cyan that
+/// keeps the identity while staying readable.
 Color brandInk(BuildContext context) =>
     Theme.of(context).brightness == Brightness.dark
-        ? const Color(0xFF9DB2FF)
+        ? const Color(0xFF4DD6EE)
         : blue;

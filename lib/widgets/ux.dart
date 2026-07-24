@@ -55,7 +55,7 @@ class _CapsuleHeroState extends State<CapsuleHero> {
           borderRadius: BorderRadius.circular(100),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF1E319D).withValues(alpha: 0.25),
+              color: const Color(0xFF0F6E84).withValues(alpha: 0.25),
               blurRadius: 30,
               offset: const Offset(0, 12),
             ),
@@ -73,7 +73,7 @@ class _CapsuleHeroState extends State<CapsuleHero> {
                       gradient: LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+                        colors: [Color(0xFF0F6E84), Color(0xFF3CEBFF)],
                       ),
                     ),
                     child: const Center(

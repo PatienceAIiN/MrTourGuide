@@ -1798,7 +1798,7 @@ class _DashboardPageState extends State<DashboardPage>
           gradient: LinearGradient(
             colors: processing
                 ? [Colors.grey, Colors.blueGrey]
-                : [const Color(0xFF1E319D), const Color(0xFF3CEBFF)],
+                : [const Color(0xFF0F6E84), const Color(0xFF3CEBFF)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),

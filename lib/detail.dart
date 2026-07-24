@@ -584,7 +584,7 @@ class _DetailScreenState extends State<DetailScreen> {
           height: 44,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [Color(0xFF1E319D), Color(0xFF3CEBFF)],
+              colors: [Color(0xFF0F6E84), Color(0xFF3CEBFF)],
             ),
             borderRadius: BorderRadius.circular(12),
           ),
