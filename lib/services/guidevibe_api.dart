@@ -195,6 +195,8 @@ class GuideVibeApi {
     required String caption,
     String city = '',
     String kind = 'normal',
+    // Raw upload for server-side reduction (formats the phone can't shrink).
+    bool reduce = false,
     String? musicUrl,
     double musicStart = 0,
     void Function(double progress)? onProgress,
@@ -203,8 +205,11 @@ class GuideVibeApi {
     if (me == null) throw const AuthException('Sign in to post a GuideVibe.');
     final file = File(filePath);
     final size = await file.length();
-    if (size > 20 * 1024 * 1024) {
-      throw const AuthException('GuideVibe clips are limited to 20 MB.');
+    final cap = reduce ? 160 * 1024 * 1024 : 20 * 1024 * 1024;
+    if (size > cap) {
+      throw AuthException(reduce
+          ? 'Videos over 160 MB are too large — trim it first.'
+          : 'GuideVibe clips are limited to 20 MB.');
     }
     final url = Uri.parse('$apiBase/guidevibe/upload').replace(queryParameters: {
       'userId': '$me',
@@ -212,6 +217,7 @@ class GuideVibeApi {
       'caption': caption,
       if (city.isNotEmpty) 'city': city,
       'kind': kind,
+      if (reduce) 'reduce': '1',
       if (musicUrl != null && musicUrl.isNotEmpty) 'musicUrl': musicUrl,
       if (musicUrl != null && musicUrl.isNotEmpty)
         'musicStart': musicStart.toStringAsFixed(1),

@@ -40,6 +40,10 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
   double _musicStart = 0;
   double _uploadProgress = 0;
 
+  /// The phone couldn't safely reduce this clip (fragmented/web-ripped MP4
+  /// formats crash Android's compressor) — the server does it instead.
+  bool _serverReduce = false;
+
   @override
   void initState() {
     super.initState();
@@ -100,12 +104,52 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
     if (!mounted) return;
 
     var usePath = path;
+    var serverReduce = false;
     final knownDur = dur > Duration.zero;
-    // Unknown length counts as long — we then keep only the first minute
-    // instead of ever full-encoding a giant file (that was the crash).
-    final tooLong = !knownDur || dur > const Duration(seconds: 62);
+    final tooLong = knownDur && dur > const Duration(seconds: 62);
     final tooBig = size > 20 * 1024 * 1024;
-    if (tooLong || tooBig) {
+
+    if (!knownDur && (tooBig || size > 0)) {
+      // Web-ripped / fragmented MP4s: the phone can't even read their
+      // length — running the native compressor on them CRASHES the app,
+      // so those clips are reduced on our servers instead.
+      if (size > 160 * 1024 * 1024) {
+        if (mounted) {
+          newSnackBar(context,
+              title: 'Videos over 160 MB are too large — trim it first.');
+        }
+        return;
+      }
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          icon: const Icon(Icons.cloud_sync, color: Colors.orange, size: 34),
+          title: const Text('Processed on our servers'),
+          content: Text(
+            'This video format can\'t be reduced on your phone. It will '
+            'upload as-is (${(size / (1024 * 1024)).toStringAsFixed(1)} MB) '
+            'and our servers will keep the FIRST MINUTE, compressed for '
+            'GuideVibe.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13.5, height: 1.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
+      if (go != true || !mounted) return;
+      serverReduce = true;
+    } else if (tooLong || tooBig) {
       // Explain the reduction; over-long clips can be trimmed manually.
       final choice = await showDialog<String>(
         context: context,
@@ -127,7 +171,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
               onPressed: () => Navigator.pop(context),
               child: const Text('Cancel'),
             ),
-            if (tooLong && knownDur)
+            if (tooLong)
               TextButton(
                 onPressed: () => Navigator.pop(context, 'trim'),
                 child: const Text('Trim myself'),
@@ -148,35 +192,56 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
       }
       final reduced =
           await _reduceVideo(path, dur, startSec, forceTrim: tooLong);
-      if (reduced == null || !mounted) return;
-      usePath = reduced;
-      size = await File(usePath).length();
-      if (size > 20 * 1024 * 1024) {
+      if (!mounted) return;
+      var ok = reduced != null;
+      if (ok) {
+        usePath = reduced;
+        size = await File(usePath).length();
+        if (size > 20 * 1024 * 1024) ok = false;
+      }
+      if (!ok) {
+        // Phone-side reduction failed — hand it to the server (raw ≤160MB).
+        final rawSize = await File(path).length();
+        if (rawSize > 160 * 1024 * 1024) {
+          if (mounted) {
+            newSnackBar(context,
+                title: 'Could not reduce this clip — try a shorter capture.');
+          }
+          return;
+        }
         if (mounted) {
           newSnackBar(context,
-              title: 'Could not fit this clip under 20 MB — try a shorter '
-                  'or lower-resolution capture.');
+              title: 'Reducing on our servers instead — the first minute '
+                  'is kept.');
         }
-        return;
+        usePath = path;
+        serverReduce = true;
       }
     }
 
     _preview?.dispose();
-    final c = VideoPlayerController.file(File(usePath));
+    var controller = VideoPlayerController.file(File(usePath));
     try {
-      await c.initialize();
-      c.setLooping(true);
-      c.setVolume(0);
-      await c.play();
-    } catch (_) {}
+      await controller.initialize();
+      controller.setLooping(true);
+      controller.setVolume(0);
+      await controller.play();
+    } catch (_) {
+      // Some web formats can't preview on-device — the clip still uploads
+      // (server-reduced); the drop zone shows a placeholder instead.
+      controller.dispose();
+      controller = VideoPlayerController.file(File(usePath));
+    }
     if (!mounted) {
-      c.dispose();
+      controller.dispose();
       return;
     }
     setState(() {
       _path = usePath;
-      _preview = c;
+      _preview = controller.value.isInitialized ? controller : null;
+      _serverReduce = serverReduce;
     });
+    if (!controller.value.isInitialized) controller.dispose();
   }
 
   /// Manual trim: scrub to where the 60-second clip should START.
@@ -367,6 +432,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         caption: _caption.text.trim(),
         city: _city.text.trim(),
         kind: _kind,
+        reduce: _serverReduce,
         musicUrl: _music?.audio,
         musicStart: _musicStart,
         onProgress: (p) {
@@ -468,6 +534,58 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
 
   Widget _dropZone() {
     final c = _preview;
+    if (c == null && _path != null) {
+      // Selected, but this format can't preview on-device.
+      return Center(
+        child: Container(
+          height: 200,
+          margin: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: cardBg(context),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.orange.withValues(alpha: .4)),
+          ),
+          child: Stack(
+            children: [
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.cloud_sync,
+                        color: Colors.orange, size: 38),
+                    const SizedBox(height: 10),
+                    Text('Video attached',
+                        style: TextStyle(
+                            color: ink(context),
+                            fontWeight: FontWeight.w800,
+                            fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Preview unavailable — it will be processed on our '
+                      'servers (first minute kept).',
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(color: inkSoft(context), fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                right: 8,
+                top: 8,
+                child: IconButton(
+                  icon: Icon(Icons.close, color: inkSoft(context), size: 20),
+                  onPressed: () => setState(() {
+                    _path = null;
+                    _serverReduce = false;
+                  }),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     if (c != null && c.value.isInitialized) {
       return Center(
         child: ClipRRect(
@@ -493,6 +611,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
                           setState(() {
                             _preview = null;
                             _path = null;
+                            _serverReduce = false;
                           });
                         },
                         child: const Padding(

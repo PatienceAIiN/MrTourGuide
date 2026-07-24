@@ -3277,6 +3277,12 @@ Future<Response> _uploadShort(Request request) async {
   final musicUrl = musicOk ? musicUrlRaw : null;
   final musicStart =
       (double.tryParse(params['musicStart'] ?? '0') ?? 0).clamp(0, 3600);
+  // reduce=1: the app couldn't safely shrink this clip on-device (fragmented
+  // / web-ripped MP4s crash Android's native compressor) — accept the RAW
+  // file up to 160 MB and do the whole reduction here with ffmpeg, which
+  // handles those formats fine. The stored clip still comes out ≤62s @720p.
+  final reduce = params['reduce'] == '1';
+  final maxIngest = reduce ? 160 * 1024 * 1024 : _maxShortBytes;
   final original = _sanitizeFilename(params['filename'] ?? 'short.mp4');
   final ext = original.split('.').last.toLowerCase();
   if (!{'mp4', 'mov', 'm4v', 'webm', '3gp'}.contains(ext)) {
@@ -3290,10 +3296,14 @@ Future<Response> _uploadShort(Request request) async {
   try {
     await for (final chunk in request.read()) {
       size += chunk.length;
-      if (size > _maxShortBytes) {
+      if (size > maxIngest) {
         await sink.close();
         await tmpIn.delete();
-        return _json(413, {'error': 'GuideVibe clips are limited to 20 MB.'});
+        return _json(413, {
+          'error': reduce
+              ? 'Videos over 160 MB are too large even for server processing.'
+              : 'GuideVibe clips are limited to 20 MB.'
+        });
       }
       sink.add(chunk);
     }
@@ -3320,7 +3330,7 @@ Future<Response> _uploadShort(Request request) async {
     ])
           .timeout(const Duration(minutes: 5));
     final dur = double.tryParse('${probe.stdout}'.trim()) ?? 0;
-    if (dur > _maxShortSeconds + 5) {
+    if (!reduce && dur > _maxShortSeconds + 5) {
       await tmpIn.delete();
       return _json(400,
           {'error': 'GuideVibe clips must be 1 minute or less.'});
@@ -3417,6 +3427,7 @@ Future<Response> _uploadShort(Request request) async {
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
         '-c:a', 'aac', '-b:a', haveMusic ? '128k' : '96k',
         '-movflags', '+faststart',
+        '-t', '62', // shorts never exceed a minute, whatever came in
         tmpOut.path,
       ]);
       final r = await Process.run('ffmpeg', ffArgs)
@@ -3426,7 +3437,7 @@ Future<Response> _uploadShort(Request request) async {
         final outSize = await tmpOut.length();
         // With music we always keep the muxed output; otherwise only when it
         // actually shrank.
-        if (outSize > 0 && (haveMusic || outSize < size)) {
+        if (outSize > 0 && (haveMusic || reduce || outSize < size)) {
           await _storage.save('guidevibe', finalName, tmpOut.openRead());
           analyzePath = tmpOut.path;
           await _db.execute(
