@@ -74,6 +74,7 @@ class _UserFeedState extends State<_UserFeed>
     super.initState();
     _tabVisible = TabEvents.changed.value == _guideVibeTabIndex;
     TabEvents.changed.addListener(_onTabChanged);
+    ContentEvents.refresh.addListener(_onContentPing);
     WidgetsBinding.instance.addObserver(this);
     _load(initial: true);
   }
@@ -93,9 +94,14 @@ class _UserFeedState extends State<_UserFeed>
     }
   }
 
+  void _onContentPing() {
+    if (mounted) _load();
+  }
+
   @override
   void dispose() {
     TabEvents.changed.removeListener(_onTabChanged);
+    ContentEvents.refresh.removeListener(_onContentPing);
     WidgetsBinding.instance.removeObserver(this);
     _pager.dispose();
     super.dispose();

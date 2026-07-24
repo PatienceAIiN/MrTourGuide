@@ -508,7 +508,8 @@ class MediaApi {
   /// (prior {role, content} turns) so follow-ups revise the same plan.
   static Future<ItineraryResult> aiItinerary(String query,
       {List<Map<String, String>> history = const []}) async {
-    final decoded = await _postJson('/ai/itinerary', {
+    // AI generation can take well over the default timeout.
+    final decoded = await _postJson('/ai/itinerary', timeout: const Duration(seconds: 90), {
       'query': query,
       if (history.isNotEmpty) 'history': history,
     });
@@ -611,7 +612,7 @@ class MediaApi {
 
   /// Minimal AI overview for a search query (backend → Groq + web search).
   static Future<AiOverview> aiSearch(String query) async {
-    final decoded = await _postJson('/ai/search', {'query': query});
+    final decoded = await _postJson('/ai/search', timeout: const Duration(seconds: 90), {'query': query});
     return AiOverview(
       overview: decoded['overview'] as String,
       model: decoded['model'] as String? ?? 'groq',
@@ -981,14 +982,15 @@ class MediaApi {
       _postJson(path, body);
 
   static Future<Map<String, dynamic>> _postJson(
-      String path, Map<String, dynamic> body) async {
+      String path, Map<String, dynamic> body,
+      {Duration timeout = const Duration(seconds: 20)}) async {
     late http.Response response;
     try {
       response = await http
           .post(Uri.parse('$apiBase$path'),
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode(body))
-          .timeout(const Duration(seconds: 20));
+          .timeout(timeout);
     } catch (_) {
       throw const AuthException(
           'Could not sync — check your internet and try again.');

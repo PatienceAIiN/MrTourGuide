@@ -66,13 +66,23 @@ class _YoutubePlayerPageState extends State<YoutubePlayerPage> {
         // out to the YouTube site/app feed.
         onNavigationRequest: (request) {
           final ok = request.url.contains('/embed/') ||
-              request.url.contains('about:blank');
+              request.url.contains('about:blank') ||
+              request.url.contains('mrtourguide.patienceai.in');
           return ok ? NavigationDecision.navigate : NavigationDecision.prevent;
         },
       ))
-      ..loadRequest(Uri.parse(
-          'https://www.youtube.com/embed/$id?autoplay=1&playsinline=1'
-          '&rel=0&modestbranding=1&iv_load_policy=3'));
+      // Loaded as an HTML page from OUR origin so the iframe request carries
+      // a Referer — YouTube rejects referer-less embeds with error 153.
+      ..loadHtmlString('''
+<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
+iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style>
+</head><body>
+<iframe src="https://www.youtube.com/embed/$id?autoplay=1&playsinline=1&rel=0&modestbranding=1&iv_load_policy=3"
+ allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>
+</body></html>
+''', baseUrl: 'https://mrtourguide.patienceai.in');
     // Autoplay needs the no-gesture flag on Android.
     final platform = _web.platform;
     if (platform is AndroidWebViewController) {

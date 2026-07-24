@@ -11,6 +11,7 @@ import 'package:mrtouride/services/auth_api.dart';
 import 'package:mrtouride/services/location_service.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/notification_service.dart';
+import 'package:mrtouride/services/tab_events.dart';
 import 'package:mrtouride/widgets/notifications_sheet.dart';
 import 'package:mrtouride/widgets/youtube_player_page.dart';
 import 'package:mrtouride/widgets/news_section.dart';
@@ -56,6 +57,10 @@ class _HomePageState extends State<HomeScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Push said new content landed, or the user came back to this tab —
+    // refresh WITHOUT waiting for the periodic tick.
+    ContentEvents.refresh.addListener(_onContentPing);
+    TabEvents.changed.addListener(_onTabReturn);
     _hydrateFromCache(); // paint the last-known data INSTANTLY
     _load(initial: true);
     _loadNews();
@@ -84,8 +89,21 @@ class _HomePageState extends State<HomeScreen>
     }
   }
 
+  void _onContentPing() {
+    if (!mounted) return;
+    _load();
+    _loadNews();
+    _refreshUnseen();
+  }
+
+  void _onTabReturn() {
+    if (mounted && TabEvents.changed.value == 0) _load();
+  }
+
   @override
   void dispose() {
+    ContentEvents.refresh.removeListener(_onContentPing);
+    TabEvents.changed.removeListener(_onTabReturn);
     WidgetsBinding.instance.removeObserver(this);
     _phraseTimer?.cancel();
     _syncTimer?.cancel();

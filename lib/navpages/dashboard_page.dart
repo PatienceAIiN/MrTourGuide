@@ -73,6 +73,8 @@ class _DashboardPageState extends State<DashboardPage>
       if (mounted) _silentSync();
     });
     TabEvents.changed.addListener(_onTabChanged);
+    // Push-driven instant refresh (new video ready, new place...).
+    ContentEvents.refresh.addListener(_onContentPing);
   }
 
   void _onTabChanged() {
@@ -100,11 +102,17 @@ class _DashboardPageState extends State<DashboardPage>
           ..addAll(page.videos);
         hasMore = page.hasMore;
       });
+      _managePolling();
     } catch (_) {}
+  }
+
+  void _onContentPing() {
+    if (mounted) _silentSync();
   }
 
   @override
   void dispose() {
+    ContentEvents.refresh.removeListener(_onContentPing);
     TabEvents.changed.removeListener(_onTabChanged);
     _syncTimer?.cancel();
     _pollTimer?.cancel();
@@ -116,7 +124,7 @@ class _DashboardPageState extends State<DashboardPage>
   void _managePolling() {
     final anyProcessing = videos.any((v) => v.isProcessing);
     if (anyProcessing && _pollTimer == null) {
-      _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      _pollTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
         final shown = videos.length;
         final city = selectedCity;
         if (city == null) return;

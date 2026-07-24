@@ -775,10 +775,12 @@ void _scheduleMlProcessing(int videoId, {Future<void> Function()? preprocess}) {
         parameters: {'id': videoId},
       );
       if (meta.isNotEmpty) {
-        _sendPush(
-          await _tokensFor(excludeUserId: meta.first[2] as int?),
-          'New experience on Mr.TourGuide',
+        // Locals first, then everyone who wants all-location alerts.
+        _sendPushByLocation(
+          '${meta.first[1]}',
+          'New experience in ${meta.first[1]}',
           '"${meta.first[0]}" is live \u2014 feel it now.',
+          excludeUserId: meta.first[2] as int?,
           data: {'type': 'video', 'city': '${meta.first[1]}'},
         );
       }
@@ -978,6 +980,41 @@ Future<void> _sendPush(List<String> tokens, String title, String body,
   }
 }
 
+/// Location-targeted fan-out for "new content in <city>": wave 1 = devices
+/// in that city; wave 2 = everyone else EXCEPT those who opted into
+/// location-only alerts. Sent in that order so locals hear first.
+Future<void> _sendPushByLocation(
+  String city,
+  String title,
+  String body, {
+  int? excludeUserId,
+  Map<String, String>? data,
+}) async {
+  try {
+    final local = await _db.execute(
+      Sql.named('SELECT token FROM push_tokens '
+          'WHERE city ILIKE @c AND user_id IS DISTINCT FROM @x LIMIT 500'),
+      parameters: {'c': city, 'x': excludeUserId},
+    );
+    final localTokens = [for (final r in local) r[0] as String];
+    if (localTokens.isNotEmpty) {
+      await _sendPush(localTokens, title, body, data: data);
+    }
+    final rest = await _db.execute(
+      Sql.named('SELECT token FROM push_tokens '
+          'WHERE (city IS NULL OR city NOT ILIKE @c) AND loc_only = false '
+          'AND user_id IS DISTINCT FROM @x LIMIT 500'),
+      parameters: {'c': city, 'x': excludeUserId},
+    );
+    final restTokens = [for (final r in rest) r[0] as String];
+    if (restTokens.isNotEmpty) {
+      await _sendPush(restTokens, title, body, data: data);
+    }
+  } catch (e) {
+    print('location push failed: $e');
+  }
+}
+
 Future<List<String>> _tokensFor({int? userId, int? excludeUserId}) async {
   final rows = await _db.execute(
     Sql.named('SELECT token FROM push_tokens '
@@ -999,10 +1036,14 @@ Future<Response> _pushRegister(Request request) async {
   if (token.isEmpty || token.length > 512) {
     return _json(400, {'error': 'token required'});
   }
+  final city = ((body?['city'] as String?) ?? '').trim();
+  final locOnly = body?['locOnly'] == true;
   await _db.execute(
-    Sql.named('INSERT INTO push_tokens (token, user_id) VALUES (@t, @u) '
-        'ON CONFLICT (token) DO UPDATE SET user_id = @u, updated_at = now()'),
-    parameters: {'t': token, 'u': userId},
+    Sql.named('INSERT INTO push_tokens (token, user_id, city, loc_only) '
+        'VALUES (@t, @u, @c, @l) '
+        'ON CONFLICT (token) DO UPDATE SET user_id = @u, city = @c, '
+        'loc_only = @l, updated_at = now()'),
+    parameters: {'t': token, 'u': userId, 'c': city, 'l': locOnly},
   );
   return _json(200, {'ok': true});
 }
@@ -1227,6 +1268,7 @@ Future<Response> _adminAddCity(Request request) async {
   );
   _logActivity('admin', 'city-added', '$name ($slug)');
   _autoCityCover(slug, name, location); // HD cover embeds itself
+  await _cacheBust('cities');
   return _json(201, {'slug': slug});
 }
 
@@ -2289,6 +2331,7 @@ Future<Response> _addCity(Request request) async {
   // Fire-and-forget: fetch a high-res cover so the place looks alive
   // in the carousel and hero the moment it exists.
   _autoCityCover(slug, name, location);
+  await _cacheBust('cities');
   return _json(201, {'slug': slug, 'name': name});
 }
 
@@ -3209,10 +3252,11 @@ Future<Response> _uploadShort(Request request) async {
         },
       );
       // Tell travelers a new GuideVibe just landed.
-      _sendPush(
-        await _tokensFor(excludeUserId: userId),
+      _sendPushByLocation(
+        city,
         'New GuideVibe',
         '${user.first[0]} shared a new GuideVibe short.',
+        excludeUserId: userId,
         data: {'type': 'guidevibe'},
       );
     } catch (e) {
@@ -5541,6 +5585,11 @@ Future<void> main() async {
       'token TEXT PRIMARY KEY, '
       'user_id INTEGER, '
       'updated_at TIMESTAMPTZ NOT NULL DEFAULT now())');
+  // Location targeting: the device's city + "my location only" preference.
+  await _db.execute(
+      'ALTER TABLE push_tokens ADD COLUMN IF NOT EXISTS city TEXT');
+  await _db.execute('ALTER TABLE push_tokens '
+      'ADD COLUMN IF NOT EXISTS loc_only BOOLEAN NOT NULL DEFAULT false');
 
   // Social layer: follows, profile extras, threaded replies, reshares.
   await _db.execute('CREATE TABLE IF NOT EXISTS follows ('

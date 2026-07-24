@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'auth_api.dart';
 import 'local_notifs.dart';
+import 'location_service.dart';
 import 'media_api.dart';
 import 'settings_service.dart';
+import 'tab_events.dart';
 
 /// Firebase Cloud Messaging: real push notifications, even when the app is
 /// closed. Token registers against the signed-in account so social pushes
@@ -39,6 +41,8 @@ class PushService {
         if (n != null && SettingsService.instance.notifications) {
           LocalNotifs.show(n.title ?? 'Mr.Tour Guide', n.body ?? '');
         }
+        // New content just landed — let every open screen refresh itself.
+        ContentEvents.ping();
       });
     } catch (_) {
       // Push is a bonus — never let it break the app.
@@ -47,10 +51,26 @@ class PushService {
 
   static Future<void> _register(String token) async {
     try {
+      // City + the location-only preference power location-targeted pushes
+      // ("new Delhi experience" goes to Delhi people first).
+      String city = '';
+      try {
+        city = (await LocationService.current()).$2;
+      } catch (_) {}
       await MediaApi.getJsonPost('/push/register', {
         'token': token,
         'userId': AuthApi.currentUser?.id,
+        'city': city,
+        'locOnly': SettingsService.instance.locationNotifs,
       });
+    } catch (_) {}
+  }
+
+  /// Re-register with current prefs (e.g. after the location-only toggle).
+  static Future<void> refreshRegistration() async {
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token != null) await _register(token);
     } catch (_) {}
   }
 }

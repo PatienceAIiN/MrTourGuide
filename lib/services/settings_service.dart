@@ -18,6 +18,7 @@ class SettingsService extends ChangeNotifier {
   static const _kReduceMotion = 'settings.reduceMotion';
   static const _kUiHaptics = 'settings.uiHaptics';
   static const _kNotifications = 'settings.notifications';
+  static const _kLocationNotifs = 'settings.locationNotifs';
   static const _kDarkMode = 'settings.darkMode';
 
   bool haptics = true;
@@ -30,6 +31,10 @@ class SettingsService extends ChangeNotifier {
 
   /// New-content notifications (toast + bell badge polling).
   bool notifications = true;
+
+  /// Location-specific pushes only: when ON, "new experience" notifications
+  /// arrive only for the user's own city; when OFF, all locations notify.
+  bool locationNotifs = false;
 
   /// Dark theme for the whole app.
   bool darkMode = false;
@@ -52,6 +57,7 @@ class SettingsService extends ChangeNotifier {
       reduceMotion = prefs.getBool(_kReduceMotion) ?? false;
       uiHaptics = prefs.getBool(_kUiHaptics) ?? true;
       notifications = prefs.getBool(_kNotifications) ?? true;
+      locationNotifs = prefs.getBool(_kLocationNotifs) ?? false;
       darkMode = prefs.getBool(_kDarkMode) ?? false;
     } catch (_) {
       // Defaults are fine if prefs are unavailable (e.g. tests).
@@ -71,6 +77,7 @@ class SettingsService extends ChangeNotifier {
       await prefs.setBool(_kReduceMotion, reduceMotion);
       await prefs.setBool(_kUiHaptics, uiHaptics);
       await prefs.setBool(_kNotifications, notifications);
+      await prefs.setBool(_kLocationNotifs, locationNotifs);
       await prefs.setBool(_kDarkMode, darkMode);
     } catch (_) {}
   }

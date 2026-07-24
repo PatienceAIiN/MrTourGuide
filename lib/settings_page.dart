@@ -13,6 +13,7 @@ import 'services/local_notifs.dart';
 import 'navpages/my_page.dart';
 import 'services/api_base.dart';
 import 'services/media_api.dart';
+import 'services/push_service.dart';
 import 'services/settings_service.dart';
 import 'services/update_service.dart';
 import 'widgets/feedback_dialog.dart';
@@ -172,6 +173,19 @@ class _SettingsPageState extends State<SettingsPage> {
                       'You will now hear about new experiences, replies '
                           'and updates.');
                 }
+              },
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.my_location, color: Colors.teal),
+              title: const Text('My location only'),
+              subtitle: const Text('New-experience alerts just for your '
+                  'city; off = all places notify'),
+              value: s.locationNotifs,
+              activeThumbColor: blue,
+              onChanged: (v) {
+                _update(() => s.locationNotifs = v);
+                // Tell the server so targeting changes immediately.
+                PushService.refreshRegistration();
               },
             ),
           ]),

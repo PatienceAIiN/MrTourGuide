@@ -35,6 +35,7 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
   VideoPlayerController? controller;
   String? error;
   bool controlsVisible = true;
+  bool _landscape = false;
   Timer? _hideTimer;
   Timer? _hapticTimer;
   int _nextEvent = 0;
@@ -306,6 +307,11 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
 
   @override
   void dispose() {
+    // Leave the screen the way we found it.
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     _hideTimer?.cancel();
     _hapticTimer?.cancel();
     controller?.dispose();
@@ -517,6 +523,24 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
                         onTap: () {
                           setState(() => sound = !sound);
                           c?.setVolume(sound ? 1 : 0);
+                        },
+                      ),
+                      const SizedBox(width: 10),
+                      _iconToggle(
+                        icon: Icons.screen_rotation,
+                        tooltip: _landscape ? 'Portrait' : 'Landscape',
+                        active: _landscape,
+                        onTap: () {
+                          setState(() => _landscape = !_landscape);
+                          SystemChrome.setPreferredOrientations(_landscape
+                              ? [
+                                  DeviceOrientation.landscapeLeft,
+                                  DeviceOrientation.landscapeRight,
+                                ]
+                              : [
+                                  DeviceOrientation.portraitUp,
+                                  DeviceOrientation.portraitDown,
+                                ]);
                         },
                       ),
                       if (haptics && widget.video.hapticEvents.isNotEmpty) ...[
