@@ -5144,7 +5144,9 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
   final city = cityRow.first[0] as String;
 
   final stamp = DateTime.now().millisecondsSinceEpoch;
-  final tmpIn = File('${Directory.systemTemp.path}/mrt_th_$stamp.$ext');
+  // '_in' suffix: a .jpg upload must not collide with the .jpg output —
+  // ffmpeg refuses to read and write the same path.
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_th_${stamp}_in.$ext');
   await tmpIn.writeAsBytes(bytes);
   final tmpOut = File('${Directory.systemTemp.path}/mrt_th_$stamp.jpg');
   final result = await Process.run('ffmpeg', [
@@ -5552,7 +5554,8 @@ Future<Response> _uploadAvatar(Request request) async {
   if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
 
   final stamp = DateTime.now().millisecondsSinceEpoch;
-  final tmpIn = File('${Directory.systemTemp.path}/mrt_av_$stamp.$ext');
+  // '_in' suffix: a .jpg upload must not collide with the .jpg output.
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_av_${stamp}_in.$ext');
   await tmpIn.writeAsBytes(bytes);
   final tmpOut = File('${Directory.systemTemp.path}/mrt_av_$stamp.jpg');
   final result = await Process.run('ffmpeg', [
@@ -5800,7 +5803,8 @@ Future<Response> _uploadUserCover(Request request) async {
   }
   if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
   final stamp = DateTime.now().millisecondsSinceEpoch;
-  final tmpIn = File('${Directory.systemTemp.path}/mrt_uc_$stamp.$ext');
+  // '_in' suffix: a .jpg upload must not collide with the .jpg output.
+  final tmpIn = File('${Directory.systemTemp.path}/mrt_uc_${stamp}_in.$ext');
   await tmpIn.writeAsBytes(bytes);
   final tmpOut = File('${Directory.systemTemp.path}/mrt_uc_$stamp.jpg');
   final result = await Process.run('ffmpeg', [
