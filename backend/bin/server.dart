@@ -413,6 +413,15 @@ Middleware _redisCache() {
           ? 900
           : (path.endsWith('/rating') || path.endsWith('/comments') ? 30 : null);
       if (ttl == null) return inner(request);
+      // NEVER cache personalized views ("my uploads", per-user feeds) —
+      // caching them made fresh uploads invisible and deletes ghost for
+      // up to the TTL.
+      final qp = request.url.queryParameters;
+      if (qp.containsKey('ownerId') ||
+          qp.containsKey('mine') ||
+          (path != 'notifications' && qp.containsKey('userId'))) {
+        return inner(request);
+      }
 
       final cmd = await _redis();
       if (cmd == null) return inner(request);
@@ -545,9 +554,147 @@ const _videoColumns =
 /// trimmed/enhanced, a poster thumbnail is extracted (real ffmpeg) and a
 /// haptic track is generated from its audio/motion. Replace with the real
 /// ML worker later — same DB contract.
-void _scheduleMlProcessing(int videoId) {
+/// Soundtrack files parked by /videos/upload-audio, waiting for the video
+/// upload that references them. Swept after an hour if never used.
+final Map<String, (String, DateTime)> _pendingAudio = {};
+
+void _sweepPendingAudio() {
+  final cutoff = DateTime.now().subtract(const Duration(hours: 1));
+  _pendingAudio.removeWhere((_, v) {
+    if (v.$2.isBefore(cutoff)) {
+      try {
+        File(v.$1).deleteSync();
+      } catch (_) {}
+      return true;
+    }
+    return false;
+  });
+}
+
+/// Creator uploads a soundtrack / voice-over (≤10 MB) to mix into an
+/// experience video. Returns an audioId to pass along with the video upload.
+Future<Response> _uploadVideoAudio(Request request) async {
+  final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
+  if (userId == null) return _json(401, {'error': 'Sign in first.'});
+  final original =
+      _sanitizeFilename(request.url.queryParameters['filename'] ?? 'audio.m4a');
+  final ext = original.split('.').last.toLowerCase();
+  if (!{'mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac'}.contains(ext)) {
+    return _json(400, {'error': 'Only MP3, M4A, AAC, WAV or OGG audio.'});
+  }
+  _sweepPendingAudio();
+  final id = 'aud_${DateTime.now().millisecondsSinceEpoch}_$userId';
+  final tmp = File('${Directory.systemTemp.path}/mrt_$id.$ext');
+  final sink = tmp.openWrite();
+  var size = 0;
+  try {
+    await for (final chunk in request.read()) {
+      size += chunk.length;
+      if (size > 10 * 1024 * 1024) {
+        await sink.close();
+        await tmp.delete();
+        return _json(413, {'error': 'Audio is limited to 10 MB.'});
+      }
+      sink.add(chunk);
+    }
+  } finally {
+    try {
+      await sink.close();
+    } catch (_) {}
+  }
+  if (size == 0) return _json(400, {'error': 'Empty audio body.'});
+  _pendingAudio[id] = (tmp.path, DateTime.now());
+  return _json(201, {'audioId': id});
+}
+
+/// Mux a parked soundtrack into the stored video: 'mix' blends it over the
+/// original audio (per-track volumes), 'replace' swaps the audio entirely.
+/// [offset] delays the soundtrack start within the video (seconds).
+Future<void> _muxVideoAudio(
+  int videoId, {
+  required String audioId,
+  required double offset,
+  required String mode,
+  required double origVol,
+  required double audioVol,
+}) async {
+  final parked = _pendingAudio.remove(audioId);
+  if (parked == null) return;
+  final audioPath = parked.$1;
+  try {
+    final rows = await _db.execute(
+      Sql.named('SELECT city, filename FROM videos WHERE id = @id'),
+      parameters: {'id': videoId},
+    );
+    if (rows.isEmpty) return;
+    final city = rows.first[0] as String;
+    final filename = rows.first[1] as String;
+    final video = await _storage.open(city, filename);
+    if (video == null) return;
+    final out = File(
+        '${Directory.systemTemp.path}/mrt_mux_${DateTime.now().millisecondsSinceEpoch}.mp4');
+    final delayMs = (offset.clamp(0, 3600) * 1000).round();
+    List<String> args;
+    if (mode == 'mix') {
+      args = [
+        '-y', '-loglevel', 'error',
+        '-i', video.path, '-i', audioPath,
+        '-filter_complex',
+        '[0:a]volume=${origVol.clamp(0, 2)}[a0];'
+            '[1:a]adelay=$delayMs|$delayMs,volume=${audioVol.clamp(0, 2)}[a1];'
+            '[a0][a1]amix=inputs=2:duration=first:dropout_transition=0[a]',
+        '-map', '0:v', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
+        out.path,
+      ];
+    } else {
+      args = [
+        '-y', '-loglevel', 'error',
+        '-i', video.path, '-i', audioPath,
+        '-filter_complex',
+        '[1:a]adelay=$delayMs|$delayMs,volume=${audioVol.clamp(0, 2)}[a]',
+        '-map', '0:v', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest',
+        out.path,
+      ];
+    }
+    var result = await Process.run('ffmpeg', args);
+    if (result.exitCode != 0 && mode == 'mix') {
+      // Source video may have no audio stream — fall back to replace.
+      result = await Process.run('ffmpeg', [
+        '-y', '-loglevel', 'error',
+        '-i', video.path, '-i', audioPath,
+        '-filter_complex',
+        '[1:a]adelay=$delayMs|$delayMs,volume=${audioVol.clamp(0, 2)}[a]',
+        '-map', '0:v', '-map', '[a]',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest',
+        out.path,
+      ]);
+    }
+    if (result.exitCode == 0 && await out.length() > 0) {
+      // Overwrite the stored video under the SAME name — the poster/haptics
+      // pipeline then runs on the mixed result.
+      await _storage.save(city, filename, out.openRead());
+      print('audio-mix: video $videoId muxed ($mode, +${offset}s)');
+    } else {
+      print('audio-mix failed for video $videoId: ${result.stderr}');
+    }
+    try {
+      await out.delete();
+    } catch (_) {}
+  } finally {
+    try {
+      await File(audioPath).delete();
+    } catch (_) {}
+  }
+}
+
+void _scheduleMlProcessing(int videoId, {Future<void> Function()? preprocess}) {
   Timer(const Duration(seconds: 15), () async {
     try {
+      // Optional soundtrack mux runs BEFORE poster + haptic analysis so the
+      // feel track is built from the final mixed audio.
+      if (preprocess != null) await preprocess();
       // Poster frame via ffmpeg (this part is real, not simulated).
       String? thumbUrl;
       final rows = await _db.execute(
@@ -620,6 +767,8 @@ void _scheduleMlProcessing(int videoId) {
       );
       print('ML: video $videoId processed '
           '(thumb + ${track.length}s haptic track).');
+      // Processing done -> the "ready" flip must be visible immediately.
+      await _cacheBust('videos');
       // Push: tell travelers a new experience just landed.
       final meta = await _db.execute(
         Sql.named('SELECT title, city, owner_id FROM videos WHERE id = @id'),
@@ -4205,140 +4354,127 @@ Future<Response> _notifications(Request request) async {
   final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
   final items = <Map<String, Object?>>[];
 
-  // New experiences (excluding the caller's own uploads).
-  final vids = await _db.execute(
-    Sql.named("SELECT title, city, uploaded_at FROM videos "
-        "WHERE status = 'ready' AND uploaded_at > @since "
-        '${userId != null ? 'AND (owner_id IS NULL OR owner_id != @me) ' : ''}'
-        'ORDER BY uploaded_at DESC LIMIT 10'),
-    parameters: {'since': since, if (userId != null) 'me': userId},
-  );
-  for (final r in vids) {
-    items.add({
-      'type': 'video',
-      'title': 'New experience: ${r[0]}',
-      'city': r[1],
-      'at': (r[2] as DateTime).toIso8601String(),
-    });
+  // ONE round-trip: every notification source in a single UNION query.
+  // The old version ran 7 sequential queries on one connection — with a
+  // far-away Postgres that meant 2s+ just in wire latency.
+  final me = userId != null;
+  final sql = """
+    SELECT * FROM (
+      (SELECT 'video' AS kind, title AS a, city AS b, NULL::int AS pid,
+              uploaded_at AS at
+         FROM videos WHERE status = 'ready' AND uploaded_at > @since
+              ${me ? 'AND (owner_id IS NULL OR owner_id != @me)' : ''}
+        ORDER BY uploaded_at DESC LIMIT 10)
+      UNION ALL
+      (SELECT 'city', name, slug, NULL::int, created_at
+         FROM cities WHERE created_at > @since
+        ORDER BY created_at DESC LIMIT 5)
+      UNION ALL
+      (SELECT 'guidevibe', owner_name, caption, NULL::int, created_at
+         FROM shorts WHERE status = 'ready' AND created_at > @since
+              ${me ? 'AND owner_id != @me' : ''}
+        ORDER BY created_at DESC LIMIT 10)
+      UNION ALL
+      (SELECT 'community', author_name || ' in ' || community, body,
+              NULL::int, created_at
+         FROM posts WHERE created_at > @since AND reshared_by IS NULL
+              ${me ? 'AND author_id != @me' : ''}
+        ORDER BY created_at DESC LIMIT 10)
+      ${me ? """
+      UNION ALL
+      (SELECT 'follow', u.name, NULL::text, NULL::int, f.created_at
+         FROM follows f JOIN users u ON u.id = f.follower_id
+        WHERE f.followee_id = @me AND f.created_at > @since
+        ORDER BY f.created_at DESC LIMIT 10)
+      UNION ALL
+      (SELECT 'reaction', u.name, r.emoji, p.id, r.created_at
+         FROM reactions r JOIN posts p ON p.id = r.post_id
+              JOIN users u ON u.id = r.user_id
+        WHERE p.author_id = @me AND r.user_id != @me
+              AND r.created_at > @since
+        ORDER BY r.created_at DESC LIMIT 10)
+      UNION ALL
+      (SELECT 'reply', rp.author_name, rp.body, p.id, rp.created_at
+         FROM replies rp JOIN posts p ON p.id = rp.post_id
+        WHERE p.author_id = @me AND rp.author_id != @me
+              AND rp.created_at > @since
+        ORDER BY rp.created_at DESC LIMIT 10)
+      """ : ''}
+    ) merged ORDER BY at DESC LIMIT 25
+  """;
+
+  try {
+    final rows = await _db.execute(
+      Sql.named(sql),
+      parameters: {'since': since, if (me) 'me': userId},
+    );
+    String clip(String? t, int n) {
+      final v = (t ?? '').trim();
+      return v.length > n ? '${v.substring(0, n - 3)}...' : v;
+    }
+
+    for (final r in rows) {
+      final kind = r[0] as String;
+      final a = r[1] as String?;
+      final b = r[2] as String?;
+      final at = (r[4] as DateTime).toIso8601String();
+      switch (kind) {
+        case 'video':
+          items.add({
+            'type': 'video',
+            'title': 'New experience: $a',
+            'city': b,
+            'at': at,
+          });
+        case 'city':
+          items.add({
+            'type': 'city',
+            'title': 'New place on Mr.TourGuide: $a',
+            'city': b,
+            'at': at,
+          });
+        case 'guidevibe':
+          final cap = (b ?? '').trim();
+          items.add({
+            'type': 'guidevibe',
+            'title': cap.isEmpty
+                ? 'New GuideVibe from $a'
+                : 'New GuideVibe: ${clip(cap, 50)}',
+            'at': at,
+          });
+        case 'community':
+          items.add({
+            'type': 'community',
+            'title': '$a: ${clip(b, 60)}',
+            'at': at,
+          });
+        case 'follow':
+          items.add({
+            'type': 'follow',
+            'title': '$a started following you',
+            'at': at,
+          });
+        case 'reaction':
+          items.add({
+            'type': 'reaction',
+            'title': '$a reacted $b to your post',
+            'postId': r[3],
+            'at': at,
+          });
+        case 'reply':
+          items.add({
+            'type': 'reply',
+            'title': '$a replied: ${clip(b, 60)}',
+            'postId': r[3],
+            'at': at,
+          });
+      }
+    }
+  } catch (e) {
+    print('notifications query failed: $e');
   }
 
-  // New places added to the platform.
-  try {
-    final places = await _db.execute(
-      Sql.named('SELECT name, slug, created_at FROM cities '
-          'WHERE created_at > @since ORDER BY created_at DESC LIMIT 5'),
-      parameters: {'since': since},
-    );
-    for (final r in places) {
-      items.add({
-        'type': 'city',
-        'title': 'New place on Mr.TourGuide: ${r[0]}',
-        'city': r[1],
-        'at': (r[2] as DateTime).toIso8601String(),
-      });
-    }
-  } catch (_) {}
-
-  // New GuideVibe shorts (excluding the caller's own).
-  try {
-    final shorts = await _db.execute(
-      Sql.named("SELECT owner_name, caption, created_at FROM shorts "
-          "WHERE status = 'ready' AND created_at > @since "
-          '${userId != null ? 'AND owner_id != @me ' : ''}'
-          'ORDER BY created_at DESC LIMIT 10'),
-      parameters: {'since': since, if (userId != null) 'me': userId},
-    );
-    for (final r in shorts) {
-      final cap = (r[1] as String?)?.trim() ?? '';
-      items.add({
-        'type': 'guidevibe',
-        'title': cap.isEmpty
-            ? 'New GuideVibe from ${r[0]}'
-            : 'New GuideVibe: ${cap.length > 50 ? '${cap.substring(0, 47)}...' : cap}',
-        'at': (r[2] as DateTime).toIso8601String(),
-      });
-    }
-  } catch (_) {}
-
-  // New community messages (excluding the caller's own).
-  try {
-    final posts = await _db.execute(
-      Sql.named('SELECT author_name, community, body, created_at FROM posts '
-          'WHERE created_at > @since AND reshared_by IS NULL '
-          '${userId != null ? 'AND author_id != @me ' : ''}'
-          'ORDER BY created_at DESC LIMIT 10'),
-      parameters: {'since': since, if (userId != null) 'me': userId},
-    );
-    for (final r in posts) {
-      final body = (r[2] as String).trim();
-      items.add({
-        'type': 'community',
-        'title':
-            '${r[0]} in ${r[1]}: ${body.length > 60 ? '${body.substring(0, 57)}…' : body}',
-        'at': (r[3] as DateTime).toIso8601String(),
-      });
-    }
-  } catch (_) {}
-
-  // Social: reactions + replies + new followers.
-  if (userId != null) {
-    try {
-      final follows = await _db.execute(
-        Sql.named('SELECT u.name, f.created_at FROM follows f '
-            'JOIN users u ON u.id = f.follower_id '
-            'WHERE f.followee_id = @me AND f.created_at > @since '
-            'ORDER BY f.created_at DESC LIMIT 10'),
-        parameters: {'me': userId, 'since': since},
-      );
-      for (final r in follows) {
-        items.add({
-          'type': 'follow',
-          'title': '${r[0]} started following you',
-          'at': (r[1] as DateTime).toIso8601String(),
-        });
-      }
-    } catch (_) {}
-    try {
-      final reacts = await _db.execute(
-        Sql.named('SELECT u.name, r.emoji, r.created_at, p.id '
-            'FROM reactions r JOIN posts p ON p.id = r.post_id '
-            'JOIN users u ON u.id = r.user_id '
-            'WHERE p.author_id = @me AND r.user_id != @me '
-            'AND r.created_at > @since '
-            'ORDER BY r.created_at DESC LIMIT 10'),
-        parameters: {'me': userId, 'since': since},
-      );
-      for (final r in reacts) {
-        items.add({
-          'type': 'reaction',
-          'title': '${r[0]} reacted ${r[1]} to your post',
-          'postId': r[3],
-          'at': (r[2] as DateTime).toIso8601String(),
-        });
-      }
-      final reps = await _db.execute(
-        Sql.named('SELECT rp.author_name, rp.body, rp.created_at, p.id '
-            'FROM replies rp JOIN posts p ON p.id = rp.post_id '
-            'WHERE p.author_id = @me AND rp.author_id != @me '
-            'AND rp.created_at > @since '
-            'ORDER BY rp.created_at DESC LIMIT 10'),
-        parameters: {'me': userId, 'since': since},
-      );
-      for (final r in reps) {
-        var body = r[1] as String;
-        if (body.length > 60) body = '${body.substring(0, 57)}...';
-        items.add({
-          'type': 'reply',
-          'title': '${r[0]} replied: $body',
-          'postId': r[3],
-          'at': (r[2] as DateTime).toIso8601String(),
-        });
-      }
-    } catch (_) {}
-  }
-
-  items.sort((a, b) => (b['at'] as String).compareTo(a['at'] as String));
-  return _json(200, {'items': items.take(25).toList()});
+  return _json(200, {'items': items});
 }
 
 /// What's new since a timestamp — powers the in-app "new content" toast.
@@ -4531,7 +4667,25 @@ Future<Response> _upload(Request request) async {
     },
   );
   final video = _videoRowToJson(rows.first);
-  _scheduleMlProcessing(video['id'] as int);
+  // Optional soundtrack (uploaded first via /videos/upload-audio): muxed in
+  // the background before poster + haptics run.
+  final audioId = (params['audioId'] ?? '').trim();
+  final videoId = video['id'] as int;
+  _scheduleMlProcessing(
+    videoId,
+    preprocess: audioId.isEmpty || !_pendingAudio.containsKey(audioId)
+        ? null
+        : () => _muxVideoAudio(
+              videoId,
+              audioId: audioId,
+              offset: double.tryParse(params['audioOffset'] ?? '0') ?? 0,
+              mode: params['audioMode'] == 'replace' ? 'replace' : 'mix',
+              origVol: double.tryParse(params['origVol'] ?? '1') ?? 1,
+              audioVol: double.tryParse(params['audioVol'] ?? '1') ?? 1,
+            ),
+  );
+  await _cacheBust('videos');
+  await _cacheBust('cities');
   return _json(201, {'video': video});
 }
 
@@ -4591,6 +4745,7 @@ Future<Response> _updateConfig(Request request, String id) async {
     parameters: {'id': videoId, 'config': jsonEncode(config)},
   );
   if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
+  await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
@@ -4649,6 +4804,7 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
         'RETURNING $_videoColumns'),
     parameters: {'t': thumbUrl, 'id': videoId},
   );
+  await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
@@ -4679,6 +4835,7 @@ Future<Response> _updateHaptics(Request request, String id) async {
   if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
   _logActivity('user:${body?['userId']}', 'haptics-tuned',
       'video #$videoId (${track.length}s track)');
+  await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
@@ -4696,6 +4853,25 @@ Future<Response> _feedback(Request request) async {
         'VALUES (@email, @rating, @message)'),
     parameters: {'email': email, 'rating': rating, 'message': message},
   );
+  // Tell the team by mail, fire-and-forget (FEEDBACK_EMAIL overrides the
+  // default inbox = the Brevo sender address).
+  final inbox = Platform.environment['FEEDBACK_EMAIL'] ??
+      Platform.environment['BREVO_SENDER_EMAIL'] ??
+      'info@patienceai.in';
+  final stars = rating == null ? '' : ' · ${'★' * rating}${'☆' * (5 - rating)}';
+  _sendEmail(
+    inbox,
+    'New Mr.Tour Guide feedback$stars',
+    '<div style="font-family:system-ui,sans-serif;max-width:560px">'
+        '<h2 style="margin:0 0 8px">New feedback from the app</h2>'
+        '${rating != null ? '<p style="margin:0 0 6px;font-size:15px">Rating: <b>$rating/5</b></p>' : ''}'
+        '${email != null && email.isNotEmpty ? '<p style="margin:0 0 6px;font-size:15px">From: <b>${_escapeHtml(email)}</b></p>' : ''}'
+        '<blockquote style="margin:10px 0;padding:10px 14px;background:#f4f6f8;'
+        'border-left:4px solid #1E319D;border-radius:6px;white-space:pre-wrap">'
+        '${_escapeHtml(message)}</blockquote>'
+        '<p style="color:#888;font-size:12px">Sent automatically by the '
+        'Mr.Tour Guide backend.</p></div>',
+  ).catchError((Object _) => false);
   return _json(201, {'ok': true, 'thanks': 'Feedback received — thank you!'});
 }
 
@@ -4911,6 +5087,9 @@ Future<Response> _deleteVideo(Request request, String id) async {
     Sql.named('DELETE FROM videos WHERE id = @id'),
     parameters: {'id': videoId},
   );
+  // Drop cached catalog responses so the deletion is visible IMMEDIATELY.
+  await _cacheBust('videos');
+  await _cacheBust('cities');
   return _json(200, {'ok': true});
 }
 
@@ -4930,6 +5109,7 @@ Future<Response> _renameVideo(Request request, String id) async {
         'UPDATE videos SET title = @t WHERE id = @id RETURNING $_videoColumns'),
     parameters: {'t': title, 'id': videoId},
   );
+  await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
 
@@ -5538,6 +5718,7 @@ Future<void> main() async {
     ..get('/guidevibe/<id>/analytics', _shortAnalytics)
     ..get('/short/<id>', _publicShort)
     ..post('/upload', _upload)
+    ..post('/videos/upload-audio', _uploadVideoAudio)
     ..post('/videos/<id>/config', _updateConfig)
     ..post('/videos/<id>/thumbnail', _uploadThumbnail)
     ..post('/videos/<id>/haptics', _updateHaptics)
