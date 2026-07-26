@@ -198,9 +198,10 @@ class R2Storage implements MediaStorage {
         req.contentLength = body.length;
         req.add(body);
       }
-      final res = await req.close();
+      final res = await req.close().timeout(const Duration(minutes: 3));
       final data = <int>[];
-      await for (final chunk in res) {
+      await for (final chunk
+          in res.timeout(const Duration(minutes: 3))) {
         data.addAll(chunk);
       }
       return (res.statusCode, data);
@@ -231,8 +232,18 @@ class LocalFolderStorage implements MediaStorage {
         }
         sink.add(chunk);
       }
+    } on FormatException {
+      try {
+        await sink.close();
+      } catch (_) {}
+      try {
+        await file.delete();
+      } catch (_) {}
+      rethrow;
     } finally {
-      await sink.close();
+      try {
+        await sink.close();
+      } catch (_) {}
     }
     return written;
   }
@@ -318,9 +329,12 @@ Middleware _rateLimit() {
               ?.remoteAddress
               .address ??
           'unknown';
-      final isUpload = request.url.path.startsWith('upload') ||
-          request.url.path.contains('/cover') ||
-          request.url.path.contains('upload-image');
+      var limitPath = request.url.path;
+      if (limitPath.startsWith('api/')) limitPath = limitPath.substring(4);
+      final isUpload = limitPath.startsWith('upload') ||
+          limitPath.contains('/cover') ||
+          limitPath.contains('upload-image') ||
+          limitPath.contains('guidevibe/upload');
       final key = isUpload ? 'u:$ip' : ip;
       final limit = isUpload ? 10 : 120;
 
@@ -636,7 +650,7 @@ Future<Response> _uploadVideoAudio(Request request) async {
     } catch (_) {}
     return _json(413, {'error': 'Audio is limited to 10 MB.'});
   }
-  if (size == 0) return _json(400, {'error': 'Empty audio body.'});
+  if (size == 0) return _json(400, {'error': 'The audio upload was empty — please choose the file again.'});
   _pendingAudio[id] = (tmp.path, DateTime.now());
   return _json(201, {'audioId': id});
 }
@@ -692,7 +706,9 @@ Future<void> _muxVideoAudio(
         out.path,
       ];
     }
-    var result = await Process.run('ffmpeg', args);
+    var result =
+        await Process.run('ffmpeg', args)
+            .timeout(const Duration(minutes: 5));
     if (result.exitCode != 0 && mode == 'mix') {
       // Source video may have no audio stream — fall back to replace.
       result = await Process.run('ffmpeg', [
@@ -1084,7 +1100,7 @@ Future<Response> _pushRegister(Request request) async {
   final token = (body?['token'] as String?)?.trim() ?? '';
   final userId = body?['userId'] as int?;
   if (token.isEmpty || token.length > 512) {
-    return _json(400, {'error': 'token required'});
+    return _json(400, {'error': 'Notifications couldn’t be turned on — please try again.'});
   }
   final city = ((body?['city'] as String?) ?? '').trim();
   final locOnly = body?['locOnly'] == true;
@@ -1467,6 +1483,7 @@ Future<Response> _adminDeleteCity(Request request, String slug) async {
   await _deleteCityFiles(slug);
   for (final sql in [
     'DELETE FROM place_ratings WHERE city_slug = @s',
+    'DELETE FROM place_comments WHERE city_slug = @s',
     'DELETE FROM videos WHERE city = @s',
     'DELETE FROM cities WHERE slug = @s',
   ]) {
@@ -1660,8 +1677,11 @@ Future<bool> _sendEmail(String to, String subject, String html) async {
       'subject': subject,
       'htmlContent': html,
     }));
-    final res = await req.close();
-    final bodyText = await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 15));
+    final bodyText = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 15));
     client.close();
     final ok = res.statusCode == 201;
     _logActivity('system', ok ? 'mail-sent' : 'mail-failed',
@@ -1910,7 +1930,7 @@ Future<Response> _googleAuth(Request request) async {
           '${Uri.encodeQueryComponent(idToken)}');
       final info = jsonDecode(infoRaw) as Map<String, dynamic>;
       if (clientId != null && info['aud'] != clientId) {
-        return _json(401, {'error': 'Google token audience mismatch.'});
+        return _json(401, {'error': 'Google sign-in didn’t work — please try again.'});
       }
       if (info['email_verified'] != 'true' && info['email_verified'] != true) {
         return _json(401, {'error': 'Google email not verified.'});
@@ -1918,11 +1938,11 @@ Future<Response> _googleAuth(Request request) async {
       email = (info['email'] as String).toLowerCase();
       if (name.isEmpty) name = info['name'] as String? ?? '';
     } catch (_) {
-      return _json(401, {'error': 'Invalid Google sign-in token.'});
+      return _json(401, {'error': 'Google sign-in didn’t work, please try again.'});
     }
   } else if (Platform.environment['ALLOW_DEV_GOOGLE'] != '1') {
     // Without a token only local dev mode may pass a bare email.
-    return _json(401, {'error': 'Google sign-in requires a valid token.'});
+    return _json(401, {'error': 'Google sign-in didn’t complete — please try again.'});
   }
 
   if (email.isEmpty || !email.contains('@')) {
@@ -2126,7 +2146,7 @@ Future<Response> _resharePost(Request request, String id) async {
     },
   );
   // Tell the original author their post is travelling.
-  _tokensFor(userId: orig.first[1] as int).then((tokens) => _sendPush(
+  _tokensFor(userId: orig.first[1] as int).catchError((_) => const <String>[]).then((tokens) => _sendPush(
         tokens,
         'Your post was reshared',
         '${me.first[0]} reshared your post on Mr.TourGuide.',
@@ -2194,6 +2214,7 @@ Future<Response> _ratePlace(Request request, String slug) async {
         'WHERE city_slug = @c'),
     parameters: {'c': slug},
   );
+  await _cacheBust('cities/$slug');
   return _json(200, {
     'rating': double.parse(
         double.parse(agg.first[0].toString()).toStringAsFixed(2)),
@@ -2299,6 +2320,7 @@ Future<Response> _addPlaceComment(Request request, String slug) async {
       } catch (_) {}
     }();
   }
+  await _cacheBust('cities/$slug');
   return _json(201, {'ok': true});
 }
 
@@ -2315,6 +2337,7 @@ Future<Response> _deletePlaceComment(Request request, String id) async {
     parameters: {'id': commentId, 'u': userId},
   );
   if (rows.isEmpty) return _json(403, {'error': 'Not your comment.'});
+  await _cacheBust('cities');
   return _json(200, {'ok': true});
 }
 
@@ -2432,7 +2455,7 @@ Future<Response> _geoReverse(Request request) async {
   final lat = double.tryParse(request.url.queryParameters['lat'] ?? '');
   final lon = double.tryParse(request.url.queryParameters['lon'] ?? '');
   if (lat == null || lon == null) {
-    return _json(400, {'error': 'lat and lon required'});
+    return _json(400, {'error': 'Location is needed for this — please turn on location and try again.'});
   }
   final key = '${lat.toStringAsFixed(2)},${lon.toStringAsFixed(2)}';
   final cached = _geoCache[key];
@@ -2468,7 +2491,7 @@ Future<Response> _geoReverse(Request request) async {
     _geoCache[key] = (DateTime.now(), payload);
     return _json(200, payload);
   } catch (_) {
-    return _json(502, {'error': 'Could not resolve the location.'});
+    return _json(502, {'error': 'Couldn’t find that location.'});
   }
 }
 
@@ -2632,13 +2655,14 @@ Future<Response> _uploadCover(Request request, String city) async {
   } on FormatException {
     return _json(413, {'error': 'File exceeds the 500 MB upload limit.'});
   }
-  if (size == 0) return _json(400, {'error': 'Empty upload body.'});
+  if (size == 0) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
 
   final url = '/files/$city/$stored';
   await _db.execute(
     Sql.named('UPDATE cities SET cover_url = @url WHERE slug = @city'),
     parameters: {'url': url, 'city': city},
   );
+  await _cacheBust('cities');
   return _json(201, {'coverUrl': url});
 }
 
@@ -2665,8 +2689,11 @@ Future<(double, double)?> _geocodePlace(String name) async {
     final req = await client.getUrl(Uri.parse(
         'https://geocoding-api.open-meteo.com/v1/search'
         '?name=${Uri.encodeQueryComponent(name)}&count=1'));
-    final res = await req.close();
-    final body = await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 12));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 12));
     client.close();
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     final results = decoded['results'] as List?;
@@ -2713,8 +2740,11 @@ Future<Response> _weather(Request request, String slug) async {
     final req = await client.getUrl(Uri.parse(
         'https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon'
         '&current=temperature_2m,weather_code'));
-    final res = await req.close();
-    final body = await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 12));
+    final body = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 12));
     client.close();
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     final current = decoded['current'] as Map<String, dynamic>;
@@ -2727,7 +2757,7 @@ Future<Response> _weather(Request request, String slug) async {
     _weatherCache[slug] = (DateTime.now(), payload);
     return _json(200, payload);
   } catch (_) {
-    return _json(502, {'error': 'Weather service unavailable.'});
+    return _json(502, {'error': 'Weather isn’t available right now — try again later.'});
   }
 }
 
@@ -2928,7 +2958,7 @@ Future<Response> _addReply(Request request, String id) async {
     notifyIds.add(postAuthorRow.first[0] as int);
   }
   for (final target in notifyIds) {
-    _tokensFor(userId: target).then((tokens) => _sendPush(
+    _tokensFor(userId: target).catchError((_) => const <String>[]).then((tokens) => _sendPush(
           tokens,
           parentReplyId != null && notifyIds.length > 1
               ? 'New reply in your thread'
@@ -2992,13 +3022,19 @@ Future<Response> _uploadCommunityImage(Request request) async {
 
   // Read with the hard size cap — reject before touching disk.
   final bytes = <int>[];
+  var imgOver = false;
   await for (final chunk in request.read()) {
+    if (imgOver) continue; // drain — see the Cloudflare 502 note above
     bytes.addAll(chunk);
     if (bytes.length > _maxImageBytes) {
-      return _json(413, {'error': 'Images are limited to 5 MB.'});
+      imgOver = true;
+      bytes.clear();
     }
   }
-  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+  if (imgOver) {
+    return _json(413, {'error': 'Images are limited to 5 MB.'});
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
 
   final stamp = DateTime.now().millisecondsSinceEpoch;
   // Compress in a temp dir first; only the final artifact goes to storage
@@ -3082,7 +3118,7 @@ Future<Response> _uploadCommunityVideo(Request request) async {
     try {
       await tmpIn.delete();
     } catch (_) {}
-    return _json(400, {'error': 'Empty upload body.'});
+    return _json(400, {'error': 'The upload was empty — please choose the file again.'});
   }
 
   final finalName = 'vid_$stamp.mp4';
@@ -3111,7 +3147,14 @@ Future<Response> _uploadCommunityVideo(Request request) async {
   }
 
   // Serve the original right away so the post can publish immediately.
-  await _storage.save('community', finalName, tmpIn.openRead());
+  try {
+    await _storage.save('community', finalName, tmpIn.openRead());
+  } catch (_) {
+    try {
+      await tmpIn.delete();
+    } catch (_) {}
+    rethrow;
+  }
 
   // Queue the compression pass; the temp original is deleted afterwards.
   _videoCompressQueue = _videoCompressQueue.then((_) async {
@@ -3195,15 +3238,20 @@ Future<bool> _downloadCapped(String url, File dest,
     final sink = dest.openWrite();
     var n = 0;
     var ok = true;
-    await for (final chunk in res.timeout(timeout)) {
-      n += chunk.length;
-      if (n > maxBytes) {
-        ok = false;
-        break;
+    try {
+      await for (final chunk in res.timeout(timeout)) {
+        n += chunk.length;
+        if (n > maxBytes) {
+          ok = false;
+          break;
+        }
+        sink.add(chunk);
       }
-      sink.add(chunk);
+    } finally {
+      try {
+        await sink.close();
+      } catch (_) {}
     }
-    await sink.close();
     return ok && n > 0;
   } finally {
     client.close(force: true);
@@ -3225,7 +3273,7 @@ Future<Response> _musicPreview(Request request) async {
   if (uri == null ||
       uri.scheme != 'https' ||
       !(host.contains('dzcdn.net') || host.contains('deezer'))) {
-    return _json(400, {'error': 'Bad preview url.'});
+    return _json(400, {'error': 'This song preview can’t be played.'});
   }
   try {
     final client = HttpClient();
@@ -3367,7 +3415,7 @@ Future<Response> _uploadShort(Request request) async {
     await tmpIn.delete();
     return _json(413, {
       'error': reduce
-          ? 'Videos over 160 MB are too large even for server processing.'
+          ? 'Videos over 160 MB are too large — please trim the clip and try again.'
           : 'GuideVibe clips are limited to 20 MB.'
     });
   }
@@ -3375,7 +3423,7 @@ Future<Response> _uploadShort(Request request) async {
     try {
       await tmpIn.delete();
     } catch (_) {}
-    return _json(400, {'error': 'Empty upload body.'});
+    return _json(400, {'error': 'The upload was empty — please choose the file again.'});
   }
 
   // Enforce the 1-minute limit (safety net — the app also checks before
@@ -3404,22 +3452,31 @@ Future<Response> _uploadShort(Request request) async {
   // mux and haptics — runs in the background queue below, so the client's
   // upload progress bar completes the moment the bytes are received instead of
   // sitting near the end while the VM finalizes.
-  final rows = await _db.execute(
-    Sql.named('INSERT INTO shorts (owner_id, owner_name, owner_role, caption, '
-        'city, filename, thumb_url, kind, size_bytes, status) VALUES '
-        '(@o, @on, @or, @cap, @city, @f, NULL, @k, @sz, \'processing\') '
-        'RETURNING $_shortColumns'),
-    parameters: {
-      'o': userId,
-      'on': user.first[0],
-      'or': user.first[1],
-      'cap': caption,
-      'city': city.isEmpty ? null : city,
-      'f': finalName,
-      'k': kind,
-      'sz': size,
-    },
-  );
+  final List<List<dynamic>> rows;
+  try {
+    rows = await _db.execute(
+      Sql.named('INSERT INTO shorts (owner_id, owner_name, owner_role, '
+          'caption, city, filename, thumb_url, kind, size_bytes, status) '
+          'VALUES (@o, @on, @or, @cap, @city, @f, NULL, @k, @sz, '
+          '\'processing\') RETURNING $_shortColumns'),
+      parameters: {
+        'o': userId,
+        'on': user.first[0],
+        'or': user.first[1],
+        'cap': caption,
+        'city': city.isEmpty ? null : city,
+        'f': finalName,
+        'k': kind,
+        'sz': size,
+      },
+    );
+  } catch (_) {
+    // Don't leak the (up to 160 MB) temp file if the insert fails.
+    try {
+      await tmpIn.delete();
+    } catch (_) {}
+    rethrow;
+  }
   final shortId = rows.first[0] as int;
   _logActivity('user:$userId', 'guidevibe-upload', 'short #$shortId ($kind)');
 
@@ -3733,6 +3790,7 @@ Future<Response> _addShortComment(Request request, String id) async {
       }
     } catch (_) {}
   }();
+  await _cacheBust('guidevibe');
   return _json(201, {'ok': true});
 }
 
@@ -4180,7 +4238,7 @@ Future<Response> _createPost(Request request) async {
   // Tell everyone else a new community message landed (fire-and-forget so
   // posting stays snappy).
   final preview = text.length > 80 ? '${text.substring(0, 77)}…' : text;
-  _tokensFor(excludeUserId: userId).then((tokens) => _sendPush(
+  _tokensFor(excludeUserId: userId).catchError((_) => const <String>[]).then((tokens) => _sendPush(
         tokens,
         'New in $community',
         '${user.first[0]}: $preview',
@@ -4315,7 +4373,7 @@ Future<Response> _saveItinerary(Request request) async {
   final plan = (body?['plan'] as String?)?.trim() ?? '';
   if (userId == null) return _json(401, {'error': 'Sign in first.'});
   if (title.isEmpty || plan.isEmpty) {
-    return _json(400, {'error': 'title and plan required'});
+    return _json(400, {'error': 'Give your trip a title before saving.'});
   }
   if (title.length > 120 || plan.length > 8000) {
     return _json(400, {'error': 'Itinerary too long to save.'});
@@ -4421,11 +4479,11 @@ final Map<String, (DateTime, Map<String, Object?>)> _itineraryCache = {};
 Future<Response> _aiItinerary(Request request) async {
   final apiKey = Platform.environment['GROQ_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
-    return _json(503, {'error': 'AI planner is not configured.'});
+    return _json(503, {'error': 'The AI planner is unavailable right now — try again later.'});
   }
   final body = await _readJsonBody(request);
   final query = (body?['query'] as String?)?.trim() ?? '';
-  if (query.isEmpty) return _json(400, {'error': 'query required'});
+  if (query.isEmpty) return _json(400, {'error': 'Type something first.'});
 
   // Follow-up chat: prior turns come along so the AI can revise the same
   // plan ("add a day", "make it cheaper"). Capped hard to protect tokens.
@@ -4489,8 +4547,11 @@ Future<Response> _aiItinerary(Request request) async {
       'max_tokens': 900,
       'temperature': 0.5,
     }));
-    final res = await req.close();
-    final text = await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 45));
+    final text = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 45));
     client.close();
     final decoded = jsonDecode(text) as Map<String, dynamic>;
     final plan = decoded['choices']?[0]?['message']?['content'] as String?;
@@ -4520,8 +4581,11 @@ Future<String> _httpGetText(String url, {String? userAgent}) async {
     final req = await client.getUrl(Uri.parse(url));
     req.headers.set('User-Agent',
         userAgent ?? 'MrTouride/1.0 (local dev; contact: dev@mrtouride.app)');
-    final res = await req.close();
-    return await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 12));
+    return await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 12));
   } finally {
     client.close();
   }
@@ -4640,11 +4704,11 @@ final Map<String, (DateTime, Map<String, Object?>)> _aiCache = {};
 Future<Response> _aiSearch(Request request) async {
   final apiKey = Platform.environment['GROQ_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
-    return _json(503, {'error': 'AI search is not configured.'});
+    return _json(503, {'error': 'AI search is unavailable right now — try again later.'});
   }
   final body = await _readJsonBody(request);
   final query = (body?['query'] as String?)?.trim() ?? '';
-  if (query.isEmpty) return _json(400, {'error': 'query required'});
+  if (query.isEmpty) return _json(400, {'error': 'Type something first.'});
 
   final cacheKey = query.toLowerCase();
   final cached = _aiCache[cacheKey];
@@ -4689,8 +4753,11 @@ Future<Response> _aiSearch(Request request) async {
       'max_tokens': 480,
       'temperature': 0.4,
     }));
-    final res = await req.close();
-    final text = await res.transform(utf8.decoder).join();
+    final res = await req.close().timeout(const Duration(seconds: 45));
+    final text = await res
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 45));
     client.close();
     final decoded = jsonDecode(text) as Map<String, dynamic>;
     final overview =
@@ -4847,7 +4914,7 @@ Future<Response> _notifications(Request request) async {
 Future<Response> _whatsNew(Request request) async {
   final since = DateTime.tryParse(request.url.queryParameters['since'] ?? '');
   final userId = int.tryParse(request.url.queryParameters['userId'] ?? '');
-  if (since == null) return _json(400, {'error': 'since (ISO time) required'});
+  if (since == null) return _json(400, {'error': 'Couldn’t check for new experiences — please try again.'});
   final rows = await _db.execute(
     Sql.named("SELECT $_videoColumns FROM videos WHERE status = 'ready' "
         'AND uploaded_at > @since '
@@ -4897,7 +4964,7 @@ Future<Response> _videos(Request request) async {
   final mine = params['mine'] == '1';
   final userId = int.tryParse(params['userId'] ?? '');
   if (city.isEmpty && !mine) {
-    return _json(400, {'error': 'city query param required'});
+    return _json(400, {'error': 'Pick a place first.'});
   }
 
   // "mine": a creator's own uploads (any status). Public: ready-only.
@@ -4984,7 +5051,7 @@ Future<Response> _upload(Request request) async {
   final userId = int.tryParse(params['userId'] ?? '');
 
   if (city.isEmpty || title.isEmpty) {
-    return _json(400, {'error': 'city and title query params required'});
+    return _json(400, {'error': 'Pick a place and add a title first.'});
   }
   // Everyone shares experiences now — creators and travelers alike
   // (traveler uploads carry the traveler badge, not the creator one).
@@ -5014,7 +5081,7 @@ Future<Response> _upload(Request request) async {
   } on FormatException {
     return _json(413, {'error': 'File exceeds the 500 MB upload limit.'});
   }
-  if (size == 0) return _json(400, {'error': 'Empty upload body.'});
+  if (size == 0) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
 
   _logActivity('user:$userId', 'video-upload', '"$title" → $city');
   final rows = await _db.execute(
@@ -5072,7 +5139,7 @@ Future<Response> _updateConfig(Request request, String id) async {
   final videoId = int.tryParse(id);
   if (videoId == null) return _json(400, {'error': 'Bad video id.'});
   final body = await _readJsonBody(request);
-  if (body == null) return _json(400, {'error': 'JSON body required.'});
+  if (body == null) return _json(400, {'error': 'Nothing to save — please try again.'});
   final gate = await _requireOwner(videoId, body['userId'] as int?);
   if (gate != null) return gate;
 
@@ -5128,13 +5195,19 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
     return _json(400, {'error': 'Thumbnails must be JPG, PNG or WebP.'});
   }
   final bytes = <int>[];
+  var imgOver = false;
   await for (final chunk in request.read()) {
+    if (imgOver) continue; // drain — see the Cloudflare 502 note above
     bytes.addAll(chunk);
     if (bytes.length > _maxAvatarBytes) {
-      return _json(413, {'error': 'Thumbnails are limited to 5 MB.'});
+      imgOver = true;
+      bytes.clear();
     }
   }
-  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+  if (imgOver) {
+    return _json(413, {'error': 'Thumbnails are limited to 5 MB.'});
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
 
   final cityRow = await _db.execute(
     Sql.named('SELECT city FROM videos WHERE id = @id'),
@@ -5159,7 +5232,7 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
           .timeout(const Duration(minutes: 5));
   await tmpIn.delete();
   if (result.exitCode != 0 || !await tmpOut.exists()) {
-    return _json(400, {'error': 'That image could not be processed.'});
+    return _json(400, {'error': 'That image couldn’t be used — try a different photo.'});
   }
   final thumbName = 'custthumb_${videoId}_$stamp.jpg';
   await _storage.save(
@@ -5171,6 +5244,7 @@ Future<Response> _uploadThumbnail(Request request, String id) async {
         'RETURNING $_videoColumns'),
     parameters: {'t': thumbUrl, 'id': videoId},
   );
+  if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
   await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
@@ -5185,11 +5259,11 @@ Future<Response> _updateHaptics(Request request, String id) async {
   if (gate != null) return gate;
   final raw = body?['track'] as List?;
   if (raw == null || raw.isEmpty || raw.length > 900) {
-    return _json(400, {'error': 'track (1-900 per-second values) required'});
+    return _json(400, {'error': 'The feel track looks empty — adjust it and save again.'});
   }
   final track = <double>[];
   for (final v in raw) {
-    if (v is! num) return _json(400, {'error': 'track values must be 0-1'});
+    if (v is! num) return _json(400, {'error': 'The feel track has values out of range — adjust it and save again.'});
     track.add(double.parse(v.clamp(0, 1).toStringAsFixed(3)));
   }
   final rows = await _db.execute(
@@ -5312,7 +5386,7 @@ Future<Response> _apk(Request request) async {
   final apk = File('$_backendDir/apk/mrtouride.apk');
   if (!await apk.exists()) {
     return _json(404,
-        {'error': 'No APK published yet. Build one with: flutter build apk'});
+        {'error': 'The app download isn’t ready yet — please check back soon.'});
   }
   return Response.ok(
     apk.openRead(),
@@ -5429,7 +5503,7 @@ Future<Response> _landing(Request request) async {
         <div class="card"><div class="ico">&#128241;</div>
           <h3>Real-feel haptics</h3>
           <p>Your phone pulses with each experience — waves, wind, footsteps.
-             ML tunes the touch to every video's sound and motion.</p></div>
+             The touch is auto-tuned to every video's sound and motion.</p></div>
         <div class="card"><div class="ico">&#129405;</div>
           <h3>MR / VR mode</h3>
           <p>Step inside monuments and streets in mixed or virtual reality —
@@ -5451,13 +5525,13 @@ Future<Response> _landing(Request request) async {
       <div class="creators">
         <h2>Creators & influencers — bring the world to those who can't go</h2>
         <p>Upload your travel videos, VR and MR captures. Configure the feel,
-           sound and intensity for each video. Our ML pipeline trims, enhances
-           and generates the haptic track automatically.</p>
+           sound and intensity for each video. Every upload is auto-trimmed, enhanced
+           and given its haptic track automatically.</p>
         <div class="steps">
           <div class="step"><b>1. Sign up as Creator</b>one login, app &amp; web</div>
           <div class="step"><b>2. Upload experiences</b>video · VR · MR</div>
           <div class="step"><b>3. Tune the feel</b>haptics · sound · intensity</div>
-          <div class="step"><b>4. ML does the rest</b>trim · enhance · haptic track</div>
+          <div class="step"><b>4. Auto does the rest</b>trim · enhance · haptic track</div>
         </div>
         <a class="btn creator$dlClass" href="$dl">&#11015;&#65039; Get the Creator App (APK)</a>
       </div>
@@ -5525,6 +5599,7 @@ Future<Response> _renameVideo(Request request, String id) async {
         'UPDATE videos SET title = @t WHERE id = @id RETURNING $_videoColumns'),
     parameters: {'t': title, 'id': videoId},
   );
+  if (rows.isEmpty) return _json(404, {'error': 'Video not found.'});
   await _cacheBust('videos');
   return _json(200, {'video': _videoRowToJson(rows.first)});
 }
@@ -5545,13 +5620,19 @@ Future<Response> _uploadAvatar(Request request) async {
     return _json(400, {'error': 'Only JPG, PNG or WebP images.'});
   }
   final bytes = <int>[];
+  var imgOver = false;
   await for (final chunk in request.read()) {
+    if (imgOver) continue; // drain — see the Cloudflare 502 note above
     bytes.addAll(chunk);
     if (bytes.length > _maxAvatarBytes) {
-      return _json(413, {'error': 'Profile pictures are limited to 5 MB.'});
+      imgOver = true;
+      bytes.clear();
     }
   }
-  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+  if (imgOver) {
+    return _json(413, {'error': 'Profile pictures are limited to 5 MB.'});
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
 
   final stamp = DateTime.now().millisecondsSinceEpoch;
   // '_in' suffix: a .jpg upload must not collide with the .jpg output.
@@ -5677,7 +5758,7 @@ Future<Response> _followToggle(Request request, String id) async {
       Sql.named('SELECT name FROM users WHERE id = @u'),
       parameters: {'u': me},
     );
-    _tokensFor(userId: target).then((tokens) => _sendPush(
+    _tokensFor(userId: target).catchError((_) => const <String>[]).then((tokens) => _sendPush(
           tokens,
           'New follower!',
           '${who.isEmpty ? 'A traveler' : who.first[0]} started following '
@@ -5795,13 +5876,19 @@ Future<Response> _uploadUserCover(Request request) async {
     return _json(400, {'error': 'Only JPG, PNG or WebP images.'});
   }
   final bytes = <int>[];
+  var imgOver = false;
   await for (final chunk in request.read()) {
+    if (imgOver) continue; // drain — see the Cloudflare 502 note above
     bytes.addAll(chunk);
     if (bytes.length > _maxAvatarBytes) {
-      return _json(413, {'error': 'Covers are limited to 5 MB.'});
+      imgOver = true;
+      bytes.clear();
     }
   }
-  if (bytes.isEmpty) return _json(400, {'error': 'Empty upload body.'});
+  if (imgOver) {
+    return _json(413, {'error': 'Covers are limited to 5 MB.'});
+  }
+  if (bytes.isEmpty) return _json(400, {'error': 'The upload was empty — please choose the file again.'});
   final stamp = DateTime.now().millisecondsSinceEpoch;
   // '_in' suffix: a .jpg upload must not collide with the .jpg output.
   final tmpIn = File('${Directory.systemTemp.path}/mrt_uc_${stamp}_in.$ext');
@@ -5817,7 +5904,7 @@ Future<Response> _uploadUserCover(Request request) async {
           .timeout(const Duration(minutes: 5));
   await tmpIn.delete();
   if (result.exitCode != 0 || !await tmpOut.exists()) {
-    return _json(400, {'error': 'That image could not be processed.'});
+    return _json(400, {'error': 'That image couldn’t be used — try a different photo.'});
   }
   final name = 'usercover_${userId}_$stamp.jpg';
   await _storage.save(
