@@ -30,10 +30,15 @@ class ContentToast {
       ),
     );
     overlay.insert(_entry!);
-    Timer(const Duration(seconds: 7), dismiss);
+    _timer?.cancel();
+    _timer = Timer(const Duration(seconds: 7), dismiss);
   }
 
+  static Timer? _timer;
+
   static void dismiss() {
+    _timer?.cancel();
+    _timer = null;
     _entry?.remove();
     _entry = null;
   }

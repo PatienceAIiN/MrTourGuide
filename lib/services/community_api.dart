@@ -252,9 +252,15 @@ class CommunityApi {
           )
           .timeout(const Duration(minutes: 2));
     } catch (_) {
-      throw const AuthException('Image upload failed — is the backend up?');
+      throw const AuthException('Image upload failed — please try again in a moment.');
     }
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final Map<String, dynamic> decoded;
+    try {
+      decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      throw const AuthException(
+          'Image upload failed — please try again in a moment.');
+    }
     if (response.statusCode != 201) {
       throw AuthException(decoded['error'] as String? ?? 'Upload failed.');
     }
@@ -329,14 +335,14 @@ class CommunityApi {
           .timeout(const Duration(seconds: 10));
     } catch (_) {
       throw const AuthException(
-          'Could not sync — check your internet and try again.');
+          'Could not connect — check your internet and try again.');
     }
     final Map<String, dynamic> decoded;
     try {
       decoded = jsonDecode(response.body) as Map<String, dynamic>;
     } catch (_) {
       throw const AuthException(
-          'Could not sync — check your internet and try again.');
+          'Could not connect — check your internet and try again.');
     }
     if (response.statusCode >= 400) {
       throw AuthException(decoded['error'] as String? ?? 'Request failed.');

@@ -610,7 +610,7 @@ class MediaApi {
     } catch (_) {
       throw const AuthException('Could not upload the cover.');
     }
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final decoded = _decode(response.body);
     if (response.statusCode != 200) {
       throw AuthException(
           decoded['error'] as String? ?? 'Cover upload failed.');
@@ -696,7 +696,7 @@ class MediaApi {
           .timeout(const Duration(minutes: 3));
     } catch (_) {
       throw const AuthException(
-          'Could not sync — check your internet and try again.');
+          'Could not connect — check your internet and try again.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode == 201) return decoded['audioId'] as String;
@@ -759,7 +759,7 @@ class MediaApi {
     } catch (e) {
       if (e is AuthException) rethrow;
       throw const AuthException(
-          'Could not sync — check your internet and try again.');
+          'Could not connect — check your internet and try again.');
     } finally {
       try {
         await tmp?.delete();
@@ -916,7 +916,7 @@ class MediaApi {
     } catch (_) {
       throw const AuthException('Could not upload the thumbnail.');
     }
-    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final decoded = _decode(response.body);
     if (response.statusCode != 200) {
       throw AuthException(
           decoded['error'] as String? ?? 'Thumbnail upload failed.');
@@ -962,7 +962,7 @@ class MediaApi {
               body: bytes)
           .timeout(const Duration(minutes: 2));
     } catch (_) {
-      throw const AuthException('Upload failed — is the backend up?');
+      throw const AuthException('Upload failed — please try again in a moment.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode != 201) {
@@ -1000,7 +1000,7 @@ class MediaApi {
               body: bytes)
           .timeout(const Duration(minutes: 2));
     } catch (_) {
-      throw const AuthException('Cover upload failed — is the backend up?');
+      throw const AuthException('Cover upload failed — please try again in a moment.');
     }
     if (response.statusCode != 201) {
       final decoded = _decode(response.body);
@@ -1039,7 +1039,7 @@ class MediaApi {
           .timeout(timeout);
     } catch (_) {
       throw const AuthException(
-          'Could not sync — check your internet and try again.');
+          'Could not connect — check your internet and try again.');
     }
     final decoded = _decode(response.body);
     if (response.statusCode >= 400) {
@@ -1068,7 +1068,7 @@ class MediaApi {
             .timeout(const Duration(seconds: 12));
       } catch (_) {
         throw const AuthException(
-            'Could not sync — check your internet and try again.');
+            'Could not connect — check your internet and try again.');
       }
     }
     final decoded = _decode(response.body);
@@ -1085,6 +1085,6 @@ class MediaApi {
       if (decoded is Map<String, dynamic>) return decoded;
     } catch (_) {}
     throw const AuthException(
-        'Could not sync — check your internet and try again.');
+        'Could not connect — check your internet and try again.');
   }
 }

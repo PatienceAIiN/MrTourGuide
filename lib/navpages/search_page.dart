@@ -25,7 +25,10 @@ Future<void> feelPlace(BuildContext context, City city) async {
   Haptics.light();
   List<VideoItem> videos = const [];
   try {
-    videos = (await MediaApi.fetchVideos(city.slug, limit: 1)).videos;
+    videos = (await showBusyWhile(
+            context, MediaApi.fetchVideos(city.slug, limit: 1),
+            label: 'Opening…'))
+        .videos;
   } catch (_) {}
   if (!context.mounted) return;
   if (videos.isNotEmpty) {
@@ -580,7 +583,7 @@ class _SearchPageState extends State<SearchPage>
           if (r.videos.isNotEmpty) ...[
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('On MrTouride · feel it',
+              child: Text('Feel it on Mr.Tour Guide',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
             ),
             for (final video in r.videos)
@@ -782,7 +785,7 @@ class _SearchPageState extends State<SearchPage>
           const Padding(
             padding: EdgeInsets.only(top: 18),
             child: Text(
-              'AI is on — every search adds a minimal AI overview with '
+              'AI is on — every search includes a quick AI overview with '
               'live web knowledge.',
               style: TextStyle(color: Colors.grey, fontSize: 12),
             ),

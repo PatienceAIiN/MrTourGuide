@@ -61,8 +61,14 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _googleSignIn() async {
+    if (loading) return;
+    setState(() => loading = true);
     final user = await signInWithGoogle(context, mode: 'signin');
-    if (user != null && mounted) _enterApp();
+    if (user != null && mounted) {
+      _enterApp();
+    } else if (mounted) {
+      setState(() => loading = false);
+    }
   }
 
   void _enterApp() {

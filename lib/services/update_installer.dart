@@ -19,7 +19,7 @@ class UpdateInstaller {
 
   static Future<String> _downloadDir() async {
     final dir = await _channel.invokeMethod<String>('getDownloadDir');
-    if (dir == null) throw const UpdateDownloadException('No download dir.');
+    if (dir == null) throw const UpdateDownloadException('Could not save the update — please try again.');
     return dir;
   }
 

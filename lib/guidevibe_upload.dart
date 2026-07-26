@@ -126,11 +126,11 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           icon: const Icon(Icons.cloud_sync, color: Colors.orange, size: 34),
-          title: const Text('Processed on our servers'),
+          title: const Text('Auto-processed after upload'),
           content: Text(
             'This video format can\'t be reduced on your phone. It will '
             'upload as-is (${(size / (1024 * 1024)).toStringAsFixed(1)} MB) '
-            'and our servers will keep the FIRST MINUTE, compressed for '
+            'and the FIRST MINUTE will be kept, compressed automatically for '
             'GuideVibe.',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 13.5, height: 1.5),
@@ -211,7 +211,7 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
         }
         if (mounted) {
           newSnackBar(context,
-              title: 'Reducing on our servers instead — the first minute '
+              title: 'Reducing it automatically instead — the first minute '
                   'is kept.');
         }
         usePath = path;
@@ -219,7 +219,11 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
       }
     }
 
-    _preview?.dispose();
+    final old = _preview;
+    if (old != null) {
+      setState(() => _preview = null);
+      await old.dispose();
+    }
     var controller = VideoPlayerController.file(File(usePath));
     try {
       await controller.initialize();
@@ -448,6 +452,10 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
       if (!mounted) return;
       setState(() => _uploading = false);
       newSnackBar(context, title: e.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _uploading = false);
+      newSnackBar(context, title: "Couldn't share — try again.");
     }
   }
 
@@ -561,8 +569,8 @@ class _GuideVibeUploadPageState extends State<GuideVibeUploadPage> {
                             fontSize: 14)),
                     const SizedBox(height: 4),
                     Text(
-                      'Preview unavailable — it will be processed on our '
-                      'servers (first minute kept).',
+                      'Preview unavailable — it will be auto-processed '
+                      '(first minute kept).',
                       textAlign: TextAlign.center,
                       style:
                           TextStyle(color: inkSoft(context), fontSize: 12),

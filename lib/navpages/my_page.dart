@@ -397,7 +397,9 @@ class _MyPageState extends State<MyPage> {
     try {
       // Phone-side re-encode: HEIC and friends become clean PNG.
       final clean = await normalizeImage(file.bytes!);
-      final url = await MediaApi.uploadUserCover('cover.png', clean);
+      final url = await showBusyWhile(
+          context, MediaApi.uploadUserCover('cover.png', clean),
+          label: 'Uploading cover…');
       if (!mounted) return;
       setState(() => me = {...me, 'coverUrl': url});
       newSnackBar(context, title: 'Cover updated.');
@@ -531,7 +533,9 @@ class _MyPageState extends State<MyPage> {
     }
     try {
       final clean = await normalizeImage(file.bytes!, maxWidth: 800);
-      final url = await MediaApi.uploadAvatar('avatar.png', clean);
+      final url = await showBusyWhile(
+          context, MediaApi.uploadAvatar('avatar.png', clean),
+          label: 'Uploading photo…');
       if (!mounted) return;
       setState(() => AuthApi.currentUser?.avatarUrl = url);
       newSnackBar(context, title: 'Profile picture updated.');
@@ -1062,8 +1066,11 @@ class _MyPageState extends State<MyPage> {
       return;
     }
     try {
-      await MediaApi.updateItinerary(
-          id: item.id, userId: user.id, title: newTitle, plan: newPlan);
+      await showBusyWhile(
+          context,
+          MediaApi.updateItinerary(
+              id: item.id, userId: user.id, title: newTitle, plan: newPlan),
+          label: 'Saving…');
       Haptics.medium();
       if (!mounted) return;
       newSnackBar(context, title: 'Itinerary updated.');

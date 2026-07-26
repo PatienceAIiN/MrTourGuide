@@ -323,7 +323,7 @@ class GuideVibeApi {
               body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
     } catch (_) {
-      throw const AuthException('Could not sync — check your internet.');
+      throw const AuthException('Could not connect — check your internet.');
     }
     final decoded = _decode(r);
     if (r.statusCode >= 400) {

@@ -406,7 +406,7 @@ class _ProductLine extends StatelessWidget {
       onTap: () => launchUrl(Uri.parse('https://patienceai.in')),
       child: Text.rich(
         TextSpan(
-          text: 'MrTour Guide · A product of ',
+          text: 'Mr.Tour Guide · A product of ',
           style: const TextStyle(color: Colors.grey, fontSize: 12.5),
           children: [
             TextSpan(

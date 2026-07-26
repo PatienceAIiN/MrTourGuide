@@ -16,7 +16,7 @@ Future<void> runUpdateFlow(BuildContext context, UpdateInfo info) async {
   final go = await confirmDialog(
     context,
     title: 'Update available',
-    message: 'v${info.version} (build ${info.buildNumber})\n${info.notes}'
+    message: 'v${info.version}\n${info.notes}'
         '\n\nThe update downloads in the background — keep using the app. '
         "You'll get a notification when it's ready to install.",
     confirmLabel: 'Update now',

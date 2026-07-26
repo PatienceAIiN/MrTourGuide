@@ -510,7 +510,7 @@ class _ItineraryPageState extends State<ItineraryPage>
                 children: const [
                   CircularProgressIndicator(color: Colors.purple),
                   SizedBox(height: 12),
-                  Text('Planning with live web knowledge…',
+                  Text('Planning your trip with the latest info…',
                       style: TextStyle(color: Colors.grey, fontSize: 13)),
                 ],
               ),

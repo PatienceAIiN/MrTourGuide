@@ -37,7 +37,7 @@ Future<void> showFeedbackDialog(BuildContext context) {
               controller: controller,
               maxLines: 4,
               decoration: const InputDecoration(
-                hintText: 'How does MrTouride feel? What should we improve?',
+                hintText: 'How does Mr.Tour Guide feel? What should we improve?',
                 border: OutlineInputBorder(),
               ),
             ),

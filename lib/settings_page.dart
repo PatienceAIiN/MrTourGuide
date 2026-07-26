@@ -284,7 +284,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               leading: const Icon(Icons.feedback_outlined, color: Colors.teal),
               title: const Text('Share feedback'),
-              subtitle: const Text('Tell us how MrTouride feels'),
+              subtitle: const Text('Tell us how Mr.Tour Guide feels'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => showFeedbackDialog(context),
             ),

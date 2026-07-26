@@ -392,7 +392,12 @@ class _ShortViewState extends State<_ShortView> {
         _controller = c;
         _initialized = true;
       });
-      _startHaptics();
+      if (!widget.active) {
+        await c.pause();
+        await c.seekTo(Duration.zero);
+      } else {
+        _startHaptics();
+      }
     } catch (_) {
       c.dispose();
     }
@@ -488,7 +493,15 @@ class _ShortViewState extends State<_ShortView> {
           _likes = widget.short.likes + (liked ? 1 : 0);
         });
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _liked = widget.short.liked;
+          _likes = widget.short.likes;
+        });
+        newSnackBar(context, title: "Couldn't save your like — try again.");
+      }
+    }
   }
 
   Future<void> _share() async {
@@ -1108,7 +1121,8 @@ class _CreatorStudioState extends State<_CreatorStudio>
   Future<void> _analytics(Short s) async {
     Map<String, dynamic>? a;
     try {
-      a = await GuideVibeApi.analytics(s.id);
+      a = await showBusyWhile(context, GuideVibeApi.analytics(s.id),
+          label: 'Loading analytics…');
     } catch (_) {}
     if (!mounted || a == null) return;
     final data = a;

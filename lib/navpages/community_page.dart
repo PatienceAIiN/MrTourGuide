@@ -33,9 +33,14 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
   Haptics.tick();
   Map<String, dynamic>? profile;
   try {
-    profile = await MediaApi.publicProfile(userId);
+    profile = await showBusyWhile(context, MediaApi.publicProfile(userId),
+        label: 'Opening profile…');
   } catch (_) {}
-  if (!context.mounted || profile == null) return;
+  if (!context.mounted) return;
+  if (profile == null) {
+    newSnackBar(context, title: "Couldn't open this profile — try again.");
+    return;
+  }
   final p = profile;
   final isCreatorUser = p['role'] == 'creator';
   final accent = isCreatorUser ? Colors.purple : blue;
@@ -212,7 +217,13 @@ Future<void> showUserProfileDialog(BuildContext context, int userId) async {
                               following = now;
                               followers = count;
                             });
-                          } catch (_) {}
+                          } catch (_) {
+                            if (context.mounted) {
+                              newSnackBar(context,
+                                  title:
+                                      "Couldn't update follow — try again.");
+                            }
+                          }
                         },
                         icon: Icon(
                             following ? Icons.check : Icons.person_add_alt_1,
@@ -340,7 +351,11 @@ class _CommunityPageState extends State<CommunityPage>
     }
   }
 
+  bool _loadingMore = false;
+
   Future<void> _loadMore() async {
+    if (_loadingMore) return;
+    _loadingMore = true;
     try {
       final (list, more) =
           await CommunityApi.fetchPosts(community, offset: posts.length);
@@ -351,6 +366,8 @@ class _CommunityPageState extends State<CommunityPage>
       });
     } on AuthException catch (e) {
       if (mounted) newSnackBar(context, title: e.message);
+    } finally {
+      _loadingMore = false;
     }
   }
 
@@ -393,6 +410,10 @@ class _CommunityPageState extends State<CommunityPage>
       if (!mounted) return;
       setState(() => posting = false);
       newSnackBar(context, title: e.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => posting = false);
+      newSnackBar(context, title: "Couldn't share the post — try again.");
     }
   }
 

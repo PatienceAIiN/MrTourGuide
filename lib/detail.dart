@@ -112,6 +112,7 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       await MediaApi.addPlaceComment(place.citySlug, text,
           parentId: _replyingTo);
+      if (!mounted) return;
       _commentCtl.clear();
       setState(() {
         _replyingTo = null;
@@ -553,7 +554,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   ],
                   // ML-based cross-city recommendations
                   if (suggestions.isNotEmpty) ...[
-                    _sectionTitle('You may also feel · ML picks'),
+                    _sectionTitle('You may also feel · Auto picks'),
                     for (final s in suggestions) _videoCard(s),
                     const SizedBox(height: 20),
                   ],

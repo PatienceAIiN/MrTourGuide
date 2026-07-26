@@ -386,7 +386,7 @@ class _DashboardPageState extends State<DashboardPage>
     }
     if (file.size > 95 * 1024 * 1024) {
       newSnackBar(context,
-          title: 'Videos over 95 MB cannot pass the CDN yet — please trim '
+          title: 'Videos over 95 MB can’t be published yet — please trim '
               'or compress and try again.');
       return;
     }
@@ -739,7 +739,7 @@ class _DashboardPageState extends State<DashboardPage>
                     children: [
                       ChoiceChip(
                         avatar: const Icon(Icons.auto_awesome, size: 15),
-                        label: const Text('Auto (ML haptic track)'),
+                        label: const Text('Auto (haptic track)'),
                         selected: config.feelMode == 'auto',
                         onSelected: (_) {
                           Haptics.tick();
@@ -1504,10 +1504,14 @@ class _DashboardPageState extends State<DashboardPage>
       return;
     }
     try {
-      await MediaApi.addCity(
-        name: nameCtl.text.trim(),
-        location: locCtl.text.trim(),
-        description: descCtl.text.trim(),
+      await showBusyWhile(
+        context,
+        MediaApi.addCity(
+          name: nameCtl.text.trim(),
+          location: locCtl.text.trim(),
+          description: descCtl.text.trim(),
+        ),
+        label: 'Adding place…',
       );
       Haptics.medium();
       if (!mounted) return;
@@ -1530,8 +1534,11 @@ class _DashboardPageState extends State<DashboardPage>
     }
     try {
       final clean = await normalizeImage(file.bytes!);
-      final updated = await MediaApi.uploadThumbnail(
-          videoId: video.id, filename: 'thumb.png', bytes: clean);
+      final updated = await showBusyWhile(
+          context,
+          MediaApi.uploadThumbnail(
+              videoId: video.id, filename: 'thumb.png', bytes: clean),
+          label: 'Updating thumbnail…');
       if (!mounted) return;
       final i = videos.indexWhere((v) => v.id == updated.id);
       if (i >= 0) setState(() => videos[i] = updated);
@@ -1550,8 +1557,11 @@ class _DashboardPageState extends State<DashboardPage>
     if (file == null || file.bytes == null || !mounted) return;
     try {
       final clean = await normalizeImage(file.bytes!);
-      await MediaApi.uploadCityCover(
-          city: city, filename: 'cover.png', bytes: clean);
+      await showBusyWhile(
+          context,
+          MediaApi.uploadCityCover(
+              city: city, filename: 'cover.png', bytes: clean),
+          label: 'Uploading cover…');
       if (!mounted) return;
       newSnackBar(context, title: 'New cover live for ${_cityName(city)}.');
       await _loadCities();
@@ -2083,7 +2093,7 @@ class _DashboardPageState extends State<DashboardPage>
               ),
               _badge(
                 processing
-                    ? 'ML processing...'
+                    ? 'Auto-enhancing…'
                     : (video.hapticsReady
                         ? 'Haptics ready'
                         : 'Haptics pending'),

@@ -63,8 +63,17 @@ Future<void> showNotificationsSheet(
         onSelectTab?.call(4); // GuideVibe feed
       case 'update':
         UpdateService.check().then((info) {
-          if (context.mounted && info != null && info.isNewer) {
+          if (!context.mounted) return;
+          if (info != null && info.isNewer) {
             runUpdateFlow(context, info);
+          } else {
+            newSnackBar(context,
+                title: 'You already have the latest version.');
+          }
+        }).catchError((_) {
+          if (context.mounted) {
+            newSnackBar(context,
+                title: "Couldn't check for updates — try again from Settings.");
           }
         });
       default:

@@ -40,7 +40,7 @@ class _ArViewPageState extends State<ArViewPage> {
     _ArModel(
       'Helmet · HD test',
       'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb',
-      'Streamed HD test — checks network 3D loading and PBR materials.',
+      'Streamed HD test — a detailed 3D model loaded over the internet.',
     ),
   ];
 

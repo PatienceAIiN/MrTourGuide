@@ -26,7 +26,7 @@ Future<AuthUser?> signInWithGoogle(
     final account = await signIn.authenticate();
     final idToken = account.authentication.idToken;
     if (idToken == null) {
-      throw const AuthException('Google did not return a sign-in token.');
+      throw const AuthException('Google sign-in didn’t finish — please try again.');
     }
     return await AuthApi.google(
       mode: mode,
@@ -41,9 +41,7 @@ Future<AuthUser?> signInWithGoogle(
     if (e.code == GoogleSignInExceptionCode.canceled) return null;
     if (context.mounted) {
       newSnackBar(context,
-          title: 'Google sign-in failed (${e.code.name}). If this says '
-              'clientConfigurationError, the app needs its SHA key added '
-              'in Firebase.');
+          title: 'Google sign-in failed. Please try again.');
     }
     return null;
   } catch (_) {
@@ -98,7 +96,7 @@ Future<AuthUser?> showVerifyEmailDialog(
             if (hint != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
-                child: Text('Dev hint (no mail server yet): $hint',
+                child: Text('Your test code (email delivery coming soon): $hint',
                     style: const TextStyle(fontSize: 11, color: Colors.grey)),
               ),
             TextButton(

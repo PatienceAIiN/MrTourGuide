@@ -69,7 +69,10 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
       await c.setLooping(true);
       await c.setVolume(sound ? 1 : 0);
       if (SettingsService.instance.autoplay) await c.play();
-      if (!mounted) return;
+      if (!mounted) {
+        await c.dispose();
+        return;
+      }
       setState(() => controller = c);
       _startHaptics();
       _scheduleHide();
@@ -263,12 +266,14 @@ class _ExperiencePlayerPageState extends State<ExperiencePlayerPage> {
       return;
     }
     Haptics.string();
-    Navigator.push(
+    _hapticTimer?.cancel();
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => VrPlayerPage(video: widget.video, controller: c),
       ),
     );
+    if (mounted) _startHaptics();
   }
 
   Future<void> _vrNotAvailable() async {

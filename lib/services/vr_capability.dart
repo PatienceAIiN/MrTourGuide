@@ -30,8 +30,8 @@ class VrCapability {
       if (sdk < 24) {
         return _cached = VrCapability(
             eligible: false,
-            reason: 'Android version too old (needs Android 7.0 / API 24+, '
-                'this device runs API $sdk).',
+            reason: 'Android version too old (needs Android 7.0 or newer, '
+                'this device runs an older version).',
             model: model);
       }
       if (!gyro) {

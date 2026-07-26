@@ -233,7 +233,7 @@ class _HomePageState extends State<HomeScreen>
         // Only surface the banner on a cold load with nothing to show —
         // background/resume ticks that fail keep the data already on screen
         // (screen-off, doze, app-switch all just retry quietly).
-        if (!_loadedOnce) error = 'Could not sync — check your internet.';
+        if (!_loadedOnce) error = 'Could not connect — check your internet.';
       });
     }
   }
@@ -296,7 +296,7 @@ class _HomePageState extends State<HomeScreen>
                               ),
                             ),
                             const SizedBox(width: 8),
-                            const WavingHand(size: 26),
+                            
                             const Spacer(),
                             // Keep the greeting clear of the corner bell.
                             const SizedBox(width: 34),

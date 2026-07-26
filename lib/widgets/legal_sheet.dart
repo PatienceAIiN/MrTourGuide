@@ -89,7 +89,7 @@ Future<void> showLegalSheet(BuildContext context) {
                       'Your name, email and role; optional profile details '
                       '(username, Instagram, phone) with per-field privacy '
                       'switches you control; content you upload; a device '
-                      'token for notifications; and location only when you '
+                      'identifier for notifications; and location only when you '
                       'use a location feature.'),
                   _h(context, 'How we use it'),
                   _p(context,
