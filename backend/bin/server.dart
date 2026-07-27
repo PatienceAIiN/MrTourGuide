@@ -6346,6 +6346,29 @@ Future<void> main() async {
   sweepStuck();
   Timer.periodic(const Duration(hours: 1), (_) => sweepStuck());
 
+  // Cover sweep: any city missing a cover (e.g. seeded directly in the DB,
+  // or a fetch that failed) gets one from Wikipedia HD. Runs once on boot and
+  // hourly, one city at a time so it never hammers Wikipedia or the CPU.
+  Future<void> sweepCovers() async {
+    try {
+      final rows = await _db.execute(
+          "SELECT slug, name, COALESCE(location, '') FROM cities "
+          "WHERE cover_url IS NULL ORDER BY created_at LIMIT 30");
+      if (rows.isEmpty) return;
+      print('cover sweep: fetching ${rows.length} missing covers');
+      for (final r in rows) {
+        await _autoCityCover(r[0] as String, r[1] as String, r[2] as String);
+        await Future<void>.delayed(const Duration(seconds: 2)); // be gentle
+      }
+      await _cacheBust('cities');
+    } catch (e) {
+      print('cover sweep failed: $e');
+    }
+  }
+
+  sweepCovers();
+  Timer.periodic(const Duration(hours: 1), (_) => sweepCovers());
+
   // App-update push: each shipped build redeploys this server, so on boot we
   // announce the manifest's build to every device ONCE (activity_logs
   // remembers what was already announced — restarts don't re-push).
