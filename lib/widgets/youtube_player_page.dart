@@ -193,10 +193,10 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style>
             ),
           ),
           // Feel button — turns the video's audio into live haptics.
-          // Left edge, vertically centred: clear of YouTube's top options
-          // bar and bottom seek/fullscreen controls.
+          // Right edge, vertically centred: clear of the phone's front
+          // camera punch-hole (top-left in landscape) and YouTube's controls.
           Positioned(
-            left: 8,
+            right: 8,
             top: 0,
             bottom: 0,
             child: Center(
