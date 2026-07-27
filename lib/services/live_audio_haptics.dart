@@ -1,27 +1,21 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'haptic_service.dart';
 import 'settings_service.dart';
 
-/// Set true to stream band values + decisions to logcat for tuning.
-const bool _feelDebug = true;
-
-/// First-person "feel" for the in-app YouTube player.
+/// Live "Feel the energy" haptics for the in-app YouTube player.
 ///
-/// Goal: feel the scene the camera-person is in — walking through a street,
-/// riding, the ambience and motion around them — as a SOFT, living presence
-/// that rises and falls with the scene's physical energy, with gentle accents
-/// on real jolts (a hard step, a bump). It stays quiet when someone is simply
-/// talking to camera. It works on ANY video because it tracks overall
-/// physical energy rather than relying on crisp, audible footstep thumps
-/// (many walking videos have soft or buried steps).
+/// Honest and reliable: the phone becomes a subwoofer in your hand — it
+/// rumbles with the video's bass and energy and punches on beats and big
+/// impacts. Strong for action and music, gentle for calm scenes, and silent
+/// on speech and quiet moments. (We don't claim literal footstep detection —
+/// a video's audio can't reliably separate walking from music/wind/traffic.)
 ///
 /// Native streams four band energies (0..1) ~18×/sec:
-///   low    (30–250 Hz)  — footfall body, vehicle/engine rumble, impacts
-///   lowMid (250–500 Hz) — step slap, physical texture, motion
+///   low    (30–250 Hz)  — bass, kicks, rumble, impacts
+///   lowMid (250–500 Hz) — body, texture
 ///   vocal  (300–3400 Hz)— human speech (subtracted out)
 ///   high   (>3400 Hz)   — air / sparkle (light touch)
 class LiveAudioHaptics {
@@ -31,11 +25,10 @@ class LiveAudioHaptics {
   bool _running = false;
   bool get isRunning => _running;
 
-  double _feelSmooth = 0;  // smoothed physical-feel level (scene motion)
-  double _physBase = 0;    // slow floor of physical energy (for accents)
-  int _nextThumpMs = 0;    // gait scheduler — when the next footfall fires
-  int _lastAccentMs = 0;
-  int _lastDebugMs = 0;
+  double _energy = 0;   // smoothed physical energy (the rumble level)
+  double _base = 0;     // slow floor, for beat/impact detection
+  int _lastBeatMs = 0;
+  int _lastRumbleMs = 0;
   final Stopwatch _clock = Stopwatch()..start();
 
   void Function(String message)? onError;
@@ -43,8 +36,7 @@ class LiveAudioHaptics {
   void start() {
     if (_running) return;
     _running = true;
-    _feelSmooth = _physBase = 0;
-    _nextThumpMs = 0;
+    _energy = _base = 0;
     _sub = _events.receiveBroadcastStream().listen(
       _onFrame,
       onError: (e) {
@@ -72,63 +64,37 @@ class LiveAudioHaptics {
     final high = (data['high'] as num?)?.toDouble() ?? 0;
     final now = _clock.elapsedMilliseconds;
 
-    // Physical energy = the parts of the scene you feel in your body
-    // (deep + low-mid motion + a little air), NOT the voice band.
-    final physical = low + lowMid * 0.7 + high * 0.15;
+    // Energy you'd feel physically — bass-weighted, plus a little body/air,
+    // with the voice band subtracted so talking doesn't drive the rumble.
+    final physical = low * 1.0 + lowMid * 0.55 + high * 0.12;
+    final voiceOver = (vocal - physical * 0.8).clamp(0.0, 1.0);
+    final feel = (physical - voiceOver * 0.9).clamp(0.0, 1.0);
 
-    // Subtract the voice: whatever the vocal band carries above the physical
-    // level is "someone talking" and must not be felt. This keeps narration
-    // and conversation quiet while a busy, moving scene still comes through.
-    final voiceOver = (vocal - physical * 0.75).clamp(0.0, 1.0);
-    final feelRaw = (physical - voiceOver * 0.9).clamp(0.0, 1.0);
+    _energy += (feel - _energy) * 0.4; // smooth the rumble
 
-    // Smooth it so the presence glides (soft), instead of flickering.
-    _feelSmooth += (feelRaw - _feelSmooth) * 0.35;
-
-    // Slow floor for accent detection.
-    if (physical > _physBase) {
-      _physBase += (physical - _physBase) * 0.05;
+    // Slow floor for beat detection (bass kicks spike above it).
+    if (low > _base) {
+      _base += (low - _base) * 0.06;
     } else {
-      _physBase += (physical - _physBase) * 0.2;
+      _base += (low - _base) * 0.25;
     }
-    final onset = physical - _physBase;
+    final kick = low - _base;
 
-    final motion = _feelSmooth; // 0 = still/quiet, 1 = very active scene
-
-    if (_feelDebug && now - _lastDebugMs > 150) {
-      _lastDebugMs = now;
-      debugPrint('FEEL phys=${physical.toStringAsFixed(2)} '
-          'vocal=${vocal.toStringAsFixed(2)} '
-          'motion=${motion.toStringAsFixed(2)} '
-          'onset=${onset.toStringAsFixed(2)}');
-    }
-
-    // ── Accent: a real jolt (hard step, bump, impact) punches through ───
-    // A clear spike above the slow floor, when it isn't just voice. Fires
-    // immediately and re-phases the gait so the rhythm continues from here.
-    if (onset > 0.16 && voiceOver < 0.30 && now - _lastAccentMs > 130) {
-      _lastAccentMs = now;
-      Haptics.recoil((0.45 + onset).clamp(0.0, 0.9));
-      _nextThumpMs = now + 300;
+    // ── Beat / impact: a bass spike → a punchy recoil (the "hit") ───────
+    if (kick > 0.14 && voiceOver < 0.35 && now - _lastBeatMs > 120) {
+      _lastBeatMs = now;
+      _lastRumbleMs = now + 90; // let the hit breathe
+      Haptics.recoil((0.4 + kick * 1.3).clamp(0.0, 0.95));
       return;
     }
 
-    // ── Gait engine: thump-thump walking → continuous running ───────────
-    // Rather than hoping every faint footstep is audible, synthesise a
-    // footfall rhythm whose TEMPO follows how active the scene is:
-    //   gentle motion → slow "thump … thump" (a walk)
-    //   strong motion → fast, near-continuous "thump-thump-thump" (a run)
-    // Speech and quiet stand-still produce no motion → the feet go still.
-    if (motion < 0.11) { _nextThumpMs = 0; return; } // standing / talking / quiet
-
-    if (now >= _nextThumpMs) {
-      // Cadence: 560 ms (slow walk) → 190 ms (running) as motion rises.
-      final interval = (560 - motion * 470).clamp(190.0, 560.0).round();
-      _nextThumpMs = now + interval;
-      // Each footfall is a soft graded thump — light for a stroll, firm for
-      // a run — with a quick settle so it reads as a step, not a buzz.
-      final strength = (0.3 + motion * 0.5).clamp(0.0, 0.85);
-      Haptics.recoil(strength);
-    }
+    // ── Rumble: graded subwoofer level following the energy ─────────────
+    // Gate at 0.16 so calm/ambient/speech stays silent — only genuinely
+    // energetic audio (music, action, crowds) produces the rumble.
+    if (now < _lastRumbleMs) return;
+    if (now - _lastRumbleMs < 60) return; // ~16 Hz
+    if (_energy < 0.16) return;            // quiet / speech → still
+    _lastRumbleMs = now;
+    Haptics.level((_energy * 0.6).clamp(0.0, 0.7), durationMs: 70);
   }
 }
