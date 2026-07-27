@@ -5,22 +5,23 @@ import 'package:flutter/services.dart';
 import 'haptic_service.dart';
 import 'settings_service.dart';
 
-/// Live audio → **physical-feel** haptics for the in-app YouTube player.
+/// First-person "feel" for the in-app YouTube player.
 ///
-/// The aim is to feel the SCENE, not the narration: footsteps while walking,
-/// the rumble of a vehicle, impacts, and ambience — while staying silent when
-/// a person is simply talking.
+/// The goal is to feel the video the way the person *holding the camera*
+/// would feel it in their body — a footstep lands as a distinct thump, a
+/// pothole or bump is a jolt, a moving vehicle carries rhythmic road texture —
+/// with **stillness in between**. It deliberately does NOT emit a continuous
+/// buzz (that reads as meaningless noise) and stays silent for human speech.
 ///
-/// The native side streams four frequency-band energies (0..1) ~18×/sec:
-///   low    (30–250 Hz)  — vehicle rumble, footfall body, thumps, bass
-///   lowMid (250–500 Hz) — footstep slap, physical texture
-///   vocal  (300–3400 Hz)— human speech (we suppress this)
-///   high   (>3400 Hz)   — sibilance / air / sparkle
+/// Native streams four frequency-band energies (0..1) ~18×/sec:
+///   low    (30–250 Hz)  — footfall body, vehicle/engine rumble, impacts
+///   lowMid (250–500 Hz) — the "slap" of a step, physical texture
+///   vocal  (300–3400 Hz)— human speech (ignored)
+///   high   (>3400 Hz)   — air / sparkle (ignored for body-feel)
 ///
-/// Speech is dominated by the vocal band with little low-end; physical events
-/// (steps, wheels, hits) always carry low / low-mid energy. So we drive the
-/// feel from the physical bands and gate it down hard when the vocal band
-/// dominates.
+/// We detect physical EVENTS (onsets) in the low bands and answer each with a
+/// single graded recoil — the jolt your body feels. Sustained low rumble
+/// (riding a vehicle) becomes paced road-texture taps, not a drone.
 class LiveAudioHaptics {
   static const _events = EventChannel('mrtouride/audiofeel');
 
@@ -28,11 +29,12 @@ class LiveAudioHaptics {
   bool _running = false;
   bool get isRunning => _running;
 
-  // Rolling references for transient (footstep / impact) detection.
-  double _lowAvg = 0;      // slow average of low-band energy
+  // Rolling baselines so we react to CHANGES (events), not steady loudness.
+  double _lowAvg = 0;
   double _lowMidAvg = 0;
-  int _lastStepMs = 0;
-  int _lastLevelMs = 0;
+  double _lowSustain = 0; // slower average → "am I on a moving vehicle?"
+  int _lastJoltMs = 0;
+  int _lastTextureMs = 0;
   final Stopwatch _clock = Stopwatch()..start();
 
   void Function(String message)? onError;
@@ -40,8 +42,7 @@ class LiveAudioHaptics {
   void start() {
     if (_running) return;
     _running = true;
-    _lowAvg = 0;
-    _lowMidAvg = 0;
+    _lowAvg = _lowMidAvg = _lowSustain = 0;
     _sub = _events.receiveBroadcastStream().listen(
       _onFrame,
       onError: (e) {
@@ -66,44 +67,52 @@ class LiveAudioHaptics {
     final low = (data['low'] as num?)?.toDouble() ?? 0;
     final lowMid = (data['lowMid'] as num?)?.toDouble() ?? 0;
     final vocal = (data['vocal'] as num?)?.toDouble() ?? 0;
-    final high = (data['high'] as num?)?.toDouble() ?? 0;
     final now = _clock.elapsedMilliseconds;
 
-    // Physical energy = the parts of the scene you'd feel with your body.
-    final physical = low * 1.0 + lowMid * 0.6 + high * 0.12;
+    // Baselines: fast (for onsets) and slow (for sustained motion).
+    _lowAvg += (low - _lowAvg) * 0.20;
+    _lowMidAvg += (lowMid - _lowMidAvg) * 0.20;
+    _lowSustain += (low - _lowSustain) * 0.04;
 
-    // ── Speech gate ────────────────────────────────────────────────────
-    // Talking = vocal band dominant with weak low end. When that's the case,
-    // scale the feel right down so narration/conversation doesn't buzz.
-    final voiceDominant = vocal > (low + lowMid) * 1.4 && low < 0.22;
-    final gate = voiceDominant ? 0.12 : 1.0;
+    // ── Speech rejection (hard) ─────────────────────────────────────────
+    // Speech always carries strong 300–3400 Hz vocal energy. Plosives
+    // ("p","b") also leak a little low-frequency thump that can mimic a
+    // footstep — so we don't just check dominance, we suppress ANY frame
+    // with meaningful vocal energy. The ONLY exception is a genuine impact
+    // whose low-end massively outweighs the voice (a real bump cutting
+    // through someone talking). This keeps narration/conversation dead
+    // silent — no disturbance.
+    final speechPresent = vocal > 0.18;
+    final realImpact = low > vocal * 1.9 && low > 0.30;
+    if (speechPresent && !realImpact) return;
 
-    // Update rolling averages (for onset detection).
-    _lowAvg += (low - _lowAvg) * 0.18;
-    _lowMidAvg += (lowMid - _lowMidAvg) * 0.18;
-
-    // ── Footstep / impact — a fast rise in the low / low-mid bands ──────
-    // A step is a short transient: current well above its running average.
+    // ── Physical EVENT: footstep, bump, impact ──────────────────────────
+    // A step/jolt is a sudden rise over the running baseline in the body
+    // bands — not steady volume. One crisp recoil per event, then a short
+    // refractory silence so distinct steps stay distinct (not a blur).
     final lowJump = low - _lowAvg;
     final midJump = lowMid - _lowMidAvg;
-    final onset = (lowJump * 1.2 + midJump).clamp(0.0, 1.0);
-    if (!voiceDominant &&
-        onset > 0.14 &&
-        (low > 0.18 || lowMid > 0.22) &&
-        now - _lastStepMs > 130) {
-      _lastStepMs = now;
-      _lastLevelMs = now + 130; // let the punch breathe
-      // Footfall / impact → crisp recoil, strength from the transient size.
-      Haptics.recoil((0.4 + onset * 0.9).clamp(0.0, 1.0));
+    final onset = (lowJump * 1.25 + midJump * 0.9);
+    final strongEnough = low > 0.20 || lowMid > 0.24;
+    if (onset > 0.13 && strongEnough && now - _lastJoltMs > 120) {
+      _lastJoltMs = now;
+      _lastTextureMs = now + 120; // don't stack texture on top of a jolt
+      // Body jolt: bigger onset = harder landing. 0.45 floor so every real
+      // step is clearly felt; scales up to a full slam for impacts.
+      final punch = (0.45 + onset * 1.1).clamp(0.0, 1.0);
+      Haptics.recoil(punch);
       return;
     }
 
-    // ── Sustained rumble / ambience → smooth graded level ───────────────
-    if (now < _lastLevelMs) return;
-    if (now - _lastLevelMs < 55) return; // ~18 Hz cap
-    final feel = (physical * gate).clamp(0.0, 1.0);
-    if (feel < 0.08) return; // quiet / pure speech: stay still
-    _lastLevelMs = now;
-    Haptics.level(feel, durationMs: 75);
+    // ── Riding a vehicle: sustained low rumble → paced road texture ─────
+    // When there's steady strong low-end (engine/road) but no fresh jolt,
+    // emit gentle spaced pulses so it feels like continuous motion through
+    // the body — still discrete taps, never a formless drone.
+    if (_lowSustain > 0.34 && now - _lastTextureMs > 190) {
+      _lastTextureMs = now;
+      final texture = (_lowSustain * 0.5).clamp(0.12, 0.45);
+      Haptics.level(texture, durationMs: 55);
+    }
+    // Otherwise: stillness. Quiet scenes and speech produce no vibration.
   }
 }
