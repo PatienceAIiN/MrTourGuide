@@ -89,28 +89,46 @@ class MainActivity : FlutterActivity() {
         try {
             val v = Visualizer(0)
             v.captureSize = Visualizer.getCaptureSizeRange()[1] // 1024
+            val samplingHz = v.samplingRate / 1000.0            // milliHz → Hz
             v.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                override fun onWaveFormDataCapture(vz: Visualizer?, wave: ByteArray?, rate: Int) {
-                    if (wave == null) return
-                    var sum = 0.0; var peak = 0.0; var slow = 0.0; var bassSum = 0.0
-                    for (b in wave) {
-                        val s = ((b.toInt() and 0xFF) - 128) / 128.0 // -1..1
-                        sum += s * s
-                        val a = abs(s)
-                        if (a > peak) peak = a
-                        slow += (a - slow) * 0.12 // low-pass → bass-ish
-                        bassSum += slow
+                override fun onWaveFormDataCapture(vz: Visualizer?, wave: ByteArray?, rate: Int) {}
+
+                // FFT band analysis: split the spectrum so we can feel the
+                // PHYSICAL scene (footsteps, vehicles, impacts, ambience) and
+                // deliberately ignore human speech (the 300–3400 Hz vocal band).
+                override fun onFftDataCapture(vz: Visualizer?, fft: ByteArray?, rate: Int) {
+                    if (fft == null || fft.size < 4) return
+                    val bins = fft.size / 2
+                    val binHz = samplingHz / (bins * 2.0)   // Hz per bin
+                    // Band energy accumulators
+                    var low = 0.0     // 30–250 Hz: rumble, vehicle, footfall body
+                    var lowMid = 0.0  // 250–500 Hz: footstep slap, texture
+                    var vocal = 0.0   // 300–3400 Hz: human speech
+                    var high = 0.0    // >3400 Hz: sibilance, hiss, sparkle
+                    for (i in 1 until bins) {
+                        val re = fft[2 * i].toInt()
+                        val im = fft[2 * i + 1].toInt()
+                        val mag = Math.sqrt((re * re + im * im).toDouble())
+                        val hz = i * binHz
+                        when {
+                            hz < 250.0  -> low += mag
+                            hz < 500.0  -> { lowMid += mag; if (hz >= 300) vocal += mag }
+                            hz < 3400.0 -> vocal += mag
+                            else        -> high += mag
+                        }
                     }
-                    val n = wave.size
-                    val rms = Math.sqrt(sum / n)
-                    val bass = min(1.0, (bassSum / n) * 3.2)
-                    val energy = min(1.0, rms * 2.6 + peak * 0.25)
+                    // Normalise (magnitudes ~0..128 each bin); tuned empirically.
+                    val lowN   = min(1.0, low   / 900.0)
+                    val lowMidN= min(1.0, lowMid/ 700.0)
+                    val vocalN = min(1.0, vocal / 2600.0)
+                    val highN  = min(1.0, high  / 3000.0)
                     mainHandler.post {
-                        feelSink?.success(mapOf("bass" to bass, "energy" to energy))
+                        feelSink?.success(mapOf(
+                            "low" to lowN, "lowMid" to lowMidN,
+                            "vocal" to vocalN, "high" to highN))
                     }
                 }
-                override fun onFftDataCapture(vz: Visualizer?, fft: ByteArray?, rate: Int) {}
-            }, (Visualizer.getMaxCaptureRate() * 3 / 4).coerceAtMost(20000), true, false)
+            }, (Visualizer.getMaxCaptureRate() * 3 / 4).coerceAtMost(20000), false, true)
 
             // enabled=true can return NO_INIT if audio isn't flowing yet.
             v.enabled = true
