@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:record/record.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+
+import '../services/live_audio_haptics.dart';
 
 /// Fullscreen landscape player for recommended YouTube videos.
 ///
@@ -43,6 +46,11 @@ class YoutubePlayerPage extends StatefulWidget {
 class _YoutubePlayerPageState extends State<YoutubePlayerPage> {
   late final WebViewController _web;
   bool _ready = false;
+
+  // Live audio→haptics: feel the YouTube sound as vibration.
+  final _feel = LiveAudioHaptics();
+  bool _feelOn = false;
+  bool _feelBusy = false;
 
   @override
   void initState() {
@@ -92,12 +100,74 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style>
 
   @override
   void dispose() {
+    _feel.stop();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  /// Toggle live feel. First time on, explain why the mic permission is
+  /// needed (Android gates the audio Visualizer behind it — nothing is
+  /// recorded or sent anywhere; it only reads the sound's energy on-device).
+  Future<void> _toggleFeel() async {
+    if (_feelBusy) return;
+    if (_feelOn) {
+      _feel.stop();
+      setState(() => _feelOn = false);
+      return;
+    }
+    setState(() => _feelBusy = true);
+    final granted = await _ensureAudioPermission();
+    if (!mounted) { _feelBusy = false; return; }
+    if (!granted) {
+      setState(() => _feelBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Feel needs audio access to sense the video sound.'),
+      ));
+      return;
+    }
+    _feel.onError = (msg) {
+      if (!mounted) return;
+      setState(() { _feelOn = false; _feelBusy = false; });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(msg)));
+    };
+    _feel.start();
+    setState(() { _feelOn = true; _feelBusy = false; });
+  }
+
+  Future<bool> _ensureAudioPermission() async {
+    final rec = AudioRecorder();
+    if (await rec.hasPermission(request: false)) return true;
+    // One-time friendly explainer before the OS prompt.
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        icon: const Icon(Icons.vibration, size: 36),
+        title: const Text('Feel the video'),
+        content: const Text(
+          'To turn this video’s sound into real vibrations, the app needs '
+          'audio access. Nothing is ever recorded, saved or sent — it only '
+          'senses the beat on your device, live.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Not now')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Enable feel')),
+        ],
+      ),
+    );
+    if (proceed != true) return false;
+    return rec.hasPermission(); // triggers the OS permission prompt
   }
 
   @override
@@ -119,6 +189,52 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style>
               child: IconButton(
                 icon: const Icon(Icons.close, color: Colors.white),
                 onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+          ),
+          // Feel button — turns the video's audio into live haptics.
+          // Left edge, vertically centred: clear of YouTube's top options
+          // bar and bottom seek/fullscreen controls.
+          Positioned(
+            left: 8,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: Material(
+                color: _feelOn
+                    ? const Color(0xFF3CEBFF).withValues(alpha: 0.9)
+                    : Colors.black.withValues(alpha: 0.55),
+                shape: const StadiumBorder(),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(24),
+                  onTap: _toggleFeel,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      if (_feelBusy)
+                        const SizedBox(
+                            width: 18, height: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                      else
+                        Icon(
+                            _feelOn
+                                ? Icons.vibration
+                                : Icons.vibration_outlined,
+                            color: _feelOn ? Colors.black : Colors.white,
+                            size: 22),
+                      const SizedBox(height: 3),
+                      Text(_feelOn ? 'Feel\non' : 'Feel',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: _feelOn ? Colors.black : Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 11,
+                              height: 1.1)),
+                    ]),
+                  ),
+                ),
               ),
             ),
           ),
