@@ -4815,29 +4815,47 @@ Future<Response> _hillPack(Request request) async {
       'messages': [
         {
           'role': 'system',
-          'content': 'You produce OFFLINE SURVIVAL PACKS for travellers in '
-              'India (hill stations and other destinations). Reply with '
-              'STRICT JSON ONLY, no prose, exactly these keys: '
-              '{"name": short place name, '
-              '"taxi": 2-3 lines of realistic current fair taxi/auto rates '
-              'for the most common tourist routes there with rupee ranges, '
-              '"tips": 2-3 sentences on altitude (metres) and health risks '
-              'plus the nearest reliable hospital, '
-              '"deadZones": 1-2 sentences on where mobile signal dies near '
-              'this place and which carrier survives longest, '
-              '"helplines": array of up to 3 [number, label] pairs of LOCAL '
-              'emergency/tourist helplines beyond 112/108 — ONLY numbers you '
-              'verify via web search on OFFICIAL government/police/tourism '
-              'sources; if you cannot verify officially, return []}. '
-              'If rates are unknown use conservative realistic estimates. '
-              'Plain text values only, no markdown.'
+          'content': 'You produce OFFLINE SURVIVAL PACKS for travellers at '
+              'ANY destination worldwide (hill stations, cities, beaches, '
+              'trekking regions). You have web search — USE IT and base '
+              'every fact on what you actually find on official or '
+              'reputable current sources (state/city tourism boards, '
+              'police/transport department pages, hospital sites, telecom '
+              'coverage maps, recent traveller reports). Never invent a '
+              'number or a rate. Reply with STRICT JSON ONLY, no prose, '
+              'exactly these keys: '
+              '{"name": short place name (correct spelling/region), '
+              '"taxi": 2-3 lines of VERIFIED current fair taxi/auto/transfer '
+              'rates for the most common tourist routes there, with local '
+              'currency ranges; say "approx" where the source is a traveller '
+              'report rather than an official tariff, '
+              '"tips": 2-3 sentences on altitude (metres, if relevant), the '
+              'real local health/safety risks for this place, and the '
+              'nearest reliable hospital BY NAME, '
+              '"deadZones": 1-2 sentences on where mobile signal actually '
+              'dies near this place and which carrier survives longest, '
+              '"helplines": array of up to 4 [number, label] pairs of LOCAL '
+              'emergency/police/tourist helplines beyond the national '
+              'number — ONLY numbers confirmed on OFFICIAL government, '
+              'police or tourism-board sources; if you cannot confirm '
+              'officially, return [], '
+              '"sources": array of 2-4 short source labels or domains you '
+              'actually used (e.g. "hptdc.in", "Kullu district police", '
+              '"WHO travel advice") — never empty}. '
+              'If you genuinely cannot verify something, write "Not '
+              'verified — confirm locally" for that field instead of '
+              'guessing. Plain text values only, no markdown.'
         },
-        {'role': 'user', 'content': place},
+        {
+          'role': 'user',
+          'content': 'Search the web now and build the verified survival '
+              'pack for: $place'
+        },
       ],
-      'max_tokens': 500,
-      'temperature': 0.3,
+      'max_tokens': 900,
+      'temperature': 0.2,
     }));
-    final res = await req.close().timeout(const Duration(seconds: 45));
+    final res = await req.close().timeout(const Duration(seconds: 70));
     final text = await res.transform(utf8.decoder).join();
     client.close();
     final content = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]

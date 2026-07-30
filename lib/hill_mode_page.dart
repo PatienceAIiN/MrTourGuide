@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -13,7 +14,6 @@ import 'package:http/http.dart' as http;
 
 import 'services/api_base.dart';
 import 'services/local_notifs.dart';
-import 'services/location_service.dart';
 
 /// HILL MODE — the part of the app that keeps working when the network
 /// doesn't. Fully offline-capable:
@@ -35,13 +35,15 @@ const _beaconNotifId = 7301;
 class _Pack {
   final String name, taxi, tips, deadZones;
   final List<List<String>> helplines;
+  final List<String> sources;
   final DateTime? updatedAt;
   const _Pack(this.name, this.taxi, this.tips, this.deadZones,
-      {this.helplines = const [], this.updatedAt});
+      {this.helplines = const [], this.sources = const [], this.updatedAt});
 
   Map<String, dynamic> toJson() => {
         'name': name, 'taxi': taxi, 'tips': tips, 'deadZones': deadZones,
         'helplines': helplines,
+        'sources': sources,
         'updatedAt': updatedAt?.toIso8601String(),
       };
   static _Pack fromJson(Map<String, dynamic> j) => _Pack(
@@ -52,6 +54,9 @@ class _Pack {
         helplines: [
           for (final h in (j['helplines'] as List? ?? []))
             [for (final x in (h as List)) x.toString()]
+        ],
+        sources: [
+          for (final x in (j['sources'] as List? ?? [])) x.toString()
         ],
         updatedAt: DateTime.tryParse((j['updatedAt'] ?? '') as String),
       );
@@ -93,6 +98,12 @@ class _HillModePageState extends State<HillModePage> {
   static const _bleEvents = EventChannel('mrtouride/blesos');
   StreamSubscription? _bleSub;
   int _lastBleAlertMs = 0;
+
+  // Shake-to-SOS: three hard jolts within 1.5s fires the SOS countdown.
+  StreamSubscription? _shakeSub;
+  bool _shakeOn = false;
+  final List<int> _jolts = [];
+  bool _sosArmed = false; // countdown dialog is up
 
   List<_Pack> _myPacks = [];
   int _pack = 0;
@@ -154,8 +165,78 @@ class _HillModePageState extends State<HillModePage> {
   @override
   void dispose() {
     _bleSub?.cancel();
+    _shakeSub?.cancel();
     _bleCtl.invokeMethod('stopAdvertise').catchError((_) => null);
     super.dispose();
+  }
+
+  // ── Shake-to-SOS ───────────────────────────────────────────────────────
+  // Three hard jolts inside 1.5s → a 5-second countdown → auto-send. The
+  // countdown exists so an accidental shake can be cancelled; if the phone
+  // is dropped in a real emergency the SOS still goes out by itself.
+  Future<void> _setShake(bool on) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setBool('hill.shake', on);
+    _shakeSub?.cancel();
+    _shakeSub = null;
+    if (on) {
+      _shakeSub = accelerometerEventStream().listen((e) {
+        final g =
+            (e.x * e.x + e.y * e.y + e.z * e.z) / 96.2; // 1.0 ≈ gravity
+        if (g < 3.2) return; // hard jolt only
+        final now = DateTime.now().millisecondsSinceEpoch;
+        _jolts.removeWhere((t) => now - t > 1500);
+        if (_jolts.isNotEmpty && now - _jolts.last < 180) return; // debounce
+        _jolts.add(now);
+        if (_jolts.length >= 3 && !_sosArmed) {
+          _jolts.clear();
+          _shakeCountdown();
+        }
+      });
+    }
+    if (mounted) setState(() => _shakeOn = on);
+  }
+
+  Future<void> _shakeCountdown() async {
+    if (_sosArmed || !mounted) return;
+    _sosArmed = true;
+    Haptics.heavy();
+    var left = 5;
+    Timer? tick;
+    final cancelled = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(builder: (c, setD) {
+        tick ??= Timer.periodic(const Duration(seconds: 1), (t) {
+          left--;
+          Haptics.medium();
+          if (left <= 0) {
+            t.cancel();
+            if (c.mounted) Navigator.pop(c, false);
+          } else {
+            setD(() {});
+          }
+        });
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          icon: const Icon(Icons.vibration_rounded, color: Colors.red, size: 40),
+          title: Text('Sending SOS in $left…'),
+          content: const Text('Shake detected. Cancel if this was accidental.',
+              textAlign: TextAlign.center),
+          actionsAlignment: MainAxisAlignment.center,
+          actions: [
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                onPressed: () => Navigator.pop(c, true),
+                child: const Text('Cancel')),
+          ],
+        );
+      }),
+    );
+    tick?.cancel();
+    _sosArmed = false;
+    if (cancelled == true || !mounted) return;
+    await _fireSos(silent: true);
   }
 
   Future<void> _load() async {
@@ -170,7 +251,9 @@ class _HillModePageState extends State<HillModePage> {
           ? List.of(_seedPacks)
           : [for (final j in jsonDecode(raw) as List) _Pack.fromJson(j)];
       if (_pack >= _myPacks.length) _pack = 0;
+      _shakeOn = p.getBool('hill.shake') ?? false;
     });
+    if (_shakeOn) _setShake(true);
     _refreshStale();
   }
 
@@ -185,7 +268,7 @@ class _HillModePageState extends State<HillModePage> {
       final r = await http
           .get(Uri.parse(
               '$apiBase/hillmode/pack?place=${Uri.encodeComponent(place)}'))
-          .timeout(const Duration(seconds: 50));
+          .timeout(const Duration(seconds: 80));
       if (r.statusCode != 200) return null;
       return _Pack.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
     } catch (_) {
@@ -298,32 +381,43 @@ class _HillModePageState extends State<HillModePage> {
     );
   }
 
-  Future<void> _detectAndGet() async {
-    Haptics.light();
-    setState(() => _fetching = true);
-    // Try the cached/online geocoder first; fall back to raw GPS coords —
-    // the pack service resolves "near lat,lon" to the nearest place itself.
-    var place = '';
+  /// Shown BEFORE first SOS/beacon use while SMS isn't granted yet —
+  /// explains the one-time Android unlock so auto-send works when needed.
+  Future<void> _smsSetupGuide() async {
     try {
-      final (_, city) = await LocationService.current(refresh: true);
-      place = city;
+      final status = await _sms.invokeMethod<String>('status');
+      if (status == 'granted' || !mounted) return;
+      await showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          icon: const Icon(Icons.sms_rounded, color: Colors.teal, size: 36),
+          title: const Text('One-time SMS setup'),
+          content: const Text(
+              'For SOS to send automatically, allow SMS once.\n\n'
+              'When Android asks, tap Allow.\n\n'
+              'If Android says "restricted setting":\n'
+              '1. Open the app\'s settings (button below)\n'
+              '2. Tap the ⋮ menu (top-right)\n'
+              '3. "Allow restricted settings"\n'
+              '4. Permissions → SMS → Allow'),
+          actionsAlignment: MainAxisAlignment.center,
+          actions: [
+            OutlinedButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text('Continue')),
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                onPressed: () {
+                  _sms.invokeMethod('openSettings');
+                  Navigator.pop(c);
+                },
+                child: const Text('Open settings')),
+          ],
+        ),
+      );
     } catch (_) {}
-    if (place.isEmpty) {
-      final pos = await _gps();
-      if (pos != null) {
-        place = 'near ${pos.latitude.toStringAsFixed(3)},'
-            '${pos.longitude.toStringAsFixed(3)}';
-      }
-    }
-    if (!mounted) return;
-    if (place.isEmpty) {
-      setState(() => _fetching = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Location unavailable — turn on GPS, or type the place.')));
-      return;
-    }
-    await _getPack(place: place);
   }
 
   Future<Position?> _gps() async {
@@ -409,7 +503,7 @@ class _HillModePageState extends State<HillModePage> {
                   const Row(children: [
                     Icon(Icons.terrain_rounded, color: Colors.teal),
                     SizedBox(width: 8),
-                    Text('How Hill Mode works',
+                    Text('How Tour Mode works',
                         style: TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 17)),
                   ]),
@@ -480,6 +574,8 @@ class _HillModePageState extends State<HillModePage> {
   // ── SOS ────────────────────────────────────────────────────────────────
   Future<void> _sos() async {
     Haptics.heavy();
+    await _smsSetupGuide();
+    if (!mounted) return;
     final to = _contact.isNotEmpty ? _contact : '112';
     final posF = _gps(); // fix GPS while the user confirms
     final send = await showDialog<bool>(
@@ -506,7 +602,14 @@ class _HillModePageState extends State<HillModePage> {
       ),
     );
     if (send != true || !mounted) return;
-    final pos = await posF;
+    await _fireSos(pos: await posF);
+  }
+
+  /// Actually send the SOS. [silent] skips the confirm (shake path already
+  /// gave a cancellable countdown).
+  Future<void> _fireSos({Position? pos, bool silent = false}) async {
+    final to = _contact.isNotEmpty ? _contact : '112';
+    pos ??= await _gps();
     // Also shout over Bluetooth so nearby app users can relay when there
     // is no tower at all.
     if (pos != null) {
@@ -514,18 +617,20 @@ class _HillModePageState extends State<HillModePage> {
           {'lat': pos.latitude, 'lon': pos.longitude}).catchError((_) => null);
     }
     final sent = await _sendSms(to,
-        'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Hill Mode)');
+        'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Tour Mode)');
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         backgroundColor: sent ? Colors.teal : null,
         content: Text(sent
-            ? 'SOS sent to $to with your location.'
+            ? '✓ SOS delivered to $to with your location.'
             : 'Opened your SMS app — press send to deliver.')));
   }
 
   // ── Trip beacon ────────────────────────────────────────────────────────
   Future<void> _beaconSheet() async {
     Haptics.light();
+    await _smsSetupGuide();
+    if (!mounted) return;
     final planCtl = TextEditingController(text: _plan);
     final contactCtl = TextEditingController(text: _contact);
     DateTime? backBy = _backBy;
@@ -693,7 +798,7 @@ class _HillModePageState extends State<HillModePage> {
         title: const Row(children: [
           Icon(Icons.terrain_rounded, color: Colors.teal),
           SizedBox(width: 8),
-          Text('Hill Mode'),
+          Text('Tour Mode'),
         ]),
         actions: [
           IconButton(
@@ -705,7 +810,88 @@ class _HillModePageState extends State<HillModePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const SizedBox(height: 14),
+          // ── Survival pack (primary content — searchable, saved offline) ──
+          Row(children: [
+            const Text('Survival pack',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Spacer(),
+            if (_fetching)
+              const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.teal)),
+          ]),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _searchCtl,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (_) => _getPack(),
+            decoration: InputDecoration(
+              hintText: 'Search any place — Leh, Munnar, Bali…',
+              isDense: true,
+              prefixIcon: const Icon(Icons.search_rounded, size: 20),
+              suffixIcon: IconButton(
+                  tooltip: 'Fetch pack',
+                  onPressed: _fetching ? null : _getPack,
+                  icon: const Icon(Icons.download_rounded, size: 20)),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 40,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (var i = 0; i < _myPacks.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: InputChip(
+                      label: Text(_myPacks[i].name),
+                      selected: _pack == i,
+                      selectedColor: Colors.teal,
+                      labelStyle: TextStyle(
+                          color: _pack == i ? Colors.white : ink(context)),
+                      onSelected: (_) {
+                        Haptics.tick();
+                        setState(() => _pack = i);
+                      },
+                      onDeleted: _myPacks.length > 1
+                          ? () {
+                              setState(() {
+                                _myPacks.removeAt(i);
+                                if (_pack >= _myPacks.length) {
+                                  _pack = _myPacks.length - 1;
+                                }
+                              });
+                              _persistPacks();
+                            }
+                          : null,
+                      deleteIconColor: _pack == i ? Colors.white70 : null,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          _info(Icons.local_taxi_rounded, 'Fair taxi rates', pack.taxi),
+          _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
+          _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
+              pack.deadZones),
+          if (pack.sources.isNotEmpty)
+            _info(Icons.verified_rounded, 'Verified sources',
+                pack.sources.join('\n')),
+          if (pack.updatedAt != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                  'Updated ${DateTime.now().difference(pack.updatedAt!).inDays} day(s) ago — refreshes weekly.',
+                  style: TextStyle(
+                      fontSize: 11, color: ink(context).withValues(alpha: .45))),
+            ),
+          const SizedBox(height: 20),
 
           // SOS
           SizedBox(
@@ -720,6 +906,25 @@ class _HillModePageState extends State<HillModePage> {
               icon: const Icon(Icons.sos_rounded, size: 26),
               label: const Text('SOS',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: SwitchListTile(
+              value: _shakeOn,
+              onChanged: (v) {
+                Haptics.tick();
+                _setShake(v);
+              },
+              activeThumbColor: Colors.teal,
+              secondary:
+                  const Icon(Icons.vibration_rounded, color: Colors.red),
+              title: const Text('Shake for SOS',
+                  style:
+                      TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+              subtitle: const Text('Shake hard 3× — 5s to cancel'),
             ),
           ),
           const SizedBox(height: 10),
@@ -824,94 +1029,6 @@ class _HillModePageState extends State<HillModePage> {
                     ),
             ),
           ),
-          const SizedBox(height: 18),
-
-          // Survival packs — searchable, GPS-detected, saved offline.
-          Row(children: [
-            const Text('Survival packs',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const Spacer(),
-            if (_fetching)
-              const SizedBox(
-                  width: 16, height: 16,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.teal)),
-          ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _searchCtl,
-                textInputAction: TextInputAction.search,
-                onSubmitted: (_) => _getPack(),
-                decoration: InputDecoration(
-                  hintText: 'Any place — Leh, Munnar, Darjeeling…',
-                  isDense: true,
-                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              style: IconButton.styleFrom(backgroundColor: Colors.teal),
-              tooltip: 'Detect my location',
-              onPressed: _fetching ? null : _detectAndGet,
-              icon: const Icon(Icons.my_location_rounded, size: 20),
-            ),
-          ]),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 40,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: [
-                for (var i = 0; i < _myPacks.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: InputChip(
-                      label: Text(_myPacks[i].name),
-                      selected: _pack == i,
-                      selectedColor: Colors.teal,
-                      labelStyle: TextStyle(
-                          color: _pack == i ? Colors.white : ink(context)),
-                      onSelected: (_) {
-                        Haptics.tick();
-                        setState(() => _pack = i);
-                      },
-                      onDeleted: _myPacks.length > 1
-                          ? () {
-                              setState(() {
-                                _myPacks.removeAt(i);
-                                if (_pack >= _myPacks.length) {
-                                  _pack = _myPacks.length - 1;
-                                }
-                              });
-                              _persistPacks();
-                            }
-                          : null,
-                      deleteIconColor:
-                          _pack == i ? Colors.white70 : null,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          _info(Icons.local_taxi_rounded, 'Fair taxi rates', pack.taxi),
-          _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
-          _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
-              pack.deadZones),
-          if (pack.updatedAt != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                  'Updated ${DateTime.now().difference(pack.updatedAt!).inDays} day(s) ago — refreshes weekly.',
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: ink(context).withValues(alpha: .45))),
-            ),
           const SizedBox(height: 10),
         ],
       ),

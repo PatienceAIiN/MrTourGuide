@@ -16,6 +16,7 @@ import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/tab_events.dart';
 import 'package:mrtouride/services/update_service.dart';
 import 'package:mrtouride/hill_mode_page.dart';
+import 'package:mrtouride/widgets/feature_tour.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 import 'package:mrtouride/widgets/content_toast.dart';
@@ -58,6 +59,10 @@ class _MainPageState extends State<MainPage> {
     // 5-minute cadence — friendly to the free-tier VM.
     _newContentTimer =
         Timer.periodic(const Duration(minutes: 5), (_) => _checkNewContent());
+    // First launch after install: one-time feature tour carousel.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) FeatureTour.maybeShow(context);
+    });
   }
 
   Future<void> _checkNewContent() async {
@@ -190,8 +195,7 @@ class _MainPageState extends State<MainPage> {
                 badge: hasCommunityUnread),
             NavEntry(
               icon: Icons.terrain_rounded,
-              label: 'Hill Mode',
-              color: Colors.teal,
+              label: 'Tour Mode',
               action: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const HillModePage()),

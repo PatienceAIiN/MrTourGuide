@@ -1,5 +1,7 @@
 package com.example.mrtouride
 
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.audiofx.Visualizer
@@ -328,13 +330,49 @@ class MainActivity : FlutterActivity() {
     private var pendingSms: Triple<String, String, MethodChannel.Result>? = null
 
     private fun sendSmsNow(to: String, body: String): Boolean {
-        return try {
+        // Resolve a WORKING SmsManager even on dual-SIM phones where the
+        // context-level manager has no default subscription bound.
+        val sm = run {
             @Suppress("DEPRECATION")
-            val sm = if (Build.VERSION.SDK_INT >= 31)
-                getSystemService(android.telephony.SmsManager::class.java)
-            else android.telephony.SmsManager.getDefault()
+            val subId = try {
+                android.telephony.SubscriptionManager.getDefaultSmsSubscriptionId()
+            } catch (_: Exception) { -1 }
+            try {
+                if (subId >= 0) {
+                    if (Build.VERSION.SDK_INT >= 31)
+                        getSystemService(android.telephony.SmsManager::class.java)
+                            .createForSubscriptionId(subId)
+                    else android.telephony.SmsManager.getSmsManagerForSubscriptionId(subId)
+                } else if (Build.VERSION.SDK_INT >= 31)
+                    getSystemService(android.telephony.SmsManager::class.java)
+                else android.telephony.SmsManager.getDefault()
+            } catch (_: Exception) {
+                @Suppress("DEPRECATION")
+                try { android.telephony.SmsManager.getDefault() } catch (_: Exception) { null }
+            }
+        } ?: return false
+        return try {
+            // Report REAL carrier delivery with a toast via a sentIntent.
+            val action = "com.example.mrtouride.SMS_SENT_${System.currentTimeMillis()}"
+            registerReceiver(object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) {
+                    try { unregisterReceiver(this) } catch (_: Exception) {}
+                    mainHandler.post {
+                        android.widget.Toast.makeText(this@MainActivity,
+                            if (resultCode == RESULT_OK) "✓ Message sent via carrier"
+                            else "Message failed to send (carrier error)",
+                            android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }, android.content.IntentFilter(action),
+               if (Build.VERSION.SDK_INT >= 33) Context.RECEIVER_NOT_EXPORTED else 0)
             val parts = sm.divideMessage(body)
-            sm.sendMultipartTextMessage(to, null, parts, null, null)
+            val sentIntents = ArrayList<PendingIntent>(parts.size)
+            for (i in 0 until parts.size) sentIntents.add(
+                PendingIntent.getBroadcast(this, 7400 + i, Intent(action),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE or
+                    PendingIntent.FLAG_ONE_SHOT))
+            sm.sendMultipartTextMessage(to, null, parts, sentIntents, null)
             true
         } catch (e: Exception) { false }
     }
