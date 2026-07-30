@@ -1,0 +1,752 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'constant.dart';
+import 'services/haptic_service.dart';
+import 'package:http/http.dart' as http;
+
+import 'services/api_base.dart';
+import 'services/local_notifs.dart';
+import 'services/location_service.dart';
+
+/// HILL MODE — the part of the app that keeps working when the network
+/// doesn't. Fully offline-capable:
+///   • SOS: GPS fix (no network needed) + SMS sent DIRECTLY via the carrier
+///     (SmsManager) — delivers on bare 2G signal, no data, no app-hop.
+///   • Trip beacon: plan saved locally; a scheduled notification fires at
+///     the deadline even if the app was killed; one tap auto-alerts the
+///     contact with plan + last GPS.
+///   • Survival packs: emergency numbers, fair taxi rates, altitude/health
+///     and dead-zone info bundled with the app.
+class HillModePage extends StatefulWidget {
+  const HillModePage({super.key});
+  @override
+  State<HillModePage> createState() => _HillModePageState();
+}
+
+const _beaconNotifId = 7301;
+
+class _Pack {
+  final String name, taxi, tips, deadZones;
+  final List<List<String>> helplines;
+  final DateTime? updatedAt;
+  const _Pack(this.name, this.taxi, this.tips, this.deadZones,
+      {this.helplines = const [], this.updatedAt});
+
+  Map<String, dynamic> toJson() => {
+        'name': name, 'taxi': taxi, 'tips': tips, 'deadZones': deadZones,
+        'helplines': helplines,
+        'updatedAt': updatedAt?.toIso8601String(),
+      };
+  static _Pack fromJson(Map<String, dynamic> j) => _Pack(
+        (j['name'] ?? '') as String,
+        (j['taxi'] ?? '') as String,
+        (j['tips'] ?? '') as String,
+        (j['deadZones'] ?? '') as String,
+        helplines: [
+          for (final h in (j['helplines'] as List? ?? []))
+            [for (final x in (h as List)) x.toString()]
+        ],
+        updatedAt: DateTime.tryParse((j['updatedAt'] ?? '') as String),
+      );
+}
+
+// First-run seeds — replaced by live packs as soon as the phone is online.
+const _seedPacks = [
+  _Pack(
+    'Manali',
+    'Bus stand → Old Manali ₹100–150 · Mall Rd → Solang ₹800–1200 rt\n'
+        'Mall Rd → Rohtang ₹2500–3500 rt (union rates; agree BEFORE boarding)',
+    'Altitude 2,050m — mild for most. Rohtang 3,978m: go slow, hydrate, '
+        'avoid alcohol first 24h. Nearest big hospital: Mission Hospital, '
+        'Manali · Civil Hospital Kullu (40km).',
+    'Signal fades past Solang valley & Rohtang stretch. BSNL/Jio survive '
+        'longest. Open this pack before leaving Manali town.',
+  ),
+  _Pack(
+    'Shimla',
+    'Rly stn → Mall Rd ₹150–250 · Local sightseeing day cab ₹2000–3000\n'
+        'Kufri round trip ₹1000–1500 (fix at stand, not through touts)',
+    'Altitude 2,276m — easy. Steep walks everywhere: seniors should use '
+        'the lift near Mall Rd. IGMC hospital is central and 24×7.',
+    'Coverage is decent in town; drops on Kufri–Chail forest stretches.',
+  ),
+];
+
+const _helplines = [
+  ('112', 'All-India Emergency'),
+  ('108', 'Ambulance'),
+  ('1077', 'Disaster Helpline'),
+  ('1363', 'Tourist Helpline 24×7'),
+];
+
+class _HillModePageState extends State<HillModePage> {
+  static const _sms = MethodChannel('mrtouride/sms');
+  static const _beacon = MethodChannel('mrtouride/beacon');
+
+  List<_Pack> _myPacks = [];
+  int _pack = 0;
+  bool _fetching = false;
+  final _searchCtl = TextEditingController();
+  String _contact = '';
+  String _plan = '';
+  DateTime? _backBy;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() {
+      _contact = p.getString('hill.contact') ?? '';
+      _plan = p.getString('hill.plan') ?? '';
+      final t = p.getInt('hill.backBy');
+      _backBy = t == null ? null : DateTime.fromMillisecondsSinceEpoch(t);
+      final raw = p.getString('hill.packs');
+      _myPacks = raw == null
+          ? List.of(_seedPacks)
+          : [for (final j in jsonDecode(raw) as List) _Pack.fromJson(j)];
+      if (_pack >= _myPacks.length) _pack = 0;
+    });
+    _refreshStale();
+  }
+
+  Future<void> _persistPacks() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(
+        'hill.packs', jsonEncode([for (final k in _myPacks) k.toJson()]));
+  }
+
+  Future<_Pack?> _fetchPack(String place) async {
+    try {
+      final r = await http
+          .get(Uri.parse(
+              '$apiBase/hillmode/pack?place=${Uri.encodeComponent(place)}'))
+          .timeout(const Duration(seconds: 50));
+      if (r.statusCode != 200) return null;
+      return _Pack.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Silently re-fetch saved packs older than 7 days (or seeds) when online.
+  Future<void> _refreshStale() async {
+    var changed = false;
+    for (var i = 0; i < _myPacks.length; i++) {
+      final k = _myPacks[i];
+      final stale = k.updatedAt == null ||
+          DateTime.now().difference(k.updatedAt!) > const Duration(days: 7);
+      if (!stale) continue;
+      final fresh = await _fetchPack(k.name);
+      if (fresh != null) { _myPacks[i] = fresh; changed = true; }
+    }
+    if (changed) { await _persistPacks(); if (mounted) setState(() {}); }
+  }
+
+  /// Fetch a pack (typed or GPS-detected), preview it in a modal, save on tap.
+  Future<void> _getPack({String? place}) async {
+    var query = place ?? _searchCtl.text.trim();
+    if (query.isEmpty) return;
+    Haptics.light();
+    setState(() => _fetching = true);
+    final pack = await _fetchPack(query);
+    if (!mounted) return;
+    setState(() => _fetching = false);
+    if (pack == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Couldn\'t fetch that pack — check your connection and try again.')));
+      return;
+    }
+    _searchCtl.clear();
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (c) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        child: Column(mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                  child: Container(
+                      width: 36, height: 4,
+                      decoration: BoxDecoration(
+                          color: Colors.grey.withValues(alpha: .4),
+                          borderRadius: BorderRadius.circular(2)))),
+              const SizedBox(height: 14),
+              Row(children: [
+                const Icon(Icons.hiking_rounded, color: Colors.teal),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Text(pack.name,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 18))),
+              ]),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(children: [
+                    _info(Icons.local_taxi_rounded, 'Fair taxi rates',
+                        pack.taxi),
+                    _info(Icons.favorite_rounded, 'Altitude & health',
+                        pack.tips),
+                    _info(Icons.signal_cellular_off_rounded,
+                        'Signal dead zones', pack.deadZones),
+                    if (pack.helplines.isNotEmpty)
+                      _info(Icons.call_rounded, 'Local helplines', [
+                        for (final h in pack.helplines)
+                          '${h.first} — ${h.length > 1 ? h[1] : ''}'
+                      ].join('\n')),
+                  ]),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: Colors.teal,
+                      padding: const EdgeInsets.symmetric(vertical: 14)),
+                  icon: const Icon(Icons.download_rounded),
+                  label: const Text('Save for offline',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Haptics.medium();
+                    final i = _myPacks
+                        .indexWhere((k) => k.name.toLowerCase() ==
+                            pack.name.toLowerCase());
+                    if (i >= 0) {
+                      _myPacks[i] = pack;
+                    } else {
+                      _myPacks.add(pack);
+                    }
+                    _pack = i >= 0 ? i : _myPacks.length - 1;
+                    _persistPacks();
+                    Navigator.pop(c);
+                    setState(() {});
+                  },
+                ),
+              ),
+            ]),
+      ),
+    );
+  }
+
+  Future<void> _detectAndGet() async {
+    Haptics.light();
+    setState(() => _fetching = true);
+    final (_, city) = await LocationService.current(refresh: true);
+    if (!mounted) return;
+    if (city.isEmpty) {
+      setState(() => _fetching = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Couldn\'t detect your location — type the place.')));
+      return;
+    }
+    await _getPack(place: city);
+  }
+
+  Future<Position?> _gps() async {
+    try {
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) return null;
+      return await Geolocator.getCurrentPosition(
+              locationSettings:
+                  const LocationSettings(accuracy: LocationAccuracy.high))
+          .timeout(const Duration(seconds: 12),
+              onTimeout: () async =>
+                  (await Geolocator.getLastKnownPosition())!);
+    } catch (_) {
+      return Geolocator.getLastKnownPosition();
+    }
+  }
+
+  /// Send DIRECTLY via the carrier (SmsManager). Falls back to the system
+  /// SMS app prefilled if the permission is denied or sending fails.
+  Future<bool> _sendSms(String to, String body) async {
+    try {
+      final ok = await _sms.invokeMethod<bool>(
+          'send', {'to': to, 'body': body});
+      if (ok == true) return true;
+    } catch (_) {}
+    await launchUrl(Uri(scheme: 'sms', path: to, queryParameters: {'body': body}),
+        mode: LaunchMode.externalApplication);
+    return false;
+  }
+
+  String _locLink(Position? pos) => pos == null
+      ? 'location unavailable'
+      : 'https://maps.google.com/?q=${pos.latitude},${pos.longitude}';
+
+  // ── SOS ────────────────────────────────────────────────────────────────
+  Future<void> _sos() async {
+    Haptics.heavy();
+    final to = _contact.isNotEmpty ? _contact : '112';
+    final posF = _gps(); // fix GPS while the user confirms
+    final send = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(Icons.sos_rounded, color: Colors.red, size: 40),
+        title: const Text('Send SOS now?'),
+        content: Text(
+            'An SMS with your live location is sent automatically to '
+            '${_contact.isNotEmpty ? _contact : 'emergency services (112)'} '
+            'through your carrier — it works even when data is dead.',
+            textAlign: TextAlign.center),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          OutlinedButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('SEND SOS')),
+        ],
+      ),
+    );
+    if (send != true || !mounted) return;
+    final pos = await posF;
+    final sent = await _sendSms(to,
+        'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Hill Mode)');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: sent ? Colors.teal : null,
+        content: Text(sent
+            ? 'SOS sent to $to with your location.'
+            : 'Opened your SMS app — press send to deliver.')));
+  }
+
+  // ── Trip beacon ────────────────────────────────────────────────────────
+  Future<void> _beaconSheet() async {
+    Haptics.light();
+    final planCtl = TextEditingController(text: _plan);
+    final contactCtl = TextEditingController(text: _contact);
+    DateTime? backBy = _backBy;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (c) => StatefulBuilder(
+        builder: (c, setSheet) => Padding(
+          padding: EdgeInsets.fromLTRB(
+              20, 16, 20, MediaQuery.of(c).viewInsets.bottom + 24),
+          child: Column(mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                    child: Container(
+                        width: 36, height: 4,
+                        decoration: BoxDecoration(
+                            color: Colors.grey.withValues(alpha: .4),
+                            borderRadius: BorderRadius.circular(2)))),
+                const SizedBox(height: 16),
+                const Row(children: [
+                  Icon(Icons.podcasts_rounded, color: Colors.teal),
+                  SizedBox(width: 8),
+                  Text('Set trip beacon',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 17)),
+                ]),
+                const SizedBox(height: 6),
+                Text(
+                    'If you don\'t check in by the time below, your contact is '
+                    'alerted AUTOMATICALLY by SMS — even if the app is '
+                    'closed or the phone was restarted.',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: ink(c).withValues(alpha: .65))),
+                const SizedBox(height: 14),
+                TextField(
+                    controller: planCtl,
+                    decoration: const InputDecoration(
+                        labelText: 'Where are you going?',
+                        hintText: 'e.g. Kasol → Tosh trek',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: contactCtl,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                        labelText: 'Emergency contact number',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.schedule_rounded, size: 18),
+                  label: Text(backBy == null
+                      ? 'Expected back by…'
+                      : 'Back by ${TimeOfDay.fromDateTime(backBy!).format(c)}'),
+                  onPressed: () async {
+                    final t = await showTimePicker(
+                        context: c, initialTime: TimeOfDay.now());
+                    if (t == null) return;
+                    final now = DateTime.now();
+                    var dt = DateTime(
+                        now.year, now.month, now.day, t.hour, t.minute);
+                    if (dt.isBefore(now)) dt = dt.add(const Duration(days: 1));
+                    setSheet(() => backBy = dt);
+                  },
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        padding: const EdgeInsets.symmetric(vertical: 14)),
+                    onPressed: () async {
+                      if (planCtl.text.trim().isEmpty || backBy == null) return;
+                      final p = await SharedPreferences.getInstance();
+                      _plan = planCtl.text.trim();
+                      _contact = contactCtl.text.trim();
+                      _backBy = backBy;
+                      await p.setString('hill.plan', _plan);
+                      await p.setString('hill.contact', _contact);
+                      await p.setInt(
+                          'hill.backBy', _backBy!.millisecondsSinceEpoch);
+                      // Process-independent safety net: exact AlarmManager
+                      // alarms fire even if the app is killed — reminder at
+                      // the deadline, AUTO-SMS alert 15 min later, and both
+                      // re-arm after a phone reboot.
+                      try {
+                        await _beacon.invokeMethod('arm',
+                            {'at': _backBy!.millisecondsSinceEpoch});
+                      } catch (_) {}
+                      await LocalNotifsSchedule.scheduleAt(
+                          _beaconNotifId,
+                          'Are you back safe?',
+                          'Trip beacon: "$_plan". Open Hill Mode to check in '
+                              '— otherwise your contact is alerted '
+                              'automatically in 15 min.',
+                          _backBy!);
+                      Haptics.medium();
+                      if (c.mounted) Navigator.pop(c);
+                      if (mounted) setState(() {});
+                    },
+                    child: const Text('Set beacon',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _checkIn() async {
+    Haptics.medium();
+    try { await _beacon.invokeMethod('cancel'); } catch (_) {}
+    await LocalNotifsSchedule.cancelId(_beaconNotifId);
+    final p = await SharedPreferences.getInstance();
+    await p.remove('hill.plan');
+    await p.remove('hill.backBy');
+    setState(() { _plan = ''; _backBy = null; });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Colors.teal,
+          content: Text('Checked in — beacon cleared. Welcome back!')));
+    }
+  }
+
+  Future<void> _alertContact() async {
+    if (_contact.isEmpty) return;
+    Haptics.heavy();
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(Icons.campaign_rounded, color: Colors.red, size: 36),
+        title: const Text('Alert your contact?'),
+        content: Text('Auto-sends an SMS to $_contact with your plan and '
+            'current location.', textAlign: TextAlign.center),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          OutlinedButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Send alert')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    final pos = await _gps();
+    final sent = await _sendSms(_contact,
+        'ALERT: I have not checked in from my trip: "$_plan". '
+        'Last location: ${_locLink(pos)} — Mr.Tour Guide Hill Mode');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: sent ? Colors.teal : null,
+        content: Text(sent
+            ? 'Alert sent to $_contact.'
+            : 'Opened your SMS app — press send to deliver.')));
+  }
+
+  // ── UI ─────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final pack = _myPacks.isEmpty ? _seedPacks[0] : _myPacks[_pack];
+    return Scaffold(
+      appBar: AppBar(
+        title: const Row(children: [
+          Icon(Icons.terrain_rounded, color: Colors.teal),
+          SizedBox(width: 8),
+          Text('Hill Mode'),
+        ]),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.teal.withValues(alpha: .10),
+                borderRadius: BorderRadius.circular(14)),
+            child: Row(children: [
+              const Icon(Icons.wifi_off_rounded, color: Colors.teal, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: Text(
+                      'Everything here works without internet — SOS and '
+                      'alerts go by SMS through your carrier.',
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          color: ink(context).withValues(alpha: .75)))),
+            ]),
+          ),
+          const SizedBox(height: 14),
+
+          // SOS
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16))),
+              onPressed: _sos,
+              icon: const Icon(Icons.sos_rounded, size: 26),
+              label: const Text('SOS — auto-send my location',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              for (final h in _helplines)
+                ActionChip(
+                  avatar: const Icon(Icons.call_rounded,
+                      size: 15, color: Colors.red),
+                  label: Text('${h.$1} · ${h.$2}',
+                      style: const TextStyle(fontSize: 12)),
+                  onPressed: () => launchUrl(Uri(scheme: 'tel', path: h.$1)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+
+          // Trip beacon card
+          Card(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: _plan.isNotEmpty && _backBy != null
+                  ? Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          const Icon(Icons.podcasts_rounded,
+                              color: Colors.teal),
+                          const SizedBox(width: 8),
+                          const Text('Beacon active',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 16)),
+                          const Spacer(),
+                          Text(
+                              'back by ${TimeOfDay.fromDateTime(_backBy!).format(context)}',
+                              style: const TextStyle(
+                                  color: Colors.teal,
+                                  fontWeight: FontWeight.w600)),
+                        ]),
+                        const SizedBox(height: 6),
+                        Text('"$_plan"',
+                            style: TextStyle(
+                                color: ink(context).withValues(alpha: .75))),
+                        const SizedBox(height: 12),
+                        Row(children: [
+                          Expanded(
+                              child: FilledButton(
+                                  style: FilledButton.styleFrom(
+                                      backgroundColor: Colors.teal),
+                                  onPressed: _checkIn,
+                                  child: const Text('I\'m back safe'))),
+                          const SizedBox(width: 10),
+                          Expanded(
+                              child: OutlinedButton(
+                                  style: OutlinedButton.styleFrom(
+                                      foregroundColor: Colors.red),
+                                  onPressed: _alertContact,
+                                  child: const Text('Alert contact'))),
+                        ]),
+                      ])
+                  : ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading:
+                          const Icon(Icons.podcasts_rounded, color: Colors.teal),
+                      title: const Text('Trip beacon',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text(
+                          'Going off-grid? Get a check-in reminder and '
+                          'one-tap contact alert.'),
+                      trailing: FilledButton(
+                          style: FilledButton.styleFrom(
+                              backgroundColor: Colors.teal),
+                          onPressed: _beaconSheet,
+                          child: const Text('Set up')),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 18),
+
+          // Survival packs — searchable, GPS-detected, saved offline.
+          Row(children: [
+            const Text('Survival packs',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Spacer(),
+            if (_fetching)
+              const SizedBox(
+                  width: 16, height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.teal)),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _searchCtl,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _getPack(),
+                decoration: InputDecoration(
+                  hintText: 'Any place — Leh, Munnar, Darjeeling…',
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              style: IconButton.styleFrom(backgroundColor: Colors.teal),
+              tooltip: 'Detect my location',
+              onPressed: _fetching ? null : _detectAndGet,
+              icon: const Icon(Icons.my_location_rounded, size: 20),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 40,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (var i = 0; i < _myPacks.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: InputChip(
+                      label: Text(_myPacks[i].name),
+                      selected: _pack == i,
+                      selectedColor: Colors.teal,
+                      labelStyle: TextStyle(
+                          color: _pack == i ? Colors.white : ink(context)),
+                      onSelected: (_) {
+                        Haptics.tick();
+                        setState(() => _pack = i);
+                      },
+                      onDeleted: _myPacks.length > 1
+                          ? () {
+                              setState(() {
+                                _myPacks.removeAt(i);
+                                if (_pack >= _myPacks.length) {
+                                  _pack = _myPacks.length - 1;
+                                }
+                              });
+                              _persistPacks();
+                            }
+                          : null,
+                      deleteIconColor:
+                          _pack == i ? Colors.white70 : null,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          _info(Icons.local_taxi_rounded, 'Fair taxi rates', pack.taxi),
+          _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
+          _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
+              pack.deadZones),
+          if (pack.helplines.isNotEmpty)
+            _info(Icons.call_rounded, 'Local helplines', [
+              for (final h in pack.helplines)
+                '${h.first}${h.length > 1 ? ' — ${h[1]}' : ''}'
+            ].join('\n')),
+          if (pack.updatedAt != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                  'Updated ${DateTime.now().difference(pack.updatedAt!).inDays} day(s) ago — refreshes weekly.',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: ink(context).withValues(alpha: .45))),
+            ),
+          const SizedBox(height: 10),
+          Text(
+              'Stored on your phone — works with zero network. Rates are '
+              'indicative union rates; always confirm before boarding.',
+              style: TextStyle(
+                  fontSize: 11.5, color: ink(context).withValues(alpha: .5))),
+        ],
+      ),
+    );
+  }
+
+  Widget _info(IconData ic, String title, String body) => Card(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(ic, size: 18, color: Colors.teal),
+              const SizedBox(width: 8),
+              Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+            ]),
+            const SizedBox(height: 6),
+            Text(body, style: const TextStyle(fontSize: 13, height: 1.45)),
+          ]),
+        ),
+      );
+}

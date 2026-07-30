@@ -15,6 +15,7 @@ import '../experience_player.dart';
 import '../fine_tune_page.dart';
 import '../guidevibe_page.dart';
 import '../services/auth_api.dart';
+import '../hill_mode_page.dart';
 import '../services/haptic_service.dart';
 import '../services/image_tools.dart';
 import '../services/media_api.dart';
@@ -1966,6 +1967,27 @@ class _DashboardPageState extends State<DashboardPage>
                     _studioSwitch(isCreator),
                     const SizedBox(height: 12),
                   ],
+                  // Hill Mode — offline survival, SOS and trip beacon.
+                  Card(
+                    color: Colors.teal.withValues(alpha: 0.10),
+                    child: ListTile(
+                      leading:
+                          const Icon(Icons.terrain_rounded, color: Colors.teal),
+                      title: const Text('Hill Mode',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text(
+                          'Offline survival pack, SOS & trip beacon for the hills'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () {
+                        Haptics.light();
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const HillModePage()));
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   // City selector
                   SizedBox(
                     height: 44,

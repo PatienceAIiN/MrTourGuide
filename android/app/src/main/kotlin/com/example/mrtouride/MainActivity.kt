@@ -39,6 +39,49 @@ class MainActivity : FlutterActivity() {
                 }
             })
 
+        // ── Direct SMS send (Hill Mode SOS / trip beacon) ───────────────────
+        // Sends via the carrier with SmsManager — no SMS-app hop, works on
+        // bare 2G signal with zero data. Requests SEND_SMS at first use.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/sms")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "send") { result.notImplemented(); return@setMethodCallHandler }
+                val to = call.argument<String>("to")
+                val body = call.argument<String>("body")
+                if (to.isNullOrBlank() || body.isNullOrBlank()) {
+                    result.error("bad_args", "to/body required", null)
+                    return@setMethodCallHandler
+                }
+                if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
+                        PackageManager.PERMISSION_GRANTED) {
+                    pendingSms = Triple(to, body, result)
+                    requestPermissions(arrayOf(android.Manifest.permission.SEND_SMS), 7301)
+                    return@setMethodCallHandler
+                }
+                result.success(sendSmsNow(to, body))
+            }
+
+        // ── Trip-beacon alarms: exact, process-independent, reboot-proof ────
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/beacon")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "arm" -> {
+                        val at = call.argument<Long>("at")
+                            ?: call.argument<Int>("at")?.toLong()
+                        if (at == null) { result.error("bad_args", "at required", null); return@setMethodCallHandler }
+                        // Ensure SMS permission is in place NOW so the killed-app
+                        // auto-alert can send without asking anyone.
+                        if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
+                                PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(arrayOf(android.Manifest.permission.SEND_SMS), 7302)
+                        }
+                        BeaconAlarmReceiver.arm(this, at)
+                        result.success(true)
+                    }
+                    "cancel" -> { BeaconAlarmReceiver.cancel(this); result.success(true) }
+                    else -> result.notImplemented()
+                }
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/installer")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -147,6 +190,35 @@ class MainActivity : FlutterActivity() {
                     feelSink?.error("visualizer_failed",
                         "Live feel isn't available on this device.", null)
                 }
+            }
+        }
+    }
+
+    // Pending SMS while the SEND_SMS permission dialog is up.
+    private var pendingSms: Triple<String, String, MethodChannel.Result>? = null
+
+    private fun sendSmsNow(to: String, body: String): Boolean {
+        return try {
+            @Suppress("DEPRECATION")
+            val sm = if (Build.VERSION.SDK_INT >= 31)
+                getSystemService(android.telephony.SmsManager::class.java)
+            else android.telephony.SmsManager.getDefault()
+            val parts = sm.divideMessage(body)
+            sm.sendMultipartTextMessage(to, null, parts, null, null)
+            true
+        } catch (e: Exception) { false }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 7301) {
+            val p = pendingSms; pendingSms = null
+            if (p != null) {
+                if (grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    p.third.success(sendSmsNow(p.first, p.second))
+                } else p.third.success(false)
             }
         }
     }

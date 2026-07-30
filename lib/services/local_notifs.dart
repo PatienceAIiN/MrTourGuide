@@ -1,13 +1,22 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+
 import 'update_installer.dart';
+
+tz.TZDateTime tzWhen(DateTime when) {
+  try { return tz.TZDateTime.from(when, tz.local); }
+  catch (_) { tzdata.initializeTimeZones(); return tz.TZDateTime.from(when, tz.local); }
+}
 
 /// Local (on-device) notifications: the update-downloaded alert and the
 /// "notifications active" test. Taps on an install notification hand the
 /// downloaded APK to the system installer.
 class LocalNotifs {
   static final _plugin = FlutterLocalNotificationsPlugin();
+  static FlutterLocalNotificationsPlugin get plugin => _plugin;
   static bool _ready = false;
 
   static const _channel = AndroidNotificationDetails(
@@ -21,6 +30,7 @@ class LocalNotifs {
   static Future<void> init() async {
     if (kIsWeb || _ready) return;
     try {
+      tzdata.initializeTimeZones();
       await _plugin.initialize(
         const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -106,4 +116,30 @@ class LocalNotifs {
       );
     } catch (_) {}
   }
+}
+
+/// Schedule a one-shot notification at [when] — survives app kill (inexact
+/// alarm; no special permission). Used by Hill Mode's trip beacon.
+extension LocalNotifsSchedule on LocalNotifs {
+  static Future<void> scheduleAt(
+      int id, String title, String body, DateTime when) async {
+    await LocalNotifs.init();
+    try {
+      await LocalNotifs.plugin.zonedSchedule(
+        id, title, body,
+        tzWhen(when),
+        const NotificationDetails(
+            android: AndroidNotificationDetails(
+          'mrtouride_default', 'Mr.TourGuide',
+          channelDescription: 'Updates and alerts',
+          importance: Importance.max, priority: Priority.high,
+        )),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> cancelId(int id) => LocalNotifs.plugin.cancel(id);
 }
