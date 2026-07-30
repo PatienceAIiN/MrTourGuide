@@ -78,9 +78,55 @@ class ShakeSos extends ChangeNotifier {
     await p.setBool('hill.shake', on);
     _on = on;
     try {
-      await _svc.invokeMethod(on ? 'start' : 'stop');
+      if (on) {
+        // Someone in trouble can't grant dialogs — everything the killed-app
+        // emergency path needs is requested NOW, at enable time: SMS +
+        // location permissions, then "display over other apps" so the
+        // countdown popup can appear over any screen.
+        await _svc.invokeMethod('ensurePerms');
+        await _ensureOverlay();
+        await _svc.invokeMethod('start');
+      } else {
+        await _svc.invokeMethod('stop');
+      }
     } catch (_) {}
     notifyListeners();
+  }
+
+  Future<void> _ensureOverlay() async {
+    try {
+      final ok = await _svc.invokeMethod<bool>('overlayStatus');
+      if (ok == true) return;
+      final ctx = navKey.currentContext;
+      if (ctx == null) return;
+      final go = await showDialog<bool>(
+        // ignore: use_build_context_synchronously
+        context: ctx,
+        builder: (c) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          icon: const Icon(Icons.picture_in_picture_alt_rounded,
+              color: Colors.teal, size: 36),
+          title: const Text('Show SOS popup everywhere'),
+          content: const Text(
+              'Allow "display over other apps" so the 5-second cancel popup '
+              'can appear over ANY screen — home screen, other apps — even '
+              'when this app is closed.',
+              textAlign: TextAlign.center),
+          actionsAlignment: MainAxisAlignment.center,
+          actions: [
+            OutlinedButton(
+                onPressed: () => Navigator.pop(c, false),
+                child: const Text('Skip')),
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                onPressed: () => Navigator.pop(c, true),
+                child: const Text('Allow')),
+          ],
+        ),
+      );
+      if (go == true) await _svc.invokeMethod('requestOverlay');
+    } catch (_) {}
   }
 
   // ── In-app countdown mirror ─────────────────────────────────────────────

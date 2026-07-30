@@ -13,7 +13,6 @@ import 'package:http/http.dart' as http;
 
 import 'services/api_base.dart';
 import 'services/local_notifs.dart';
-import 'services/shake_sos.dart';
 
 /// HILL MODE — the part of the app that keeps working when the network
 /// doesn't. Fully offline-capable:
@@ -212,15 +211,25 @@ class _HillModePageState extends State<HillModePage> {
   }
 
   /// Silently re-fetch saved packs older than 7 days (or seeds) when online.
+  /// The list can change while a fetch is in flight (the user may delete
+  /// packs), so work from a snapshot and re-locate each pack BY NAME before
+  /// writing back — indexing with a stale i was a RangeError crash.
   Future<void> _refreshStale() async {
     var changed = false;
-    for (var i = 0; i < _myPacks.length; i++) {
-      final k = _myPacks[i];
+    final names = [for (final k in _myPacks) k.name];
+    for (final name in names) {
+      final idx = _myPacks.indexWhere((k) => k.name == name);
+      if (idx < 0) continue; // deleted meanwhile
+      final k = _myPacks[idx];
       final stale = k.updatedAt == null ||
           DateTime.now().difference(k.updatedAt!) > const Duration(days: 7);
       if (!stale) continue;
-      final fresh = await _fetchPack(k.name);
-      if (fresh != null) { _myPacks[i] = fresh; changed = true; }
+      final fresh = await _fetchPack(name);
+      if (fresh == null || !mounted) continue;
+      final at = _myPacks.indexWhere((k) => k.name == name);
+      if (at < 0) continue; // deleted while fetching
+      _myPacks[at] = fresh;
+      changed = true;
     }
     if (changed) { await _persistPacks(); if (mounted) setState(() {}); }
   }
@@ -1074,29 +1083,6 @@ class _HillModePageState extends State<HillModePage> {
               icon: const Icon(Icons.sos_rounded, size: 26),
               label: const Text('SOS',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Card(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: SwitchListTile(
-              value: ShakeSos.instance.on,
-              onChanged: (v) async {
-                Haptics.tick();
-                if (v && !await ShakeSos.instance.confirmEnable(context)) {
-                  return;
-                }
-                await ShakeSos.instance.set(v);
-                if (mounted) setState(() {});
-              },
-              activeThumbColor: Colors.teal,
-              secondary:
-                  const Icon(Icons.vibration_rounded, color: Colors.red),
-              title: const Text('Shake for SOS',
-                  style:
-                      TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
-              subtitle: const Text('Shake hard 3× — 5s to cancel'),
             ),
           ),
           const SizedBox(height: 10),

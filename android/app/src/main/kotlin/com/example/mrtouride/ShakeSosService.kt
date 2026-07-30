@@ -100,6 +100,7 @@ class ShakeSosService : Service(), SensorEventListener {
         try { sensors?.unregisterListener(this) } catch (_: Exception) {}
         try { unregisterReceiver(cancelReceiver) } catch (_: Exception) {}
         ticker?.let { handler.removeCallbacks(it) }
+        removeOverlay()
         super.onDestroy()
     }
 
@@ -122,10 +123,18 @@ class ShakeSosService : Service(), SensorEventListener {
     }
 
     // ── 5-second cancellable countdown ─────────────────────────────────────
+    // The popup is a SYSTEM OVERLAY (like an incoming call) so it appears on
+    // top of WHATEVER is on screen — home screen, another app, anything —
+    // when "display over other apps" is granted. The heads-up notification
+    // runs in parallel as the fallback for when the overlay isn't allowed.
+    private var overlay: android.view.View? = null
+    private var overlayText: android.widget.TextView? = null
+
     private fun startCountdown() {
         countingDown = true
         countdownLeft = COUNTDOWN_S
         sendEvt("triggered")
+        showOverlay()
         val tick = object : Runnable {
             override fun run() {
                 if (!countingDown) return
@@ -133,11 +142,13 @@ class ShakeSosService : Service(), SensorEventListener {
                     countingDown = false
                     cooldownUntil = System.currentTimeMillis() + COOLDOWN_MS
                     nm().cancel(7321)
+                    removeOverlay()
                     sendEvt("sending")
                     sendSos()
                     return
                 }
                 nm().notify(7321, countdownNotification(countdownLeft))
+                overlayText?.text = "Sending SOS in $countdownLeft…"
                 vibrate(250)
                 countdownLeft--
                 handler.postDelayed(this, 1000)
@@ -153,7 +164,86 @@ class ShakeSosService : Service(), SensorEventListener {
         cooldownUntil = System.currentTimeMillis() + 5000
         ticker?.let { handler.removeCallbacks(it) }
         nm().cancel(7321)
+        removeOverlay()
         sendEvt("cancelled")
+    }
+
+    // ── System-overlay popup (shows over any app / launcher) ───────────────
+    private fun showOverlay() {
+        if (overlay != null) return
+        if (!android.provider.Settings.canDrawOverlays(this)) return
+        try {
+            val ctx = this
+            val card = android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(60, 50, 60, 50)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFF1D1128.toInt())
+                    cornerRadius = 48f
+                    setStroke(3, 0xFFE53935.toInt())
+                }
+            }
+            overlayText = android.widget.TextView(ctx).apply {
+                text = "Sending SOS in $countdownLeft…"
+                setTextColor(0xFFFFFFFF.toInt())
+                textSize = 22f
+                gravity = android.view.Gravity.CENTER
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+            val sub = android.widget.TextView(ctx).apply {
+                text = "Shake detected. Cancel if this was accidental."
+                setTextColor(0xB3FFFFFF.toInt())
+                textSize = 14f
+                gravity = android.view.Gravity.CENTER
+                setPadding(0, 16, 0, 34)
+            }
+            val cancel = android.widget.Button(ctx).apply {
+                text = "CANCEL"
+                textSize = 18f
+                setTextColor(0xFFFFFFFF.toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0xFF00897B.toInt())
+                    cornerRadius = 40f
+                }
+                setPadding(40, 26, 40, 26)
+                setOnClickListener { cancelCountdown() }
+            }
+            card.addView(overlayText)
+            card.addView(sub)
+            card.addView(cancel, android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+            val lp = android.view.WindowManager.LayoutParams(
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= 26)
+                    android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else @Suppress("DEPRECATION")
+                    android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
+                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+                android.graphics.PixelFormat.TRANSLUCENT).apply {
+                gravity = android.view.Gravity.CENTER
+                horizontalMargin = 0.06f
+            }
+            (getSystemService(WINDOW_SERVICE) as android.view.WindowManager)
+                .addView(card, lp)
+            overlay = card
+        } catch (_: Exception) {
+            overlay = null; overlayText = null
+        }
+    }
+
+    private fun removeOverlay() {
+        try {
+            overlay?.let {
+                (getSystemService(WINDOW_SERVICE) as android.view.WindowManager)
+                    .removeView(it)
+            }
+        } catch (_: Exception) {}
+        overlay = null
+        overlayText = null
     }
 
     // ── SOS send (same carrier path as the Safety page) ────────────────────

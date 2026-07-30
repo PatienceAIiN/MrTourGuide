@@ -119,6 +119,28 @@ class MainActivity : FlutterActivity() {
                             .setPackage(packageName))
                         result.success(true)
                     }
+                    // Ask for everything the killed-app emergency path needs
+                    // UP FRONT — someone in trouble can't grant dialogs.
+                    "ensurePerms" -> {
+                        val need = arrayOf(
+                            android.Manifest.permission.SEND_SMS,
+                            android.Manifest.permission.ACCESS_FINE_LOCATION)
+                            .filter { checkSelfPermission(it) !=
+                                PackageManager.PERMISSION_GRANTED }
+                        if (need.isNotEmpty()) {
+                            requestPermissions(need.toTypedArray(), 7304)
+                        }
+                        result.success(need.isEmpty())
+                    }
+                    "overlayStatus" -> result.success(
+                        android.provider.Settings.canDrawOverlays(this))
+                    "requestOverlay" -> {
+                        startActivity(Intent(
+                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            android.net.Uri.parse("package:$packageName"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
