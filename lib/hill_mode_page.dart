@@ -89,6 +89,10 @@ const _helplines = [
 class _HillModePageState extends State<HillModePage> {
   static const _sms = MethodChannel('mrtouride/sms');
   static const _beacon = MethodChannel('mrtouride/beacon');
+  static const _bleCtl = MethodChannel('mrtouride/blesos-ctl');
+  static const _bleEvents = EventChannel('mrtouride/blesos');
+  StreamSubscription? _bleSub;
+  int _lastBleAlertMs = 0;
 
   List<_Pack> _myPacks = [];
   int _pack = 0;
@@ -102,6 +106,56 @@ class _HillModePageState extends State<HillModePage> {
   void initState() {
     super.initState();
     _load();
+    // Listen for nearby BLE SOS packets while Hill Mode is open — if a
+    // phone with no signal broadcasts an SOS, this one hears it.
+    _bleSub = _bleEvents.receiveBroadcastStream().listen((e) {
+      if (e is! Map) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastBleAlertMs < 60000) return; // don't spam
+      _lastBleAlertMs = now;
+      final lat = e['lat'], lon = e['lon'];
+      LocalNotifs.show('SOS nearby!',
+          'Someone close by needs help. Location: '
+          'https://maps.google.com/?q=$lat,$lon');
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (c) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20)),
+            icon: const Icon(Icons.emergency_share_rounded,
+                color: Colors.red, size: 40),
+            title: const Text('SOS received nearby'),
+            content: const Text(
+                'A phone near you is broadcasting an SOS over Bluetooth. '
+                'If you have signal, forward it — you may be their only link.',
+                textAlign: TextAlign.center),
+            actionsAlignment: MainAxisAlignment.center,
+            actions: [
+              OutlinedButton(
+                  onPressed: () => Navigator.pop(c),
+                  child: const Text('Dismiss')),
+              FilledButton(
+                  style:
+                      FilledButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: () {
+                    Navigator.pop(c);
+                    launchUrl(Uri.parse('https://maps.google.com/?q=$lat,$lon'),
+                        mode: LaunchMode.externalApplication);
+                  },
+                  child: const Text('View location')),
+            ],
+          ),
+        );
+      }
+    }, onError: (_) {});
+  }
+
+  @override
+  void dispose() {
+    _bleSub?.cancel();
+    _bleCtl.invokeMethod('stopAdvertise').catchError((_) => null);
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -247,15 +301,29 @@ class _HillModePageState extends State<HillModePage> {
   Future<void> _detectAndGet() async {
     Haptics.light();
     setState(() => _fetching = true);
-    final (_, city) = await LocationService.current(refresh: true);
+    // Try the cached/online geocoder first; fall back to raw GPS coords —
+    // the pack service resolves "near lat,lon" to the nearest place itself.
+    var place = '';
+    try {
+      final (_, city) = await LocationService.current(refresh: true);
+      place = city;
+    } catch (_) {}
+    if (place.isEmpty) {
+      final pos = await _gps();
+      if (pos != null) {
+        place = 'near ${pos.latitude.toStringAsFixed(3)},'
+            '${pos.longitude.toStringAsFixed(3)}';
+      }
+    }
     if (!mounted) return;
-    if (city.isEmpty) {
+    if (place.isEmpty) {
       setState(() => _fetching = false);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Couldn\'t detect your location — type the place.')));
+          content: Text(
+              'Location unavailable — turn on GPS, or type the place.')));
       return;
     }
-    await _getPack(place: city);
+    await _getPack(place: place);
   }
 
   Future<Position?> _gps() async {
@@ -294,11 +362,15 @@ class _HillModePageState extends State<HillModePage> {
                 borderRadius: BorderRadius.circular(20)),
             icon: const Icon(Icons.sms_failed_rounded,
                 color: Colors.red, size: 36),
-            title: const Text('Allow SMS for auto-send'),
+            title: const Text('Unlock SMS permission'),
             content: const Text(
-                'SOS auto-send needs the SMS permission. Enable it once: '
-                'Permissions → SMS → Allow.',
-                textAlign: TextAlign.center),
+                'Android blocks SMS for apps installed outside Play Store '
+                'until you unlock it once:\n\n'
+                '1. Open the app\'s settings page (button below)\n'
+                '2. Tap the ⋮ menu (top-right)\n'
+                '3. Tap "Allow restricted settings"\n'
+                '4. Then Permissions → SMS → Allow',
+                textAlign: TextAlign.left),
             actionsAlignment: MainAxisAlignment.center,
             actions: [
               OutlinedButton(
@@ -435,6 +507,12 @@ class _HillModePageState extends State<HillModePage> {
     );
     if (send != true || !mounted) return;
     final pos = await posF;
+    // Also shout over Bluetooth so nearby app users can relay when there
+    // is no tower at all.
+    if (pos != null) {
+      _bleCtl.invokeMethod('advertise',
+          {'lat': pos.latitude, 'lon': pos.longitude}).catchError((_) => null);
+    }
     final sent = await _sendSms(to,
         'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Hill Mode)');
     if (!mounted) return;

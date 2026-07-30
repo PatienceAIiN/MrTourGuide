@@ -82,6 +82,30 @@ class MainActivity : FlutterActivity() {
                 result.success(sendSmsNow(to, body))
             }
 
+        // ── BLE SOS relay: broadcast/scan "MTSOS" packets phone-to-phone ────
+        // When someone sends an SOS with no signal, their phone advertises a
+        // tiny BLE packet (lat/lon). Any nearby phone with this app relays it
+        // to Flutter, which alerts its user — a human relay when towers fail.
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/blesos")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                    bleSink = sink; startBleScan()
+                }
+                override fun onCancel(args: Any?) { stopBleScan(); bleSink = null }
+            })
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/blesos-ctl")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "advertise" -> {
+                        val lat = call.argument<Double>("lat") ?: 0.0
+                        val lon = call.argument<Double>("lon") ?: 0.0
+                        result.success(startBleAdvertise(lat, lon))
+                    }
+                    "stopAdvertise" -> { stopBleAdvertise(); result.success(true) }
+                    else -> result.notImplemented()
+                }
+            }
+
         // ── Trip-beacon alarms: exact, process-independent, reboot-proof ────
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/beacon")
             .setMethodCallHandler { call, result ->
@@ -214,6 +238,90 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    // ── BLE SOS relay plumbing ──────────────────────────────────────────────
+    private var bleSink: EventChannel.EventSink? = null
+    private var bleAdvertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
+    private var bleScanner: android.bluetooth.le.BluetoothLeScanner? = null
+    private var bleAdvCallback: android.bluetooth.le.AdvertiseCallback? = null
+    private var bleScanCallback: android.bluetooth.le.ScanCallback? = null
+    private val bleMfgId = 0x4D54 // "MT"
+
+    private fun blePermsOk(): Boolean {
+        if (Build.VERSION.SDK_INT < 31) return true
+        val need = arrayOf(android.Manifest.permission.BLUETOOTH_ADVERTISE,
+                           android.Manifest.permission.BLUETOOTH_SCAN)
+        val missing = need.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) return true
+        requestPermissions(missing.toTypedArray(), 7303)
+        return false
+    }
+
+    private fun bleAdapter() =
+        (getSystemService(BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+
+    private fun startBleAdvertise(lat: Double, lon: Double): Boolean {
+        if (!blePermsOk()) return false
+        return try {
+            val adapter = bleAdapter() ?: return false
+            if (!adapter.isEnabled) return false
+            stopBleAdvertise()
+            bleAdvertiser = adapter.bluetoothLeAdvertiser ?: return false
+            // Payload: "S" + lat + lon as 4-byte floats → 9 bytes.
+            val buf = java.nio.ByteBuffer.allocate(9)
+            buf.put('S'.code.toByte()); buf.putFloat(lat.toFloat()); buf.putFloat(lon.toFloat())
+            val cb = object : android.bluetooth.le.AdvertiseCallback() {}
+            bleAdvCallback = cb
+            bleAdvertiser?.startAdvertising(
+                android.bluetooth.le.AdvertiseSettings.Builder()
+                    .setAdvertiseMode(android.bluetooth.le.AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                    .setTxPowerLevel(android.bluetooth.le.AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                    .setConnectable(false).build(),
+                android.bluetooth.le.AdvertiseData.Builder()
+                    .addManufacturerData(bleMfgId, buf.array()).build(), cb)
+            true
+        } catch (_: Exception) { false }
+    }
+
+    private fun stopBleAdvertise() {
+        try { bleAdvCallback?.let { bleAdvertiser?.stopAdvertising(it) } } catch (_: Exception) {}
+        bleAdvCallback = null
+    }
+
+    private fun startBleScan() {
+        if (!blePermsOk()) return
+        try {
+            val adapter = bleAdapter() ?: return
+            if (!adapter.isEnabled) return
+            stopBleScan()
+            bleScanner = adapter.bluetoothLeScanner ?: return
+            val cb = object : android.bluetooth.le.ScanCallback() {
+                override fun onScanResult(type: Int, r: android.bluetooth.le.ScanResult?) {
+                    val data = r?.scanRecord?.getManufacturerSpecificData(bleMfgId) ?: return
+                    if (data.size < 9 || data[0] != 'S'.code.toByte()) return
+                    val buf = java.nio.ByteBuffer.wrap(data, 1, 8)
+                    val lat = buf.float.toDouble(); val lon = buf.float.toDouble()
+                    mainHandler.post {
+                        bleSink?.success(mapOf("lat" to lat, "lon" to lon,
+                            "rssi" to (r.rssi)))
+                    }
+                }
+            }
+            bleScanCallback = cb
+            bleScanner?.startScan(
+                listOf(android.bluetooth.le.ScanFilter.Builder()
+                    .setManufacturerData(bleMfgId, byteArrayOf('S'.code.toByte()),
+                        byteArrayOf(0xFF.toByte())).build()),
+                android.bluetooth.le.ScanSettings.Builder()
+                    .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_BALANCED).build(), cb)
+        } catch (_: Exception) {}
+    }
+
+    private fun stopBleScan() {
+        try { bleScanCallback?.let { bleScanner?.stopScan(it) } } catch (_: Exception) {}
+        bleScanCallback = null
     }
 
     // Pending SMS while the SEND_SMS permission dialog is up.
