@@ -4850,66 +4850,83 @@ Future<Response> _hillPack(Request request) async {
     return _json(503, {'error': 'Pack service unavailable.'});
   }
   try {
-    final client = HttpClient();
-    final req = await client
-        .postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
-    req.headers.set('Authorization', 'Bearer $apiKey');
-    req.headers.contentType = ContentType.json;
-    req.write(jsonEncode({
-      'model': 'groq/compound-mini',
-      'messages': [
-        // NOTE: groq/compound-mini rejects the whole request
-        // ("request_too_large") once the SYSTEM message grows past roughly
-        // 500 characters, so the system role stays tiny and the detailed
-        // spec travels in the user message instead.
-        {
-          'role': 'system',
-          'content': 'You research travel safety facts with web search and '
-              'reply with strict JSON only. Never invent a phone number, '
-              'rate or hospital name.'
-        },
-        {
-          'role': 'user',
-          // Compound-mini often answers from memory unless the search is
-          // spelled out as an explicit first step — and an unsearched reply
-          // is exactly the one that invents phone numbers.
-          'content': 'STEP 1: use your web search tool at least twice — '
-              'search "$place official taxi tariff tourism" and "$place '
-              'police tourist helpline official". STEP 2: only after reading '
-              'those results, answer.\n\n'
-              'Build a verified offline survival pack for: $place\n\n'
-              'Base every fact on official or reputable current sources '
-              '(tourism boards, police/transport pages, hospital sites, '
-              'telecom coverage info, recent traveller reports).\n\n'
-              'Reply with STRICT JSON ONLY, no prose, exactly these keys:\n'
-              '{"name": short place name with region,\n'
-              '"taxi": 2-3 lines of verified current fair taxi/auto/transfer '
-              'rates for the most common tourist routes, with local currency '
-              'ranges; write "approx" when the source is a traveller report '
-              'rather than an official tariff,\n'
-              '"tips": 2-3 sentences on altitude in metres if relevant, the '
-              'real local health/safety risks, and the nearest reliable '
-              'hospital BY NAME,\n'
-              '"deadZones": 1-2 sentences on where mobile signal actually '
-              'dies nearby and which carrier survives longest,\n'
-              '"helplines": up to 4 [number, label] pairs of LOCAL '
-              'emergency/police/tourist numbers beyond the national one — '
-              'ONLY numbers confirmed on official government, police or '
-              'tourism-board sources, else [],\n'
-              '"sources": 2-4 short source labels or domains you actually '
-              'used, never empty}\n\n'
-              'If you cannot verify something, write "Not verified — confirm '
-              'locally" for that field instead of guessing. Every value must '
-              'be a plain string except helplines and sources. Keep each '
-              'value under 320 characters. No markdown.'
-        },
-      ],
-      'max_tokens': 2000,
-      'temperature': 0.2,
-    }));
-    final res = await req.close().timeout(const Duration(seconds: 70));
-    final text = await res.transform(utf8.decoder).join();
-    client.close();
+    // The pack spec. Kept in the USER message because compound-mini rejects
+    // the whole request ("request_too_large", HTTP 413) once the SYSTEM
+    // message passes roughly 500 characters.
+    final spec = 'Build a verified offline survival pack for: $place\n\n'
+        'Base every fact on official or reputable current sources '
+        '(tourism boards, police/transport pages, hospital sites, telecom '
+        'coverage info, recent traveller reports).\n\n'
+        'Reply with STRICT JSON ONLY, no prose, exactly these keys:\n'
+        '{"name": short place name with region,\n'
+        '"taxi": 2-3 lines of verified current fair taxi/auto/transfer '
+        'rates for the most common tourist routes, with local currency '
+        'ranges; write "approx" when the source is a traveller report '
+        'rather than an official tariff,\n'
+        '"tips": 2-3 sentences on altitude in metres if relevant, the real '
+        'local health/safety risks, and the nearest reliable hospital BY '
+        'NAME,\n'
+        '"deadZones": 1-2 sentences on where mobile signal actually dies '
+        'nearby and which carrier survives longest,\n'
+        '"helplines": up to 4 [number, label] pairs of LOCAL '
+        'emergency/police/tourist numbers beyond the national one — ONLY '
+        'numbers confirmed on official government, police or tourism-board '
+        'sources, else [],\n'
+        '"sources": 2-4 short source labels or domains you actually used, '
+        'never empty}\n\n'
+        'If you cannot verify something, write "Not verified — confirm '
+        'locally" for that field instead of guessing. Every value must be a '
+        'plain string except helplines and sources. Keep each value under '
+        '320 characters. No markdown.';
+
+    // Compound-mini answers from memory unless the search is spelled out as
+    // an explicit first step — and an unsearched reply is exactly the one
+    // that invents phone numbers. ONE search only: the injected results
+    // count against a small context, and two searches overflow it (413).
+    Future<String?> ask({required bool search, required int maxTokens}) async {
+      final client = HttpClient();
+      try {
+        final req = await client.postUrl(
+            Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
+        req.headers.set('Authorization', 'Bearer $apiKey');
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode({
+          'model': 'groq/compound-mini',
+          'messages': [
+            {
+              'role': 'system',
+              'content': 'You research travel safety facts with web search '
+                  'and reply with strict JSON only. Never invent a phone '
+                  'number, rate or hospital name.'
+            },
+            {
+              'role': 'user',
+              'content': search
+                  ? 'STEP 1: use your web search tool once — search "$place '
+                      'official taxi tariff tourism helpline". STEP 2: answer '
+                      'from those results.\n\n$spec'
+                  : spec,
+            },
+          ],
+          'max_tokens': maxTokens,
+          'temperature': 0.2,
+        }));
+        final res = await req.close().timeout(const Duration(seconds: 70));
+        final body = await res.transform(utf8.decoder).join();
+        return res.statusCode == 200 ? body : null;
+      } catch (_) {
+        return null;
+      } finally {
+        client.close();
+      }
+    }
+
+    // Preferred: searched (verifiable). Fallback: unsearched, which the gate
+    // below marks unverified and strips helplines from — a labelled pack
+    // beats an error screen.
+    var text = await ask(search: true, maxTokens: 900);
+    text ??= await ask(search: false, maxTokens: 900);
+    if (text == null) return _json(502, {'error': 'Pack unavailable.'});
     final content = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
         ?['message']?['content'] as String?;
     if (content == null || content.trim().isEmpty) {
