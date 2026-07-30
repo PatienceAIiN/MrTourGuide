@@ -4477,8 +4477,7 @@ Future<Response> _deleteItinerary(Request request, String id) async {
 final Map<String, (DateTime, Map<String, Object?>)> _itineraryCache = {};
 
 Future<Response> _aiItinerary(Request request) async {
-  final apiKey = Platform.environment['GROQ_API_KEY'];
-  if (apiKey == null || apiKey.isEmpty) {
+  if (_groqKeys().isEmpty) {
     return _json(503, {'error': 'The AI planner is unavailable right now — try again later.'});
   }
   final body = await _readJsonBody(request);
@@ -4509,12 +4508,7 @@ Future<Response> _aiItinerary(Request request) async {
   }
 
   try {
-    final client = HttpClient();
-    final req = await client
-        .postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
-    req.headers.set('Authorization', 'Bearer $apiKey');
-    req.headers.contentType = ContentType.json;
-    req.write(jsonEncode({
+    final decoded = await _groqChat({
       'model': 'groq/compound-mini',
       'messages': [
         {
@@ -4546,14 +4540,10 @@ Future<Response> _aiItinerary(Request request) async {
       ],
       'max_tokens': 900,
       'temperature': 0.5,
-    }));
-    final res = await req.close().timeout(const Duration(seconds: 45));
-    final text = await res
-        .transform(utf8.decoder)
-        .join()
-        .timeout(const Duration(seconds: 45));
-    client.close();
-    final decoded = jsonDecode(text) as Map<String, dynamic>;
+    });
+    if (decoded == null) {
+      return _json(502, {'error': 'The AI planner is busy right now — try again.'});
+    }
     final plan = decoded['choices']?[0]?['message']?['content'] as String?;
     if (plan == null) {
       return _json(502, {'error': 'AI planner unavailable right now.'});
@@ -4702,8 +4692,7 @@ Future<Response> _searchMedia(Request request) async {
 final Map<String, (DateTime, Map<String, Object?>)> _aiCache = {};
 
 Future<Response> _aiSearch(Request request) async {
-  final apiKey = Platform.environment['GROQ_API_KEY'];
-  if (apiKey == null || apiKey.isEmpty) {
+  if (_groqKeys().isEmpty) {
     return _json(503, {'error': 'AI search is unavailable right now — try again later.'});
   }
   final body = await _readJsonBody(request);
@@ -4718,12 +4707,7 @@ Future<Response> _aiSearch(Request request) async {
   }
 
   try {
-    final client = HttpClient();
-    final req = await client
-        .postUrl(Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
-    req.headers.set('Authorization', 'Bearer $apiKey');
-    req.headers.contentType = ContentType.json;
-    req.write(jsonEncode({
+    final decoded = await _groqChat({
       'model': 'groq/compound-mini', // agentic: searches the web itself
       'messages': [
         {
@@ -4752,14 +4736,11 @@ Future<Response> _aiSearch(Request request) async {
       ],
       'max_tokens': 480,
       'temperature': 0.4,
-    }));
-    final res = await req.close().timeout(const Duration(seconds: 45));
-    final text = await res
-        .transform(utf8.decoder)
-        .join()
-        .timeout(const Duration(seconds: 45));
-    client.close();
-    final decoded = jsonDecode(text) as Map<String, dynamic>;
+    });
+    if (decoded == null) {
+      return _json(502, {'error': 'AI overview unavailable right now.'});
+    }
+
     final overview =
         decoded['choices']?[0]?['message']?['content'] as String?;
     if (overview == null) {
@@ -4775,6 +4756,57 @@ Future<Response> _aiSearch(Request request) async {
   } catch (_) {
     return _json(502, {'error': 'AI overview unavailable right now.'});
   }
+}
+
+/// Every Groq key available, in priority order. Free-tier keys have a small
+/// per-window request quota, so extra keys are pure headroom: when one is
+/// rate limited the next takes over instead of the user seeing an error.
+/// Accepts GROQ_API_KEY, GROQ_API_KEY_2/_3/_4, and a comma-separated
+/// GROQ_API_KEYS.
+List<String> _groqKeys() {
+  final keys = <String>[];
+  void add(String? raw) {
+    if (raw == null) return;
+    for (final part in raw.split(',')) {
+      final k = part.trim();
+      if (k.isNotEmpty && !keys.contains(k)) keys.add(k);
+    }
+  }
+
+  final env = Platform.environment;
+  add(env['GROQ_API_KEY']);
+  for (final n in const ['2', '3', '4']) {
+    add(env['GROQ_API_KEY_$n']);
+  }
+  add(env['GROQ_API_KEYS']);
+  return keys;
+}
+
+/// POST a chat-completions payload, trying each Groq key in turn until one
+/// answers with 200. Returns the decoded body, or null when every key is
+/// exhausted or erroring.
+Future<Map<String, dynamic>?> _groqChat(Map<String, Object?> payload,
+    {Duration timeout = const Duration(seconds: 45)}) async {
+  for (final key in _groqKeys()) {
+    final client = HttpClient();
+    try {
+      final req = await client.postUrl(
+          Uri.parse('https://api.groq.com/openai/v1/chat/completions'));
+      req.headers.set('Authorization', 'Bearer $key');
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(payload));
+      final res = await req.close().timeout(timeout);
+      final body = await res.transform(utf8.decoder).join().timeout(timeout);
+      if (res.statusCode == 200) {
+        return jsonDecode(body) as Map<String, dynamic>;
+      }
+    } catch (_) {
+      // fall through to the next key
+    } finally {
+      client.close();
+    }
+  }
+  return null;
 }
 
 /// Flatten whatever shape the model used for a text field into plain text.
@@ -4854,8 +4886,8 @@ Future<Response> _hillPack(Request request) async {
     });
   }
 
-  final apiKey = Platform.environment['GROQ_API_KEY'];
-  if (apiKey == null || apiKey.isEmpty) return unavailable();
+  final keys = _groqKeys();
+  if (keys.isEmpty) return unavailable();
   try {
     // The pack spec. Kept in the USER message because compound-mini rejects
     // the whole request ("request_too_large", HTTP 413) once the SYSTEM
@@ -4890,7 +4922,8 @@ Future<Response> _hillPack(Request request) async {
     // an explicit first step — and an unsearched reply is exactly the one
     // that invents phone numbers. ONE search only: the injected results
     // count against a small context, and two searches overflow it (413).
-    Future<String?> ask({required bool search, required int maxTokens}) async {
+    Future<String?> askWith(String apiKey,
+        {required bool search, required int maxTokens}) async {
       final client = HttpClient();
       try {
         final req = await client.postUrl(
@@ -4930,11 +4963,18 @@ Future<Response> _hillPack(Request request) async {
       }
     }
 
-    // Preferred: searched (verifiable). Fallback: unsearched, which the gate
-    // below marks unverified and strips helplines from — a labelled pack
-    // beats an error screen.
-    var text = await ask(search: true, maxTokens: 900);
-    text ??= await ask(search: false, maxTokens: 900);
+    // Try every key with search first (verifiable), then every key without
+    // search. An unsearched reply fails the gate below — it is labelled
+    // unverified with helplines stripped — but a labelled pack still beats
+    // an error screen. Extra keys mean one exhausted quota is not an outage.
+    String? text;
+    for (final search in const [true, false]) {
+      for (final k in keys) {
+        text = await askWith(k, search: search, maxTokens: 900);
+        if (text != null) break;
+      }
+      if (text != null) break;
+    }
     if (text == null) return unavailable();
     final content = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
         ?['message']?['content'] as String?;
