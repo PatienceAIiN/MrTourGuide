@@ -4865,6 +4865,29 @@ Future<Response> _hillPack(Request request) async {
     final match = RegExp(r'\{[\s\S]*\}').firstMatch(content);
     if (match == null) return _json(502, {'error': 'Pack unavailable.'});
     final pack = jsonDecode(match.group(0)!) as Map<String, dynamic>;
+
+    // ── Anti-bluff gate ────────────────────────────────────────────────
+    // The model does not always actually search, and when it doesn't it
+    // invents plausible-looking phone numbers (wrong STD codes, fake
+    // "district hospital" lines). Phone numbers are the one field where a
+    // wrong value is actively dangerous in an emergency, so they only
+    // survive when the reply is genuinely search-grounded (real sources
+    // AND executed tool calls), and they are always labelled unverified
+    // for the user to confirm.
+    final msg = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
+        ?['message'] as Map<String, dynamic>?;
+    final searched = (msg?['executed_tools'] as List?)?.isNotEmpty ?? false;
+    final sources = <String>[
+      for (final x in (pack['sources'] as List? ?? []))
+        if (x.toString().trim().isNotEmpty) x.toString().trim()
+    ];
+    final grounded = searched && sources.isNotEmpty;
+    pack['sources'] = sources;
+    pack['verified'] = grounded;
+    if (!grounded) {
+      // Drop unverifiable emergency numbers rather than risk a wrong one.
+      pack['helplines'] = [];
+    }
     pack['updatedAt'] = DateTime.now().toUtc().toIso8601String();
     try {
       await _db.execute(

@@ -13,7 +13,7 @@ import android.location.LocationManager
 import android.os.Build
 
 /**
- * Hill Mode trip-beacon safety net that lives OUTSIDE the app process.
+ * Safety trip-beacon net that lives OUTSIDE the app process.
  * AlarmManager fires this receiver even if the app was swiped away:
  *  - at the deadline: posts a loud "are you back safe?" notification;
  *  - at deadline + grace: if still not checked in, AUTO-SENDS the alert SMS
@@ -69,7 +69,7 @@ class BeaconAlarmReceiver : BroadcastReceiver() {
             }
             "remind" -> if (active) notifyUser(ctx,
                 "Are you back safe?",
-                "Trip beacon: \"${plan(ctx)}\". Open Hill Mode to check in — " +
+                "Trip beacon: \"${plan(ctx)}\". Open Safety to check in — " +
                 "otherwise your contact is alerted automatically in 15 min.")
             "alert" -> if (active) sendAlert(ctx)
         }
@@ -78,7 +78,7 @@ class BeaconAlarmReceiver : BroadcastReceiver() {
     private fun sendAlert(ctx: Context) {
         val to = contact(ctx)
         val body = "ALERT: I have not checked in from my trip: \"${plan(ctx)}\". " +
-            lastLocation(ctx) + " — sent automatically by Mr.Tour Guide Hill Mode"
+            lastLocation(ctx) + " — sent automatically by Mr.Tour Guide Safety"
         var sent = false
         if (to.isNotEmpty() && ctx.checkSelfPermission(Manifest.permission.SEND_SMS) ==
                 PackageManager.PERMISSION_GRANTED) {

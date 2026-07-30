@@ -41,7 +41,7 @@ class MainActivity : FlutterActivity() {
                 }
             })
 
-        // ── Direct SMS send (Hill Mode SOS / trip beacon) ───────────────────
+        // ── Direct SMS send (Safety SOS / trip beacon) ───────────────────
         // Sends via the carrier with SmsManager — no SMS-app hop, works on
         // bare 2G signal with zero data. Requests SEND_SMS at first use.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/sms")

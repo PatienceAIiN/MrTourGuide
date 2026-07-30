@@ -36,14 +36,17 @@ class _Pack {
   final String name, taxi, tips, deadZones;
   final List<List<String>> helplines;
   final List<String> sources;
+  final bool verified;
   final DateTime? updatedAt;
   const _Pack(this.name, this.taxi, this.tips, this.deadZones,
-      {this.helplines = const [], this.sources = const [], this.updatedAt});
+      {this.helplines = const [], this.sources = const [],
+      this.verified = false, this.updatedAt});
 
   Map<String, dynamic> toJson() => {
         'name': name, 'taxi': taxi, 'tips': tips, 'deadZones': deadZones,
         'helplines': helplines,
         'sources': sources,
+        'verified': verified,
         'updatedAt': updatedAt?.toIso8601String(),
       };
   static _Pack fromJson(Map<String, dynamic> j) => _Pack(
@@ -58,6 +61,7 @@ class _Pack {
         sources: [
           for (final x in (j['sources'] as List? ?? [])) x.toString()
         ],
+        verified: j['verified'] == true,
         updatedAt: DateTime.tryParse((j['updatedAt'] ?? '') as String),
       );
 }
@@ -117,7 +121,7 @@ class _HillModePageState extends State<HillModePage> {
   void initState() {
     super.initState();
     _load();
-    // Listen for nearby BLE SOS packets while Hill Mode is open — if a
+    // Listen for nearby BLE SOS packets while Safety is open — if a
     // phone with no signal broadcasts an SOS, this one hears it.
     _bleSub = _bleEvents.receiveBroadcastStream().listen((e) {
       if (e is! Map) return;
@@ -346,6 +350,9 @@ class _HillModePageState extends State<HillModePage> {
                         for (final h in pack.helplines)
                           '${h.first} — ${h.length > 1 ? h[1] : ''}'
                       ].join('\n')),
+                    if (pack.verified && pack.sources.isNotEmpty)
+                      _info(Icons.verified_rounded, 'Verified from',
+                          pack.sources.join('\n')),
                   ]),
                 ),
               ),
@@ -501,9 +508,9 @@ class _HillModePageState extends State<HillModePage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Row(children: [
-                    Icon(Icons.terrain_rounded, color: Colors.teal),
+                    Icon(Icons.health_and_safety_rounded, color: Colors.teal),
                     SizedBox(width: 8),
-                    Text('How Tour Mode works',
+                    Text('How Safety works',
                         style: TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 17)),
                   ]),
@@ -617,7 +624,7 @@ class _HillModePageState extends State<HillModePage> {
           {'lat': pos.latitude, 'lon': pos.longitude}).catchError((_) => null);
     }
     final sent = await _sendSms(to,
-        'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Tour Mode)');
+        'SOS — I need help. My location: ${_locLink(pos)} (Mr.Tour Guide Safety)');
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         backgroundColor: sent ? Colors.teal : null,
@@ -720,7 +727,7 @@ class _HillModePageState extends State<HillModePage> {
                       await LocalNotifsSchedule.scheduleAt(
                           _beaconNotifId,
                           'Are you back safe?',
-                          'Trip beacon: "$_plan". Open Hill Mode to check in '
+                          'Trip beacon: "$_plan". Open Safety to check in '
                               '— otherwise your contact is alerted '
                               'automatically in 15 min.',
                           _backBy!);
@@ -780,7 +787,7 @@ class _HillModePageState extends State<HillModePage> {
     final pos = await _gps();
     final sent = await _sendSms(_contact,
         'ALERT: I have not checked in from my trip: "$_plan". '
-        'Last location: ${_locLink(pos)} — Mr.Tour Guide Hill Mode');
+        'Last location: ${_locLink(pos)} — Mr.Tour Guide Safety');
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         backgroundColor: sent ? Colors.teal : null,
@@ -796,9 +803,9 @@ class _HillModePageState extends State<HillModePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Row(children: [
-          Icon(Icons.terrain_rounded, color: Colors.teal),
+          Icon(Icons.health_and_safety_rounded, color: Colors.teal),
           SizedBox(width: 8),
-          Text('Tour Mode'),
+          Text('Safety'),
         ]),
         actions: [
           IconButton(
@@ -880,9 +887,31 @@ class _HillModePageState extends State<HillModePage> {
           _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
           _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
               pack.deadZones),
-          if (pack.sources.isNotEmpty)
-            _info(Icons.verified_rounded, 'Verified sources',
-                pack.sources.join('\n')),
+          if (pack.verified && pack.sources.isNotEmpty)
+            _info(Icons.verified_rounded, 'Verified from',
+                pack.sources.join('\n'))
+          else if (_myPacks.isNotEmpty)
+            Card(
+              color: Colors.orange.withValues(alpha: .10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(children: [
+                  const Icon(Icons.info_outline_rounded,
+                      size: 18, color: Colors.orange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: Text(
+                          'Not source-verified — confirm rates and numbers '
+                          'locally. Emergency numbers are hidden unless '
+                          'officially confirmed.',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: ink(context).withValues(alpha: .75)))),
+                ]),
+              ),
+            ),
           if (pack.updatedAt != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),

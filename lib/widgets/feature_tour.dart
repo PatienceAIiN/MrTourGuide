@@ -54,7 +54,7 @@ const _slides = [
       'Ask for a day-by-day trip in plain words — honest, '
       'accessibility-aware answers you can save.',
       Color(0xFFF107A3)),
-  _Slide(Icons.terrain_rounded, 'Tour Mode',
+  _Slide(Icons.health_and_safety_rounded, 'Safety',
       'For every trip: offline survival packs, one-tap SOS by SMS, '
       'shake-to-SOS, and a trip beacon that auto-alerts your contact if '
       'you don\'t check in.',

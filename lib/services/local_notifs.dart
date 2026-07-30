@@ -119,7 +119,7 @@ class LocalNotifs {
 }
 
 /// Schedule a one-shot notification at [when] — survives app kill (inexact
-/// alarm; no special permission). Used by Hill Mode's trip beacon.
+/// alarm; no special permission). Used by the Safety trip beacon.
 extension LocalNotifsSchedule on LocalNotifs {
   static Future<void> scheduleAt(
       int id, String title, String body, DateTime when) async {

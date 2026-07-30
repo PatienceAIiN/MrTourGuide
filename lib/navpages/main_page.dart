@@ -194,8 +194,8 @@ class _MainPageState extends State<MainPage> {
                 tabIndex: 3,
                 badge: hasCommunityUnread),
             NavEntry(
-              icon: Icons.terrain_rounded,
-              label: 'Tour Mode',
+              icon: Icons.health_and_safety_rounded,
+              label: 'Safety',
               action: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const HillModePage()),
