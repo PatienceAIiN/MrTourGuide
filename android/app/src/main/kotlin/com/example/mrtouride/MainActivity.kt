@@ -44,6 +44,28 @@ class MainActivity : FlutterActivity() {
         // bare 2G signal with zero data. Requests SEND_SMS at first use.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/sms")
             .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    // Permission state: granted | denied | blocked (never-ask-again)
+                    "status" -> {
+                        val granted = checkSelfPermission(android.Manifest.permission.SEND_SMS) ==
+                            PackageManager.PERMISSION_GRANTED
+                        result.success(when {
+                            granted -> "granted"
+                            shouldShowRequestPermissionRationale(
+                                android.Manifest.permission.SEND_SMS) -> "denied"
+                            else -> "blocked"
+                        })
+                        return@setMethodCallHandler
+                    }
+                    "openSettings" -> {
+                        startActivity(Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:$packageName"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        result.success(true)
+                        return@setMethodCallHandler
+                    }
+                }
                 if (call.method != "send") { result.notImplemented(); return@setMethodCallHandler }
                 val to = call.argument<String>("to")
                 val body = call.argument<String>("body")

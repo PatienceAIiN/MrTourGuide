@@ -4826,7 +4826,9 @@ Future<Response> _hillPack(Request request) async {
               '"deadZones": 1-2 sentences on where mobile signal dies near '
               'this place and which carrier survives longest, '
               '"helplines": array of up to 3 [number, label] pairs of LOCAL '
-              'emergency/tourist helplines beyond 112/108}. '
+              'emergency/tourist helplines beyond 112/108 — ONLY numbers you '
+              'verify via web search on OFFICIAL government/police/tourism '
+              'sources; if you cannot verify officially, return []}. '
               'If rates are unknown use conservative realistic estimates. '
               'Plain text values only, no markdown.'
         },

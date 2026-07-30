@@ -15,6 +15,7 @@ import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
 import 'package:mrtouride/services/tab_events.dart';
 import 'package:mrtouride/services/update_service.dart';
+import 'package:mrtouride/hill_mode_page.dart';
 import 'package:mrtouride/settings_page.dart';
 import 'package:mrtouride/widgets/bottom_nav.dart';
 import 'package:mrtouride/widgets/content_toast.dart';
@@ -187,6 +188,15 @@ class _MainPageState extends State<MainPage> {
                 label: 'Community',
                 tabIndex: 3,
                 badge: hasCommunityUnread),
+            NavEntry(
+              icon: Icons.terrain_rounded,
+              label: 'Hill Mode',
+              color: Colors.teal,
+              action: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const HillModePage()),
+              ),
+            ),
             NavEntry(
               icon: Icons.tune_rounded,
               label: 'Settings',

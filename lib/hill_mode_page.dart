@@ -277,18 +277,129 @@ class _HillModePageState extends State<HillModePage> {
     }
   }
 
-  /// Send DIRECTLY via the carrier (SmsManager). Falls back to the system
-  /// SMS app prefilled if the permission is denied or sending fails.
+  /// Send DIRECTLY via the carrier (SmsManager). If the permission was
+  /// denied with "don't ask again", guides the user to app settings; as a
+  /// last resort opens the SMS app prefilled so the message still goes out.
   Future<bool> _sendSms(String to, String body) async {
     try {
-      final ok = await _sms.invokeMethod<bool>(
-          'send', {'to': to, 'body': body});
+      final ok =
+          await _sms.invokeMethod<bool>('send', {'to': to, 'body': body});
       if (ok == true) return true;
+      final status = await _sms.invokeMethod<String>('status');
+      if (status == 'blocked' && mounted) {
+        final open = await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20)),
+            icon: const Icon(Icons.sms_failed_rounded,
+                color: Colors.red, size: 36),
+            title: const Text('Allow SMS for auto-send'),
+            content: const Text(
+                'SOS auto-send needs the SMS permission. Enable it once: '
+                'Permissions → SMS → Allow.',
+                textAlign: TextAlign.center),
+            actionsAlignment: MainAxisAlignment.center,
+            actions: [
+              OutlinedButton(
+                  onPressed: () => Navigator.pop(c, false),
+                  child: const Text('Not now')),
+              FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: Colors.teal),
+                  onPressed: () => Navigator.pop(c, true),
+                  child: const Text('Open settings')),
+            ],
+          ),
+        );
+        if (open == true) await _sms.invokeMethod('openSettings');
+      }
     } catch (_) {}
-    await launchUrl(Uri(scheme: 'sms', path: to, queryParameters: {'body': body}),
+    await launchUrl(
+        Uri(scheme: 'sms', path: to, queryParameters: {'body': body}),
         mode: LaunchMode.externalApplication);
     return false;
   }
+
+  /// Full guide — every detail lives here, not scattered on the page.
+  void _showGuide() {
+    Haptics.light();
+    showDialog(
+      context: context,
+      builder: (c) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(22),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(children: [
+                    Icon(Icons.terrain_rounded, color: Colors.teal),
+                    SizedBox(width: 8),
+                    Text('How Hill Mode works',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 17)),
+                  ]),
+                  const SizedBox(height: 14),
+                  _guideRow(Icons.wifi_off_rounded, 'Works offline',
+                      'Everything here runs without internet. SOS and alerts '
+                      'go as SMS through your carrier — they deliver on bare '
+                      '2G signal with zero data.'),
+                  _guideRow(Icons.sos_rounded, 'SOS',
+                      'One tap auto-sends your live GPS location to your '
+                      'saved contact (or 112). Grant the SMS permission once '
+                      'when asked so it can send by itself.'),
+                  _guideRow(Icons.podcasts_rounded, 'Trip beacon',
+                      'Save where you\'re going and when you\'ll be back. At '
+                      'the deadline you get a reminder; 15 minutes later, if '
+                      'you haven\'t checked in, your contact is alerted '
+                      'AUTOMATICALLY with your plan and last location — even '
+                      'if the app is closed or the phone restarted.'),
+                  _guideRow(Icons.hiking_rounded, 'Survival packs',
+                      'Search any place or tap the location button. Packs '
+                      'hold fair taxi rates, altitude & health info and '
+                      'signal dead zones. Save them for offline; they '
+                      'refresh weekly. Rates are indicative — always confirm '
+                      'before boarding.'),
+                  _guideRow(Icons.call_rounded, 'Emergency numbers',
+                      'National numbers are official (112, 108, 1077, 1363). '
+                      'Numbers inside packs are checked against official '
+                      'government sources.'),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: Colors.teal),
+                        onPressed: () => Navigator.pop(c),
+                        child: const Text('Got it')),
+                  ),
+                ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _guideRow(IconData ic, String title, String body) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(ic, size: 18, color: Colors.teal),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13.5)),
+                Text(body,
+                    style: TextStyle(
+                        fontSize: 12.5, height: 1.4,
+                        color: ink(context).withValues(alpha: .7))),
+              ])),
+        ]),
+      );
 
   String _locLink(Position? pos) => pos == null
       ? 'location unavailable'
@@ -367,13 +478,6 @@ class _HillModePageState extends State<HillModePage> {
                           fontWeight: FontWeight.bold, fontSize: 17)),
                 ]),
                 const SizedBox(height: 6),
-                Text(
-                    'If you don\'t check in by the time below, your contact is '
-                    'alerted AUTOMATICALLY by SMS — even if the app is '
-                    'closed or the phone was restarted.',
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        color: ink(c).withValues(alpha: .65))),
                 const SizedBox(height: 14),
                 TextField(
                     controller: planCtl,
@@ -513,27 +617,16 @@ class _HillModePageState extends State<HillModePage> {
           SizedBox(width: 8),
           Text('Hill Mode'),
         ]),
+        actions: [
+          IconButton(
+              tooltip: 'How it works',
+              onPressed: _showGuide,
+              icon: const Icon(Icons.info_outline_rounded)),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-                color: Colors.teal.withValues(alpha: .10),
-                borderRadius: BorderRadius.circular(14)),
-            child: Row(children: [
-              const Icon(Icons.wifi_off_rounded, color: Colors.teal, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: Text(
-                      'Everything here works without internet — SOS and '
-                      'alerts go by SMS through your carrier.',
-                      style: TextStyle(
-                          fontSize: 12.5,
-                          color: ink(context).withValues(alpha: .75)))),
-            ]),
-          ),
           const SizedBox(height: 14),
 
           // SOS
@@ -547,23 +640,50 @@ class _HillModePageState extends State<HillModePage> {
                       borderRadius: BorderRadius.circular(16))),
               onPressed: _sos,
               icon: const Icon(Icons.sos_rounded, size: 26),
-              label: const Text('SOS — auto-send my location',
+              label: const Text('SOS',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             ),
           ),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 8, runSpacing: 8,
-            children: [
-              for (final h in _helplines)
-                ActionChip(
-                  avatar: const Icon(Icons.call_rounded,
-                      size: 15, color: Colors.red),
-                  label: Text('${h.$1} · ${h.$2}',
-                      style: const TextStyle(fontSize: 12)),
-                  onPressed: () => launchUrl(Uri(scheme: 'tel', path: h.$1)),
-                ),
-            ],
+          Card(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            child: ExpansionTile(
+              shape: const Border(),
+              leading: const Icon(Icons.call_rounded, color: Colors.red),
+              title: const Text('Emergency contacts',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14.5)),
+              children: [
+                for (final h in _helplines)
+                  ListTile(
+                    dense: true,
+                    leading: Text(h.$1,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15)),
+                    title: Text(h.$2, style: const TextStyle(fontSize: 13)),
+                    trailing: const Icon(Icons.call_rounded,
+                        size: 18, color: Colors.teal),
+                    onTap: () => launchUrl(Uri(scheme: 'tel', path: h.$1)),
+                  ),
+                for (final h in (_myPacks.isEmpty
+                        ? const <List<String>>[]
+                        : _myPacks[_pack].helplines))
+                  ListTile(
+                    dense: true,
+                    leading: Text(h.first,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15)),
+                    title: Text(h.length > 1 ? h[1] : 'Local helpline',
+                        style: const TextStyle(fontSize: 13)),
+                    subtitle: Text(_myPacks[_pack].name,
+                        style: const TextStyle(fontSize: 11)),
+                    trailing: const Icon(Icons.call_rounded,
+                        size: 18, color: Colors.teal),
+                    onTap: () => launchUrl(Uri(scheme: 'tel', path: h.first)),
+                  ),
+              ],
+            ),
           ),
           const SizedBox(height: 18),
 
@@ -617,9 +737,7 @@ class _HillModePageState extends State<HillModePage> {
                           const Icon(Icons.podcasts_rounded, color: Colors.teal),
                       title: const Text('Trip beacon',
                           style: TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: const Text(
-                          'Going off-grid? Get a check-in reminder and '
-                          'one-tap contact alert.'),
+                      subtitle: const Text('Check-in safety net'),
                       trailing: FilledButton(
                           style: FilledButton.styleFrom(
                               backgroundColor: Colors.teal),
@@ -707,11 +825,6 @@ class _HillModePageState extends State<HillModePage> {
           _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
           _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
               pack.deadZones),
-          if (pack.helplines.isNotEmpty)
-            _info(Icons.call_rounded, 'Local helplines', [
-              for (final h in pack.helplines)
-                '${h.first}${h.length > 1 ? ' — ${h[1]}' : ''}'
-            ].join('\n')),
           if (pack.updatedAt != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
@@ -722,11 +835,6 @@ class _HillModePageState extends State<HillModePage> {
                       color: ink(context).withValues(alpha: .45))),
             ),
           const SizedBox(height: 10),
-          Text(
-              'Stored on your phone — works with zero network. Rates are '
-              'indicative union rates; always confirm before boarding.',
-              style: TextStyle(
-                  fontSize: 11.5, color: ink(context).withValues(alpha: .5))),
         ],
       ),
     );
