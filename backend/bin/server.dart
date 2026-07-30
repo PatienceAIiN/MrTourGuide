@@ -4826,6 +4826,25 @@ Future<Map<String, dynamic>?> _groqTry(
   return null;
 }
 
+/// Read a list-of-strings field that the model may have returned as a JSON
+/// array or as one comma-separated string.
+List<String> _packStrings(Object? v) {
+  if (v is List) {
+    return v
+        .map((e) => '$e'.trim())
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+  }
+  if (v is String) {
+    return v
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+  }
+  return const [];
+}
+
 /// Flatten whatever shape the model used for a text field into plain text.
 /// It sometimes answers with a list of objects instead of a string.
 String _packText(Object? v) {
@@ -5018,11 +5037,11 @@ Future<Response> _hillPack(Request request) async {
     // for the user to confirm.
     final msg = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
         ?['message'] as Map<String, dynamic>?;
-    final searched = (msg?['executed_tools'] as List?)?.isNotEmpty ?? false;
-    final sources = <String>[
-      for (final x in (pack['sources'] as List? ?? []))
-        if (x.toString().trim().isNotEmpty) x.toString().trim()
-    ];
+    final searched = (msg?['executed_tools'] is List) &&
+        (msg!['executed_tools'] as List).isNotEmpty;
+    // Shape-tolerant: models return "sources" as a JSON array on some
+    // rungs of the ladder and as a comma-separated string on others.
+    final sources = _packStrings(pack['sources']);
     final grounded = searched && sources.isNotEmpty;
     // Normalise the text fields — the model occasionally returns lists or
     // objects, which the app expects as plain strings.
@@ -5033,7 +5052,9 @@ Future<Response> _hillPack(Request request) async {
     pack['tips'] = _packText(pack['tips']);
     pack['deadZones'] = _packText(pack['deadZones']);
     pack['helplines'] = [
-      for (final h in (pack['helplines'] as List? ?? []))
+      for (final h in (pack['helplines'] is List
+          ? pack['helplines'] as List
+          : const []))
         if (h is List && h.isNotEmpty)
           [for (final x in h) '$x']
         else if (h is Map)
@@ -5041,6 +5062,8 @@ Future<Response> _hillPack(Request request) async {
             _packText(h['number'] ?? h['phone'] ?? ''),
             _packText(h['label'] ?? h['name'] ?? 'Helpline')
           ]
+        else if (h is String && RegExp(r'\d').hasMatch(h))
+          [h.trim(), 'Local helpline']
     ].where((h) => h.isNotEmpty && h.first.trim().isNotEmpty).toList();
     pack['sources'] = sources;
     pack['verified'] = grounded;
