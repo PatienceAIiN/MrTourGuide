@@ -809,10 +809,9 @@ class _HillModePageState extends State<HillModePage> {
       case 'delete':
         setState(() {
           _myPacks.removeAt(i);
-          // Deleting the last pack restores the built-in defaults — the
-          // page always has something useful offline.
-          if (_myPacks.isEmpty) _myPacks = List.of(_seedPacks);
-          if (_pack >= _myPacks.length) _pack = _myPacks.length - 1;
+          if (_pack >= _myPacks.length) {
+            _pack = _myPacks.isEmpty ? 0 : _myPacks.length - 1;
+          }
         });
         await _persistPacks();
         Haptics.medium();
@@ -924,7 +923,7 @@ class _HillModePageState extends State<HillModePage> {
   // ── UI ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final pack = _myPacks.isEmpty ? _seedPacks[0] : _myPacks[_pack];
+    final pack = _myPacks.isEmpty ? null : _myPacks[_pack];
     return Scaffold(
       appBar: AppBar(
         title: const Row(children: [
@@ -1001,6 +1000,27 @@ class _HillModePageState extends State<HillModePage> {
             ),
           ),
           const SizedBox(height: 8),
+          if (pack == null)
+            // Everything deleted — a clear, honest empty state.
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 36),
+              alignment: Alignment.center,
+              child: Column(children: [
+                Icon(Icons.travel_explore_rounded,
+                    size: 44, color: ink(context).withValues(alpha: .3)),
+                const SizedBox(height: 10),
+                Text('No packs saved',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: ink(context).withValues(alpha: .6))),
+                const SizedBox(height: 4),
+                Text('Search a place above to fetch its survival pack.',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        color: ink(context).withValues(alpha: .45))),
+              ]),
+            ),
+          if (pack != null) ...[
           _info(Icons.local_taxi_rounded, 'Fair taxi rates', pack.taxi),
           _info(Icons.favorite_rounded, 'Altitude & health', pack.tips),
           _info(Icons.signal_cellular_off_rounded, 'Signal dead zones',
@@ -1038,6 +1058,7 @@ class _HillModePageState extends State<HillModePage> {
                   style: TextStyle(
                       fontSize: 11, color: ink(context).withValues(alpha: .45))),
             ),
+          ],
           const SizedBox(height: 20),
 
           // SOS
@@ -1063,6 +1084,9 @@ class _HillModePageState extends State<HillModePage> {
               value: ShakeSos.instance.on,
               onChanged: (v) async {
                 Haptics.tick();
+                if (v && !await ShakeSos.instance.confirmEnable(context)) {
+                  return;
+                }
                 await ShakeSos.instance.set(v);
                 if (mounted) setState(() {});
               },

@@ -2,162 +2,135 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'haptic_service.dart';
-import 'local_notifs.dart';
 
-/// App-wide shake-to-SOS. Lives as a service (not page state) so the
-/// gesture works ANYWHERE in the app once enabled — three hard jolts
-/// inside 1.5s open a 5-second cancellable countdown, then the SOS SMS
-/// auto-sends to the saved Safety contact with live GPS.
+/// Phone-wide shake-to-SOS.
 ///
-/// The toggle appears both in Settings and on the Safety page; both drive
-/// this one service, and the preference is the Safety key ('hill.shake')
-/// so existing users keep their choice.
+/// Detection, the 5-second countdown and the auto-send all live in a native
+/// foreground service (ShakeSosService), so the gesture works even when the
+/// app is closed or the screen is off — Android shows a heads-up countdown
+/// notification with a CANCEL action as the popup there. When the app is
+/// open, this class mirrors the countdown as an in-app dialog too.
+///
+/// Toggles in Settings and on the Safety page both drive this one service
+/// over the same preference ('hill.shake').
 class ShakeSos extends ChangeNotifier {
   ShakeSos._();
   static final ShakeSos instance = ShakeSos._();
 
-  /// Set as MaterialApp.navigatorKey — lets the service show the countdown
-  /// dialog from anywhere.
+  /// Set as MaterialApp.navigatorKey — lets the mirror dialog show anywhere.
   static final navKey = GlobalKey<NavigatorState>();
 
-  static const _sms = MethodChannel('mrtouride/sms');
-  static const _ble = MethodChannel('mrtouride/blesos-ctl');
+  static const _svc = MethodChannel('mrtouride/shakesvc');
+  static const _events = EventChannel('mrtouride/shakesvc-events');
 
-  StreamSubscription? _sub;
-  final List<int> _jolts = [];
-  bool _armed = false; // countdown dialog is up
+  StreamSubscription? _evtSub;
   bool _on = false;
   bool get on => _on;
+  bool _dialogUp = false;
 
   Future<void> init() async {
     final p = await SharedPreferences.getInstance();
     _on = p.getBool('hill.shake') ?? false;
-    if (_on) _listen();
+    if (_on) {
+      // Re-assert the service (it also restarts itself after reboot).
+      _svc.invokeMethod('start').catchError((_) => null);
+    }
+    _listen();
     notifyListeners();
+  }
+
+  /// Confirmation popup shown when the user flips the toggle ON. Returns
+  /// true only when they explicitly tap Enable.
+  Future<bool> confirmEnable(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(Icons.vibration_rounded, color: Colors.red, size: 40),
+        title: const Text('Enable Shake for SOS?'),
+        content: const Text(
+            'Shake your phone hard 3 times — anywhere, even with the app '
+            'closed — and after a 5-second cancel window your live location '
+            'auto-sends by SMS to your Safety contact.\n\n'
+            'A small ongoing notification keeps it active (Android '
+            'requirement).',
+            textAlign: TextAlign.center),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          OutlinedButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Not now')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Enable')),
+        ],
+      ),
+    );
+    return ok == true;
   }
 
   Future<void> set(bool on) async {
     final p = await SharedPreferences.getInstance();
     await p.setBool('hill.shake', on);
     _on = on;
-    _sub?.cancel();
-    _sub = null;
-    if (on) _listen();
+    try {
+      await _svc.invokeMethod(on ? 'start' : 'stop');
+    } catch (_) {}
     notifyListeners();
   }
 
+  // ── In-app countdown mirror ─────────────────────────────────────────────
   void _listen() {
-    _sub = accelerometerEventStream().listen((e) {
-      final g = (e.x * e.x + e.y * e.y + e.z * e.z) / 96.2; // 1.0 ≈ gravity
-      if (g < 3.2) return; // hard jolt only
-      final now = DateTime.now().millisecondsSinceEpoch;
-      _jolts.removeWhere((t) => now - t > 1500);
-      if (_jolts.isNotEmpty && now - _jolts.last < 180) return; // debounce
-      _jolts.add(now);
-      if (_jolts.length >= 3 && !_armed) {
-        _jolts.clear();
-        _countdown();
+    _evtSub ??= _events.receiveBroadcastStream().listen((e) {
+      if (e is! Map) return;
+      switch (e['evt']) {
+        case 'triggered':
+          _showMirror();
+        case 'cancelled':
+        case 'sending':
+        case 'sent':
+        case 'failed':
+          _closeMirror();
       }
-    });
+    }, onError: (_) {});
   }
 
-  Future<void> _countdown() async {
+  void _showMirror() {
     final ctx = navKey.currentContext;
-    if (ctx == null) {
-      await _send(); // no UI available — send rather than stay silent
-      return;
-    }
-    _armed = true;
+    if (ctx == null || _dialogUp) return;
+    _dialogUp = true;
     Haptics.heavy();
-    var left = 5;
-    Timer? tick;
-    final cancelled = await showDialog<bool>(
+    showDialog(
       context: ctx,
       barrierDismissible: false,
-      builder: (c) => StatefulBuilder(builder: (c, setD) {
-        tick ??= Timer.periodic(const Duration(seconds: 1), (t) {
-          left--;
-          Haptics.medium();
-          if (left <= 0) {
-            t.cancel();
-            if (c.mounted) Navigator.pop(c, false);
-          } else {
-            setD(() {});
-          }
-        });
-        return AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          icon: const Icon(Icons.vibration_rounded,
-              color: Colors.red, size: 40),
-          title: Text('Sending SOS in $left…'),
-          content: const Text('Shake detected. Cancel if this was accidental.',
-              textAlign: TextAlign.center),
-          actionsAlignment: MainAxisAlignment.center,
-          actions: [
-            FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
-                onPressed: () => Navigator.pop(c, true),
-                child: const Text('Cancel')),
-          ],
-        );
-      }),
-    );
-    tick?.cancel();
-    _armed = false;
-    if (cancelled != true) await _send();
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(Icons.vibration_rounded, color: Colors.red, size: 40),
+        title: const Text('Sending SOS in 5s…'),
+        content: const Text('Shake detected. Cancel if this was accidental.',
+            textAlign: TextAlign.center),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+              onPressed: () {
+                _svc.invokeMethod('cancel').catchError((_) => null);
+                Navigator.pop(c);
+              },
+              child: const Text('Cancel')),
+        ],
+      ),
+    ).whenComplete(() => _dialogUp = false);
   }
 
-  Future<void> _send() async {
-    final p = await SharedPreferences.getInstance();
-    final to = (p.getString('hill.contact') ?? '').trim().isNotEmpty
-        ? p.getString('hill.contact')!.trim()
-        : '112';
-    Position? pos;
-    try {
-      pos = await Geolocator.getCurrentPosition(
-              locationSettings:
-                  const LocationSettings(accuracy: LocationAccuracy.high))
-          .timeout(const Duration(seconds: 12),
-              onTimeout: () async =>
-                  (await Geolocator.getLastKnownPosition())!);
-    } catch (_) {
-      pos = await Geolocator.getLastKnownPosition();
-    }
-    final loc = pos == null
-        ? 'location unavailable'
-        : 'https://maps.google.com/?q=${pos.latitude},${pos.longitude}';
-    if (pos != null) {
-      // Shout over Bluetooth too — nearby app users can relay.
-      _ble.invokeMethod('advertise',
-          {'lat': pos.latitude, 'lon': pos.longitude}).catchError((_) => null);
-    }
-    final body =
-        'SOS — I need help. My location: $loc (Mr.Tour Guide Safety)';
-    var sent = false;
-    try {
-      sent = await _sms.invokeMethod<bool>(
-              'send', {'to': to, 'body': body}) ==
-          true;
-    } catch (_) {}
-    if (!sent) {
-      // Fallback: open the SMS app prefilled so the message still goes out.
-      try {
-        await launchUrl(
-            Uri(scheme: 'sms', path: to, queryParameters: {'body': body}),
-            mode: LaunchMode.externalApplication);
-      } catch (_) {}
-    }
-    LocalNotifs.show(
-        sent ? 'SOS sent' : 'SOS needs one more tap',
-        sent
-            ? 'Your location went to $to by SMS.'
-            : 'Auto-send failed — your SMS app was opened, press send.');
+  void _closeMirror() {
+    if (!_dialogUp) return;
+    final nav = navKey.currentState;
+    if (nav != null && nav.canPop()) nav.pop();
+    _dialogUp = false;
   }
 }

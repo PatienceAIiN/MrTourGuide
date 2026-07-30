@@ -146,12 +146,12 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile(
               secondary: const Icon(Icons.vibration_rounded, color: Colors.red),
               title: const Text('Shake for SOS'),
-              subtitle: const Text(
-                  'Shake hard 3× anywhere in the app — 5s to cancel, then '
-                  'your location auto-sends to your Safety contact'),
               value: ShakeSos.instance.on,
               activeThumbColor: blue,
               onChanged: (v) async {
+                if (v && !await ShakeSos.instance.confirmEnable(context)) {
+                  return; // declined the explainer — leave it off
+                }
                 await ShakeSos.instance.set(v);
                 if (mounted) setState(() {});
               },

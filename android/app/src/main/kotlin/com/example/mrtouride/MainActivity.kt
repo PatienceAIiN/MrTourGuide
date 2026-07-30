@@ -108,6 +108,51 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // ── Phone-wide shake-to-SOS service control + event mirror ─────────
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/shakesvc")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> { ShakeSosService.start(this); result.success(true) }
+                    "stop" -> { ShakeSosService.stop(this); result.success(true) }
+                    "cancel" -> {
+                        sendBroadcast(Intent(ShakeSosService.ACT_CANCEL)
+                            .setPackage(packageName))
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/shakesvc-events")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                    shakeEvtSink = sink
+                    val recv = object : android.content.BroadcastReceiver() {
+                        override fun onReceive(c: Context, i: Intent) {
+                            mainHandler.post {
+                                shakeEvtSink?.success(mapOf(
+                                    "evt" to (i.getStringExtra("evt") ?: ""),
+                                    "left" to i.getIntExtra("left", 0)))
+                            }
+                        }
+                    }
+                    shakeEvtReceiver = recv
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        registerReceiver(recv,
+                            android.content.IntentFilter(ShakeSosService.EVT_BROADCAST),
+                            RECEIVER_NOT_EXPORTED)
+                    } else {
+                        @Suppress("UnspecifiedRegisterReceiverFlag")
+                        registerReceiver(recv,
+                            android.content.IntentFilter(ShakeSosService.EVT_BROADCAST))
+                    }
+                }
+                override fun onCancel(args: Any?) {
+                    try { shakeEvtReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
+                    shakeEvtReceiver = null
+                    shakeEvtSink = null
+                }
+            })
+
         // ── Trip-beacon alarms: exact, process-independent, reboot-proof ────
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mrtouride/beacon")
             .setMethodCallHandler { call, result ->
@@ -241,6 +286,10 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    // Shake service event mirror plumbing.
+    private var shakeEvtSink: EventChannel.EventSink? = null
+    private var shakeEvtReceiver: android.content.BroadcastReceiver? = null
 
     // ── BLE SOS relay plumbing ──────────────────────────────────────────────
     private var bleSink: EventChannel.EventSink? = null

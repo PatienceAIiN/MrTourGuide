@@ -61,6 +61,10 @@ class BeaconAlarmReceiver : BroadcastReceiver() {
         val active = plan(ctx).isNotEmpty() && backBy(ctx) > 0L
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED, "android.intent.action.QUICKBOOT_POWERON" -> {
+                // Shake-to-SOS survives reboots too.
+                if (ShakeSosService.enabled(ctx)) {
+                    try { ShakeSosService.start(ctx) } catch (_: Exception) {}
+                }
                 if (!active) return
                 val at = backBy(ctx)
                 val now = System.currentTimeMillis()
