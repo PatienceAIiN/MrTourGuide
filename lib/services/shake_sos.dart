@@ -30,6 +30,8 @@ class ShakeSos extends ChangeNotifier {
   bool _on = false;
   bool get on => _on;
   bool _dialogUp = false;
+  bool _awaitingOverlay = false;
+  _ResumeWatcher? _watcher;
 
   Future<void> init() async {
     final p = await SharedPreferences.getInstance();
@@ -39,7 +41,38 @@ class ShakeSos extends ChangeNotifier {
       _svc.invokeMethod('start').catchError((_) => null);
     }
     _listen();
+    _watcher ??= _ResumeWatcher(this);
+    WidgetsBinding.instance.addObserver(_watcher!);
     notifyListeners();
+    // Toggle was already on from an earlier build but the overlay grant is
+    // still missing → nudge once so the popup can actually appear.
+    if (_on) {
+      Future.delayed(const Duration(seconds: 2), () async {
+        try {
+          final ok = await _svc.invokeMethod<bool>('overlayStatus');
+          if (ok != true) await _ensureOverlay();
+        } catch (_) {}
+      });
+    }
+  }
+
+  /// Called by the lifecycle watcher: user came back from the system
+  /// settings screen — verify the grant actually happened and say so.
+  Future<void> onResumed() async {
+    if (!_awaitingOverlay) return;
+    _awaitingOverlay = false;
+    try {
+      final ok = await _svc.invokeMethod<bool>('overlayStatus');
+      final ctx = navKey.currentContext;
+      if (ctx == null) return;
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+          backgroundColor: ok == true ? Colors.teal : Colors.orange,
+          content: Text(ok == true
+              ? '✓ SOS popup can now appear over any screen.'
+              : 'Overlay still off — the SOS countdown will show as a '
+                  'notification instead. Enable "display over other apps" '
+                  'to get the popup.')));
+    } catch (_) {}
   }
 
   /// Confirmation popup shown when the user flips the toggle ON. Returns
@@ -80,9 +113,10 @@ class ShakeSos extends ChangeNotifier {
     try {
       if (on) {
         // Someone in trouble can't grant dialogs — everything the killed-app
-        // emergency path needs is requested NOW, at enable time: SMS +
-        // location permissions, then "display over other apps" so the
-        // countdown popup can appear over any screen.
+        // emergency path needs is set up NOW, at enable time: the contact
+        // number, SMS + location permissions, then "display over other
+        // apps" so the countdown popup can appear over any screen.
+        await _ensureContact();
         await _svc.invokeMethod('ensurePerms');
         await _ensureOverlay();
         await _svc.invokeMethod('start');
@@ -91,6 +125,47 @@ class ShakeSos extends ChangeNotifier {
       }
     } catch (_) {}
     notifyListeners();
+  }
+
+  /// Without a saved contact the SOS falls back to 112 — fine as a last
+  /// resort, but the user should choose. Ask right at enable time.
+  Future<void> _ensureContact() async {
+    final p = await SharedPreferences.getInstance();
+    if ((p.getString('hill.contact') ?? '').trim().isNotEmpty) return;
+    final ctx = navKey.currentContext;
+    if (ctx == null) return;
+    final ctl = TextEditingController();
+    final saved = await showDialog<bool>(
+      // ignore: use_build_context_synchronously
+      context: ctx,
+      builder: (c) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        icon: const Icon(Icons.contact_phone_rounded,
+            color: Colors.teal, size: 36),
+        title: const Text('Who should the SOS go to?'),
+        content: TextField(
+          controller: ctl,
+          keyboardType: TextInputType.phone,
+          autofocus: true,
+          decoration: const InputDecoration(
+              labelText: 'Emergency contact number',
+              border: OutlineInputBorder()),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          OutlinedButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Use 112')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (saved == true && ctl.text.trim().isNotEmpty) {
+      await p.setString('hill.contact', ctl.text.trim());
+    }
   }
 
   Future<void> _ensureOverlay() async {
@@ -109,10 +184,11 @@ class ShakeSos extends ChangeNotifier {
               color: Colors.teal, size: 36),
           title: const Text('Show SOS popup everywhere'),
           content: const Text(
-              'Allow "display over other apps" so the 5-second cancel popup '
-              'can appear over ANY screen — home screen, other apps — even '
-              'when this app is closed.',
-              textAlign: TextAlign.center),
+              'For the 5-second cancel popup to appear over ANY screen, '
+              'Android needs one switch turned on.\n\n'
+              'On the next screen:\n'
+              'turn ON "Allow display over other apps", then come back.',
+              textAlign: TextAlign.left),
           actionsAlignment: MainAxisAlignment.center,
           actions: [
             OutlinedButton(
@@ -121,11 +197,14 @@ class ShakeSos extends ChangeNotifier {
             FilledButton(
                 style: FilledButton.styleFrom(backgroundColor: Colors.teal),
                 onPressed: () => Navigator.pop(c, true),
-                child: const Text('Allow')),
+                child: const Text('Open the switch')),
           ],
         ),
       );
-      if (go == true) await _svc.invokeMethod('requestOverlay');
+      if (go == true) {
+        _awaitingOverlay = true; // verified + reported on resume
+        await _svc.invokeMethod('requestOverlay');
+      }
     } catch (_) {}
   }
 
@@ -178,5 +257,16 @@ class ShakeSos extends ChangeNotifier {
     final nav = navKey.currentState;
     if (nav != null && nav.canPop()) nav.pop();
     _dialogUp = false;
+  }
+}
+
+/// Watches for the app resuming (back from the system settings screen) so
+/// the overlay grant can be verified and reported honestly.
+class _ResumeWatcher with WidgetsBindingObserver {
+  _ResumeWatcher(this.svc);
+  final ShakeSos svc;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) svc.onResumed();
   }
 }

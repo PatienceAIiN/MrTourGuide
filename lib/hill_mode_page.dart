@@ -698,17 +698,23 @@ class _HillModePageState extends State<HillModePage> {
 
   Future<void> _checkIn() async {
     Haptics.medium();
+    // Every step is independent: one failing must never leave the beacon
+    // half-armed or the button looking dead.
     try { await _beacon.invokeMethod('cancel'); } catch (_) {}
-    await LocalNotifsSchedule.cancelId(_beaconNotifId);
-    final p = await SharedPreferences.getInstance();
-    await p.remove('hill.plan');
-    await p.remove('hill.backBy');
+    try { await LocalNotifsSchedule.cancelId(_beaconNotifId); } catch (_) {}
+    // The receiver's own "are you back safe?" notification, if it already
+    // fired, must leave the shade too.
+    try { await LocalNotifsSchedule.cancelId(7314); } catch (_) {}
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.remove('hill.plan');
+      await p.remove('hill.backBy');
+    } catch (_) {}
+    if (!mounted) return;
     setState(() { _plan = ''; _backBy = null; });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          backgroundColor: Colors.teal,
-          content: Text('Checked in — beacon cleared. Welcome back!')));
-    }
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        backgroundColor: Colors.teal,
+        content: Text('Checked in — beacon cleared. Welcome back!')));
   }
 
   Future<void> _alertContact() async {
