@@ -4858,45 +4858,50 @@ Future<Response> _hillPack(Request request) async {
     req.write(jsonEncode({
       'model': 'groq/compound-mini',
       'messages': [
+        // NOTE: groq/compound-mini rejects the whole request
+        // ("request_too_large") once the SYSTEM message grows past roughly
+        // 500 characters, so the system role stays tiny and the detailed
+        // spec travels in the user message instead.
         {
           'role': 'system',
-          'content': 'You produce OFFLINE SURVIVAL PACKS for travellers at '
-              'ANY destination worldwide (hill stations, cities, beaches, '
-              'trekking regions). You have web search — USE IT and base '
-              'every fact on what you actually find on official or '
-              'reputable current sources (state/city tourism boards, '
-              'police/transport department pages, hospital sites, telecom '
-              'coverage maps, recent traveller reports). Never invent a '
-              'number or a rate. Reply with STRICT JSON ONLY, no prose, '
-              'exactly these keys: '
-              '{"name": short place name (correct spelling/region), '
-              '"taxi": 2-3 lines of VERIFIED current fair taxi/auto/transfer '
-              'rates for the most common tourist routes there, with local '
-              'currency ranges; say "approx" where the source is a traveller '
-              'report rather than an official tariff, '
-              '"tips": 2-3 sentences on altitude (metres, if relevant), the '
-              'real local health/safety risks for this place, and the '
-              'nearest reliable hospital BY NAME, '
-              '"deadZones": 1-2 sentences on where mobile signal actually '
-              'dies near this place and which carrier survives longest, '
-              '"helplines": array of up to 4 [number, label] pairs of LOCAL '
-              'emergency/police/tourist helplines beyond the national '
-              'number — ONLY numbers confirmed on OFFICIAL government, '
-              'police or tourism-board sources; if you cannot confirm '
-              'officially, return [], '
-              '"sources": array of 2-4 short source labels or domains you '
-              'actually used (e.g. "hptdc.in", "Kullu district police", '
-              '"WHO travel advice") — never empty}. '
-              'If you genuinely cannot verify something, write "Not '
-              'verified — confirm locally" for that field instead of '
-              'guessing. Every value must be a PLAIN STRING (never an '
-              'array or object) except "helplines" and "sources". Keep each '
-              'value under 320 characters. No markdown.'
+          'content': 'You research travel safety facts with web search and '
+              'reply with strict JSON only. Never invent a phone number, '
+              'rate or hospital name.'
         },
         {
           'role': 'user',
-          'content': 'Search the web now and build the verified survival '
-              'pack for: $place'
+          // Compound-mini often answers from memory unless the search is
+          // spelled out as an explicit first step — and an unsearched reply
+          // is exactly the one that invents phone numbers.
+          'content': 'STEP 1: use your web search tool at least twice — '
+              'search "$place official taxi tariff tourism" and "$place '
+              'police tourist helpline official". STEP 2: only after reading '
+              'those results, answer.\n\n'
+              'Build a verified offline survival pack for: $place\n\n'
+              'Base every fact on official or reputable current sources '
+              '(tourism boards, police/transport pages, hospital sites, '
+              'telecom coverage info, recent traveller reports).\n\n'
+              'Reply with STRICT JSON ONLY, no prose, exactly these keys:\n'
+              '{"name": short place name with region,\n'
+              '"taxi": 2-3 lines of verified current fair taxi/auto/transfer '
+              'rates for the most common tourist routes, with local currency '
+              'ranges; write "approx" when the source is a traveller report '
+              'rather than an official tariff,\n'
+              '"tips": 2-3 sentences on altitude in metres if relevant, the '
+              'real local health/safety risks, and the nearest reliable '
+              'hospital BY NAME,\n'
+              '"deadZones": 1-2 sentences on where mobile signal actually '
+              'dies nearby and which carrier survives longest,\n'
+              '"helplines": up to 4 [number, label] pairs of LOCAL '
+              'emergency/police/tourist numbers beyond the national one — '
+              'ONLY numbers confirmed on official government, police or '
+              'tourism-board sources, else [],\n'
+              '"sources": 2-4 short source labels or domains you actually '
+              'used, never empty}\n\n'
+              'If you cannot verify something, write "Not verified — confirm '
+              'locally" for that field instead of guessing. Every value must '
+              'be a plain string except helplines and sources. Keep each '
+              'value under 320 characters. No markdown.'
         },
       ],
       'max_tokens': 2000,
