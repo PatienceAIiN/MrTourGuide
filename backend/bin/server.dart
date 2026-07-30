@@ -4786,7 +4786,24 @@ List<String> _groqKeys() {
 /// answers with 200. Returns the decoded body, or null when every key is
 /// exhausted or erroring.
 Future<Map<String, dynamic>?> _groqChat(Map<String, Object?> payload,
-    {Duration timeout = const Duration(seconds: 45)}) async {
+    {Duration timeout = const Duration(seconds: 45),
+    String fallbackModel = 'llama-3.3-70b-versatile'}) async {
+  // The search-capable compound models have their own small free-tier limit,
+  // so retry on a standard model before giving up.
+  final models = <String>[
+    '${payload['model']}',
+    if ('${payload['model']}'.startsWith('groq/compound')) fallbackModel,
+  ];
+  for (final model in models) {
+    final attempt = {...payload, 'model': model};
+    final hit = await _groqTry(attempt, timeout);
+    if (hit != null) return hit;
+  }
+  return null;
+}
+
+Future<Map<String, dynamic>?> _groqTry(
+    Map<String, Object?> payload, Duration timeout) async {
   for (final key in _groqKeys()) {
     final client = HttpClient();
     try {
@@ -4923,7 +4940,9 @@ Future<Response> _hillPack(Request request) async {
     // that invents phone numbers. ONE search only: the injected results
     // count against a small context, and two searches overflow it (413).
     Future<String?> askWith(String apiKey,
-        {required bool search, required int maxTokens}) async {
+        {required String model,
+        required bool search,
+        required int maxTokens}) async {
       final client = HttpClient();
       try {
         final req = await client.postUrl(
@@ -4931,7 +4950,7 @@ Future<Response> _hillPack(Request request) async {
         req.headers.set('Authorization', 'Bearer $apiKey');
         req.headers.contentType = ContentType.json;
         req.write(jsonEncode({
-          'model': 'groq/compound-mini',
+          'model': model,
           'messages': [
             {
               'role': 'system',
@@ -4963,17 +4982,24 @@ Future<Response> _hillPack(Request request) async {
       }
     }
 
-    // Try every key with search first (verifiable), then every key without
-    // search. An unsearched reply fails the gate below — it is labelled
-    // unverified with helplines stripped — but a labelled pack still beats
-    // an error screen. Extra keys mean one exhausted quota is not an outage.
+    // Attempt ladder, best first. compound-mini is the only model with web
+    // search, but it carries its own small free-tier limit separate from the
+    // account request/token quota — when it is exhausted a standard model
+    // still answers, from memory. Those replies cannot pass the gate below,
+    // so they arrive labelled unverified with helplines stripped, which is
+    // far better than showing the user nothing.
+    const attempts = [
+      ('groq/compound-mini', true),
+      ('groq/compound-mini', false),
+      ('llama-3.3-70b-versatile', false),
+    ];
     String? text;
-    for (final search in const [true, false]) {
+    outer:
+    for (final (model, search) in attempts) {
       for (final k in keys) {
-        text = await askWith(k, search: search, maxTokens: 900);
-        if (text != null) break;
+        text = await askWith(k, model: model, search: search, maxTokens: 900);
+        if (text != null) break outer;
       }
-      if (text != null) break;
     }
     if (text == null) return unavailable();
     final content = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
