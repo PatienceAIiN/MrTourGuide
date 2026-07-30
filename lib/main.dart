@@ -11,6 +11,7 @@ import 'package:mrtouride/services/crash_reporter.dart';
 import 'package:mrtouride/services/media_api.dart';
 import 'package:mrtouride/services/push_service.dart';
 import 'package:mrtouride/services/settings_service.dart';
+import 'package:mrtouride/services/shake_sos.dart';
 import 'package:mrtouride/signup.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -21,10 +22,12 @@ void main() async {
   CrashReporter.install();
   await loadAppInfo(); // real version/build — keeps the OTA check honest
   await SettingsService.instance.load();
+  ShakeSos.instance.init(); // app-wide shake-to-SOS if enabled
   PushService.init(); // fire-and-forget: push must never block startup
   runApp(ListenableBuilder(
     listenable: SettingsService.instance,
     builder: (context, _) => MaterialApp(
+      navigatorKey: ShakeSos.navKey,
       debugShowCheckedModeBanner: false,
       // Material 3 expressive: brand-seeded dynamic color scheme, rounded
       // shapes — plus Apple-style slide (iOS push/pop with parallax +

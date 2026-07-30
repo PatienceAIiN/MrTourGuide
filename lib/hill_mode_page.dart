@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -14,6 +13,7 @@ import 'package:http/http.dart' as http;
 
 import 'services/api_base.dart';
 import 'services/local_notifs.dart';
+import 'services/shake_sos.dart';
 
 /// HILL MODE — the part of the app that keeps working when the network
 /// doesn't. Fully offline-capable:
@@ -103,12 +103,6 @@ class _HillModePageState extends State<HillModePage> {
   StreamSubscription? _bleSub;
   int _lastBleAlertMs = 0;
 
-  // Shake-to-SOS: three hard jolts within 1.5s fires the SOS countdown.
-  StreamSubscription? _shakeSub;
-  bool _shakeOn = false;
-  final List<int> _jolts = [];
-  bool _sosArmed = false; // countdown dialog is up
-
   List<_Pack> _myPacks = [];
   int _pack = 0;
   bool _fetching = false;
@@ -169,78 +163,8 @@ class _HillModePageState extends State<HillModePage> {
   @override
   void dispose() {
     _bleSub?.cancel();
-    _shakeSub?.cancel();
     _bleCtl.invokeMethod('stopAdvertise').catchError((_) => null);
     super.dispose();
-  }
-
-  // ── Shake-to-SOS ───────────────────────────────────────────────────────
-  // Three hard jolts inside 1.5s → a 5-second countdown → auto-send. The
-  // countdown exists so an accidental shake can be cancelled; if the phone
-  // is dropped in a real emergency the SOS still goes out by itself.
-  Future<void> _setShake(bool on) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setBool('hill.shake', on);
-    _shakeSub?.cancel();
-    _shakeSub = null;
-    if (on) {
-      _shakeSub = accelerometerEventStream().listen((e) {
-        final g =
-            (e.x * e.x + e.y * e.y + e.z * e.z) / 96.2; // 1.0 ≈ gravity
-        if (g < 3.2) return; // hard jolt only
-        final now = DateTime.now().millisecondsSinceEpoch;
-        _jolts.removeWhere((t) => now - t > 1500);
-        if (_jolts.isNotEmpty && now - _jolts.last < 180) return; // debounce
-        _jolts.add(now);
-        if (_jolts.length >= 3 && !_sosArmed) {
-          _jolts.clear();
-          _shakeCountdown();
-        }
-      });
-    }
-    if (mounted) setState(() => _shakeOn = on);
-  }
-
-  Future<void> _shakeCountdown() async {
-    if (_sosArmed || !mounted) return;
-    _sosArmed = true;
-    Haptics.heavy();
-    var left = 5;
-    Timer? tick;
-    final cancelled = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => StatefulBuilder(builder: (c, setD) {
-        tick ??= Timer.periodic(const Duration(seconds: 1), (t) {
-          left--;
-          Haptics.medium();
-          if (left <= 0) {
-            t.cancel();
-            if (c.mounted) Navigator.pop(c, false);
-          } else {
-            setD(() {});
-          }
-        });
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          icon: const Icon(Icons.vibration_rounded, color: Colors.red, size: 40),
-          title: Text('Sending SOS in $left…'),
-          content: const Text('Shake detected. Cancel if this was accidental.',
-              textAlign: TextAlign.center),
-          actionsAlignment: MainAxisAlignment.center,
-          actions: [
-            FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
-                onPressed: () => Navigator.pop(c, true),
-                child: const Text('Cancel')),
-          ],
-        );
-      }),
-    );
-    tick?.cancel();
-    _sosArmed = false;
-    if (cancelled == true || !mounted) return;
-    await _fireSos(silent: true);
   }
 
   Future<void> _load() async {
@@ -255,9 +179,7 @@ class _HillModePageState extends State<HillModePage> {
           ? List.of(_seedPacks)
           : [for (final j in jsonDecode(raw) as List) _Pack.fromJson(j)];
       if (_pack >= _myPacks.length) _pack = 0;
-      _shakeOn = p.getBool('hill.shake') ?? false;
     });
-    if (_shakeOn) _setShake(true);
     _refreshStale();
   }
 
@@ -820,7 +742,10 @@ class _HillModePageState extends State<HillModePage> {
   Future<void> _managePack(int i) async {
     Haptics.medium();
     final pack = _myPacks[i];
-    await showModalBottomSheet(
+    // The sheet only PICKS an action; all mutations happen after it has
+    // fully closed, so the page rebuilds immediately (deleting from inside
+    // the sheet's closing transition left the chip on screen).
+    final action = await showModalBottomSheet<String>(
       context: context,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
@@ -845,55 +770,57 @@ class _HillModePageState extends State<HillModePage> {
           ListTile(
             leading: const Icon(Icons.edit_rounded),
             title: const Text('Edit details'),
-            onTap: () {
-              Navigator.pop(c);
-              _editPack(i);
-            },
+            onTap: () => Navigator.pop(c, 'edit'),
           ),
           ListTile(
             leading: const Icon(Icons.refresh_rounded),
             title: const Text('Refresh from web'),
-            onTap: () async {
-              Navigator.pop(c);
-              setState(() => _fetching = true);
-              final fresh = await _fetchPack(pack.name);
-              if (!mounted) return;
-              setState(() {
-                _fetching = false;
-                if (fresh != null) _myPacks[i] = fresh;
-              });
-              if (fresh != null) {
-                _persistPacks();
-                Haptics.medium();
-              }
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(fresh != null
-                      ? '${pack.name} refreshed.'
-                      : _fetchError ?? 'Couldn\'t refresh — try later.')));
-            },
+            onTap: () => Navigator.pop(c, 'refresh'),
           ),
           ListTile(
             leading: const Icon(Icons.delete_rounded, color: Colors.red),
             title: const Text('Delete', style: TextStyle(color: Colors.red)),
-            onTap: () {
-              Navigator.pop(c);
-              setState(() {
-                _myPacks.removeAt(i);
-                // Deleting the last pack restores the built-in defaults —
-                // the page always has something useful offline.
-                if (_myPacks.isEmpty) _myPacks = List.of(_seedPacks);
-                if (_pack >= _myPacks.length) _pack = _myPacks.length - 1;
-              });
-              _persistPacks();
-              Haptics.medium();
-              ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('${pack.name} deleted.')));
-            },
+            onTap: () => Navigator.pop(c, 'delete'),
           ),
           const SizedBox(height: 8),
         ]),
       ),
     );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'edit':
+        await _editPack(i);
+      case 'refresh':
+        setState(() => _fetching = true);
+        final fresh = await _fetchPack(pack.name);
+        if (!mounted) return;
+        setState(() {
+          _fetching = false;
+          if (fresh != null) _myPacks[i] = fresh;
+        });
+        if (fresh != null) {
+          await _persistPacks();
+          Haptics.medium();
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(fresh != null
+                ? '${pack.name} refreshed.'
+                : _fetchError ?? 'Couldn\'t refresh — try later.')));
+      case 'delete':
+        setState(() {
+          _myPacks.removeAt(i);
+          // Deleting the last pack restores the built-in defaults — the
+          // page always has something useful offline.
+          if (_myPacks.isEmpty) _myPacks = List.of(_seedPacks);
+          if (_pack >= _myPacks.length) _pack = _myPacks.length - 1;
+        });
+        await _persistPacks();
+        Haptics.medium();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('${pack.name} deleted.')));
+        }
+    }
   }
 
   /// Edit a saved pack's fields locally; saving re-persists offline. Edits
@@ -1133,10 +1060,11 @@ class _HillModePageState extends State<HillModePage> {
             shape:
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             child: SwitchListTile(
-              value: _shakeOn,
-              onChanged: (v) {
+              value: ShakeSos.instance.on,
+              onChanged: (v) async {
                 Haptics.tick();
-                _setShake(v);
+                await ShakeSos.instance.set(v);
+                if (mounted) setState(() {});
               },
               activeThumbColor: Colors.teal,
               secondary:

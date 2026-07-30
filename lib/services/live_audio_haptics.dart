@@ -65,22 +65,22 @@ class LiveAudioHaptics {
     final high = (data['high'] as num?)?.toDouble() ?? 0;
     final now = _clock.elapsedMilliseconds;
 
-    // ── Hard speech gate ─────────────────────────────────────────────────
-    // Talking must produce NO haptics — a voice buzzing in the hand feels
-    // wrong and misguides. Speech is tricky because male voices carry real
-    // energy below 250 Hz (fundamentals at 85–180 Hz) that used to leak in
-    // as "bass". Two-part defence:
-    //  1) a frame is SPEECH when the vocal band is prominent and the deep
-    //     end doesn't massively outweigh it (music/action does, talk never);
-    //  2) speech "hangs over" for 400 ms so syllable gaps between words
-    //     don't flicker the rumble back on mid-sentence.
-    final speechNow = vocal > 0.20 && low < vocal * 1.6;
-    if (speechNow) _speechHoldMs = now + 400;
+    // ── Speech gate (talk = still, motion = felt) ────────────────────────
+    // Talking must produce NO haptics, but walking/riding ambience MUST
+    // keep working. The separator is the >3400 Hz air band: a talking head
+    // is mid-heavy with weak highs, while movement scenes (wind, steps on
+    // gravel, traffic, foliage) always carry broadband high energy. So a
+    // frame is SPEECH only when the vocal band is prominent AND clearly
+    // beats both the deep end and the air band. A 300 ms hangover keeps
+    // syllable gaps from flickering the rumble back mid-sentence.
+    final speechNow =
+        vocal > 0.22 && vocal > low * 1.4 && vocal > high * 2.2;
+    if (speechNow) _speechHoldMs = now + 300;
     final inSpeech = now < _speechHoldMs;
 
-    // Energy you'd feel physically — bass-weighted, low-mid discounted
-    // (speech formants live at 250–500 Hz), voice band subtracted harder.
-    final physical = low * 1.0 + lowMid * 0.35 + high * 0.12;
+    // Energy you'd feel physically — bass-weighted; the air band counts
+    // (wind/movement feel) and the voice band is subtracted.
+    final physical = low * 1.0 + lowMid * 0.5 + high * 0.2;
     final voiceOver = (vocal - physical * 0.6).clamp(0.0, 1.0);
     final feel = inSpeech ? 0.0 : (physical - voiceOver).clamp(0.0, 1.0);
 
@@ -97,9 +97,9 @@ class LiveAudioHaptics {
     // ── Beat / impact: a bass spike → a punchy recoil (the "hit") ───────
     // During speech only a MASSIVE bass hit passes (an explosion behind a
     // narrator) — plosives and voice thumps never reach these numbers.
-    final beatGate = inSpeech ? 0.30 : 0.14;
+    final beatGate = inSpeech ? 0.30 : 0.13;
     if (kick > beatGate &&
-        low > vocal * (inSpeech ? 2.2 : 1.2) &&
+        low > vocal * (inSpeech ? 2.2 : 1.1) &&
         now - _lastBeatMs > 120) {
       _lastBeatMs = now;
       _lastRumbleMs = now + 90; // let the hit breathe
@@ -108,12 +108,12 @@ class LiveAudioHaptics {
     }
 
     // ── Rumble: graded subwoofer level following the energy ─────────────
-    // Gate at 0.18 so calm/ambient/speech stays silent — only genuinely
-    // energetic audio (music, action, crowds) produces the rumble.
+    // Low gate so walking/motion ambience is felt; speech and true quiet
+    // stay silent through the gate above.
     if (now < _lastRumbleMs) return;
     if (now - _lastRumbleMs < 60) return; // ~16 Hz
-    if (_energy < 0.18) return;            // quiet / speech → still
+    if (_energy < 0.12) return;            // quiet / speech → still
     _lastRumbleMs = now;
-    Haptics.level((_energy * 0.6).clamp(0.0, 0.7), durationMs: 70);
+    Haptics.level((_energy * 0.65).clamp(0.0, 0.7), durationMs: 70);
   }
 }

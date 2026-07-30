@@ -15,6 +15,7 @@ import 'services/api_base.dart';
 import 'services/media_api.dart';
 import 'services/push_service.dart';
 import 'services/settings_service.dart';
+import 'services/shake_sos.dart';
 import 'services/update_service.dart';
 import 'widgets/feedback_dialog.dart';
 import 'widgets/legal_sheet.dart';
@@ -139,6 +140,21 @@ class _SettingsPageState extends State<SettingsPage> {
               value: s.uiHaptics,
               activeThumbColor: blue,
               onChanged: (v) => _update(() => s.uiHaptics = v),
+            ),
+          ]),
+          _section('Safety', [
+            SwitchListTile(
+              secondary: const Icon(Icons.vibration_rounded, color: Colors.red),
+              title: const Text('Shake for SOS'),
+              subtitle: const Text(
+                  'Shake hard 3× anywhere in the app — 5s to cancel, then '
+                  'your location auto-sends to your Safety contact'),
+              value: ShakeSos.instance.on,
+              activeThumbColor: blue,
+              onChanged: (v) async {
+                await ShakeSos.instance.set(v);
+                if (mounted) setState(() {});
+              },
             ),
           ]),
           _section('Sound & playback', [
