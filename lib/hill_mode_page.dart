@@ -504,18 +504,28 @@ class _HillModePageState extends State<HillModePage> {
   }
 
   /// Full guide — every detail lives here, not scattered on the page.
+  /// Same bottom-sheet modal style as the pack manager.
   void _showGuide() {
     Haptics.light();
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (c) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: Padding(
-          padding: const EdgeInsets.all(22),
-          child: SingleChildScrollView(
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (c) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Center(
+                      child: Container(
+                          width: 36,
+                          height: 4,
+                          decoration: BoxDecoration(
+                              color: Colors.grey.withValues(alpha: .4),
+                              borderRadius: BorderRadius.circular(2)))),
+                  const SizedBox(height: 16),
                   const Row(children: [
                     Icon(Icons.health_and_safety_rounded, color: Colors.teal),
                     SizedBox(width: 8),
@@ -553,13 +563,14 @@ class _HillModePageState extends State<HillModePage> {
                     width: double.infinity,
                     child: FilledButton(
                         style: FilledButton.styleFrom(
-                            backgroundColor: Colors.teal),
+                            backgroundColor: Colors.teal,
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 14)),
                         onPressed: () => Navigator.pop(c),
-                        child: const Text('Got it')),
+                        child: const Text('Got it',
+                            style: TextStyle(fontWeight: FontWeight.bold))),
                   ),
-                ]),
-          ),
-        ),
+                ])),
       ),
     );
   }
@@ -864,15 +875,19 @@ class _HillModePageState extends State<HillModePage> {
           ListTile(
             leading: const Icon(Icons.delete_rounded, color: Colors.red),
             title: const Text('Delete', style: TextStyle(color: Colors.red)),
-            enabled: _myPacks.length > 1,
             onTap: () {
               Navigator.pop(c);
               setState(() {
                 _myPacks.removeAt(i);
+                // Deleting the last pack restores the built-in defaults —
+                // the page always has something useful offline.
+                if (_myPacks.isEmpty) _myPacks = List.of(_seedPacks);
                 if (_pack >= _myPacks.length) _pack = _myPacks.length - 1;
               });
               _persistPacks();
               Haptics.medium();
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${pack.name} deleted.')));
             },
           ),
           const SizedBox(height: 8),
