@@ -4911,7 +4911,9 @@ Future<Response> _hillPack(Request request) async {
           'max_tokens': maxTokens,
           'temperature': 0.2,
         }));
-        final res = await req.close().timeout(const Duration(seconds: 70));
+        // 40s per attempt: with one retry the worst case stays inside
+        // Cloudflare's ~100s edge timeout instead of 502-ing.
+        final res = await req.close().timeout(const Duration(seconds: 40));
         final body = await res.transform(utf8.decoder).join();
         return res.statusCode == 200 ? body : null;
       } catch (_) {
