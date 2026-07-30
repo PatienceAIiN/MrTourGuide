@@ -805,6 +805,180 @@ class _HillModePageState extends State<HillModePage> {
             : 'Opened your SMS app — press send to deliver.')));
   }
 
+  // ── Saved-pack management (long-press a chip) ──────────────────────────
+  Future<void> _managePack(int i) async {
+    Haptics.medium();
+    final pack = _myPacks[i];
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(height: 10),
+          Container(
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                  color: Colors.grey.withValues(alpha: .4),
+                  borderRadius: BorderRadius.circular(2))),
+          ListTile(
+            leading: const Icon(Icons.hiking_rounded, color: Colors.teal),
+            title: Text(pack.name,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            subtitle: Text(pack.verified ? 'Verified pack' : 'Unverified pack',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: pack.verified ? Colors.teal : Colors.orange)),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.edit_rounded),
+            title: const Text('Edit details'),
+            onTap: () {
+              Navigator.pop(c);
+              _editPack(i);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.refresh_rounded),
+            title: const Text('Refresh from web'),
+            onTap: () async {
+              Navigator.pop(c);
+              setState(() => _fetching = true);
+              final fresh = await _fetchPack(pack.name);
+              if (!mounted) return;
+              setState(() {
+                _fetching = false;
+                if (fresh != null) _myPacks[i] = fresh;
+              });
+              if (fresh != null) {
+                _persistPacks();
+                Haptics.medium();
+              }
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(fresh != null
+                      ? '${pack.name} refreshed.'
+                      : _fetchError ?? 'Couldn\'t refresh — try later.')));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_rounded, color: Colors.red),
+            title: const Text('Delete', style: TextStyle(color: Colors.red)),
+            enabled: _myPacks.length > 1,
+            onTap: () {
+              Navigator.pop(c);
+              setState(() {
+                _myPacks.removeAt(i);
+                if (_pack >= _myPacks.length) _pack = _myPacks.length - 1;
+              });
+              _persistPacks();
+              Haptics.medium();
+            },
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  /// Edit a saved pack's fields locally; saving re-persists offline. Edits
+  /// are the user's own notes, so the pack is marked unverified.
+  Future<void> _editPack(int i) async {
+    final p = _myPacks[i];
+    final nameCtl = TextEditingController(text: p.name);
+    final taxiCtl = TextEditingController(text: p.taxi);
+    final tipsCtl = TextEditingController(text: p.tips);
+    final deadCtl = TextEditingController(text: p.deadZones);
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (c) => Padding(
+        padding: EdgeInsets.fromLTRB(
+            20, 16, 20, MediaQuery.of(c).viewInsets.bottom + 24),
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                    child: Container(
+                        width: 36, height: 4,
+                        decoration: BoxDecoration(
+                            color: Colors.grey.withValues(alpha: .4),
+                            borderRadius: BorderRadius.circular(2)))),
+                const SizedBox(height: 16),
+                const Row(children: [
+                  Icon(Icons.edit_rounded, color: Colors.teal),
+                  SizedBox(width: 8),
+                  Text('Edit pack',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 17)),
+                ]),
+                const SizedBox(height: 14),
+                TextField(
+                    controller: nameCtl,
+                    decoration: const InputDecoration(
+                        labelText: 'Place name',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: taxiCtl,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                        labelText: 'Fair taxi rates',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: tipsCtl,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                        labelText: 'Altitude & health',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: deadCtl,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                        labelText: 'Signal dead zones',
+                        border: OutlineInputBorder())),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        padding: const EdgeInsets.symmetric(vertical: 14)),
+                    onPressed: () {
+                      if (nameCtl.text.trim().isEmpty) return;
+                      setState(() {
+                        _myPacks[i] = _Pack(
+                          nameCtl.text.trim(),
+                          taxiCtl.text.trim(),
+                          tipsCtl.text.trim(),
+                          deadCtl.text.trim(),
+                          helplines: p.helplines,
+                          sources: p.sources,
+                          verified: false, // user-edited → own notes
+                          updatedAt: DateTime.now(),
+                        );
+                      });
+                      _persistPacks();
+                      Haptics.medium();
+                      Navigator.pop(c);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Pack saved.')));
+                    },
+                    child: const Text('Save changes',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ]),
+        ),
+      ),
+    );
+  }
+
   // ── UI ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
@@ -864,28 +1038,21 @@ class _HillModePageState extends State<HillModePage> {
                 for (var i = 0; i < _myPacks.length; i++)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
-                    child: InputChip(
-                      label: Text(_myPacks[i].name),
-                      selected: _pack == i,
-                      selectedColor: Colors.teal,
-                      labelStyle: TextStyle(
-                          color: _pack == i ? Colors.white : ink(context)),
-                      onSelected: (_) {
-                        Haptics.tick();
-                        setState(() => _pack = i);
-                      },
-                      onDeleted: _myPacks.length > 1
-                          ? () {
-                              setState(() {
-                                _myPacks.removeAt(i);
-                                if (_pack >= _myPacks.length) {
-                                  _pack = _myPacks.length - 1;
-                                }
-                              });
-                              _persistPacks();
-                            }
-                          : null,
-                      deleteIconColor: _pack == i ? Colors.white70 : null,
+                    // Long-press a saved place for manage options
+                    // (edit / refresh / delete).
+                    child: GestureDetector(
+                      onLongPress: () => _managePack(i),
+                      child: InputChip(
+                        label: Text(_myPacks[i].name),
+                        selected: _pack == i,
+                        selectedColor: Colors.teal,
+                        labelStyle: TextStyle(
+                            color: _pack == i ? Colors.white : ink(context)),
+                        onSelected: (_) {
+                          Haptics.tick();
+                          setState(() => _pack = i);
+                        },
+                      ),
                     ),
                   ),
               ],

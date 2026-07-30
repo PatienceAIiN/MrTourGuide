@@ -516,6 +516,29 @@ Middleware _edgeCache() {
   };
 }
 
+/// Security response headers on everything the backend serves (site,
+/// portal, API). Pure hardening — no behavioural change:
+///  - nosniff stops MIME-type confusion on uploads/downloads
+///  - SAMEORIGIN blocks other sites iframing the site/portal (clickjacking)
+///  - the referrer policy keeps full URLs from leaking to third parties
+///  - Permissions-Policy switches off powerful APIs the web pages never use
+///  - HSTS pins browsers to HTTPS (already the only scheme via Cloudflare)
+/// A strict CSP is deliberately NOT set: the Angular bundles and Google
+/// Identity script rely on inline/injected script, so it would break login.
+Middleware _secureHeaders() {
+  const headers = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  };
+  return (Handler inner) {
+    return (Request request) async =>
+        (await inner(request)).change(headers: headers);
+  };
+}
+
 Middleware _cors() {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -6612,6 +6635,7 @@ Future<void> main() async {
 
   final handler = const Pipeline()
       .addMiddleware(logRequests())
+      .addMiddleware(_secureHeaders())
       .addMiddleware(_rateLimit())
       .addMiddleware(_edgeCache())
       .addMiddleware(_redisCache())
