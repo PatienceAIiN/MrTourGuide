@@ -267,14 +267,23 @@ class _HillModePageState extends State<HillModePage> {
         'hill.packs', jsonEncode([for (final k in _myPacks) k.toJson()]));
   }
 
+  String? _fetchError;
+
   Future<_Pack?> _fetchPack(String place) async {
+    _fetchError = null;
     try {
       final r = await http
           .get(Uri.parse(
               '$apiBase/hillmode/pack?place=${Uri.encodeComponent(place)}'))
           .timeout(const Duration(seconds: 80));
-      if (r.statusCode != 200) return null;
-      return _Pack.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+      final body = jsonDecode(r.body);
+      if (r.statusCode != 200) {
+        if (body is Map && body['error'] is String) {
+          _fetchError = body['error'] as String;
+        }
+        return null;
+      }
+      return _Pack.fromJson(body as Map<String, dynamic>);
     } catch (_) {
       return null;
     }
@@ -304,8 +313,8 @@ class _HillModePageState extends State<HillModePage> {
     if (!mounted) return;
     setState(() => _fetching = false);
     if (pack == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(_fetchError ??
               'Couldn\'t fetch that pack — check your connection and try again.')));
       return;
     }

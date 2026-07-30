@@ -4832,23 +4832,30 @@ Future<Response> _hillPack(Request request) async {
     return _json(400, {'error': 'place required'});
   }
   final slug = place.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-');
+  // Kept for stale-if-error: an old pack still beats no pack when the
+  // upstream model is rate limited or down.
+  String? cached;
   try {
     final rows = await _db.execute(
         Sql.named('SELECT data, updated_at FROM hill_packs WHERE slug=@s'),
         parameters: {'s': slug});
     if (rows.isNotEmpty) {
+      cached = rows.first[0] as String;
       final age =
           DateTime.now().toUtc().difference(rows.first[1] as DateTime);
-      if (age < const Duration(days: 7)) {
-        return _json(200, jsonDecode(rows.first[0] as String));
-      }
+      if (age < const Duration(days: 7)) return _json(200, jsonDecode(cached));
     }
   } catch (_) {}
 
-  final apiKey = Platform.environment['GROQ_API_KEY'];
-  if (apiKey == null || apiKey.isEmpty) {
-    return _json(503, {'error': 'Pack service unavailable.'});
+  Response unavailable() {
+    if (cached != null) return _json(200, jsonDecode(cached!));
+    return _json(503, {
+      'error': 'Packs are busy right now — try again in a few minutes.',
+    });
   }
+
+  final apiKey = Platform.environment['GROQ_API_KEY'];
+  if (apiKey == null || apiKey.isEmpty) return unavailable();
   try {
     // The pack spec. Kept in the USER message because compound-mini rejects
     // the whole request ("request_too_large", HTTP 413) once the SYSTEM
@@ -4928,14 +4935,12 @@ Future<Response> _hillPack(Request request) async {
     // beats an error screen.
     var text = await ask(search: true, maxTokens: 900);
     text ??= await ask(search: false, maxTokens: 900);
-    if (text == null) return _json(502, {'error': 'Pack unavailable.'});
+    if (text == null) return unavailable();
     final content = (jsonDecode(text) as Map<String, dynamic>)['choices']?[0]
         ?['message']?['content'] as String?;
-    if (content == null || content.trim().isEmpty) {
-      return _json(502, {'error': 'Pack unavailable.'});
-    }
+    if (content == null || content.trim().isEmpty) return unavailable();
     final pack = _parsePackJson(content);
-    if (pack == null) return _json(502, {'error': 'Pack unavailable.'});
+    if (pack == null) return unavailable();
 
     // ── Anti-bluff gate ────────────────────────────────────────────────
     // The model does not always actually search, and when it doesn't it
@@ -4987,7 +4992,7 @@ Future<Response> _hillPack(Request request) async {
     } catch (_) {}
     return _json(200, pack);
   } catch (_) {
-    return _json(502, {'error': 'Pack unavailable right now.'});
+    return unavailable();
   }
 }
 
